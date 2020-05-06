@@ -98,6 +98,58 @@ functions:
       - websocket:
           route: getGraph
 
+  listSubscribers:
+    handler: src/handler.listSubscribers
+    events:
+      - websocket:
+          route: listSubscribers
+
+  listSubscriptions:
+    handler: src/handler.listSubscriptions
+    events:
+      - websocket:
+          route: listSubscriptions
+
+  events:
+    handler: src/handler.getEvents
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /events/{id}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 version: true
+          cors:
+            origin: '*'
+
+  graph:
+    handler: src/handler.getGraph
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /graph/{id}/{version}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 version: true
+          cors:
+            origin: '*'
+
+  toc:
+    handler: src/handler.getToc
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /toc.json
+          cors:
+            origin: '*'
+
   # all other routes are passed to graph execution
   default:
     handler: src/handler.default
@@ -106,6 +158,8 @@ functions:
       - http:
           method: ANY
           path: /{proxy+}
+          cors:
+            origin: '*'
       - websocket:
           route: $default
 

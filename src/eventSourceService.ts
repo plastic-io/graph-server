@@ -17,6 +17,10 @@ export function newId() {
         return v.toString(16);
     });
 }
+const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Credentials": true,
+};
 export default class EventSourceService {
     store: S3Service;
     broadcastService: BroadcastService;
@@ -28,11 +32,63 @@ export default class EventSourceService {
         };
         this.store = new S3Service(process.env.S3_BUCKET);
     }
+    getEvents(event: any, context: any, callback: (err: any, response: any) => void) {
+        this.store.list(`graphs/${event.path.id}/events/`, (err, events) => {
+            if (err) {
+                return callback(err, null);
+            }
+            callback(null, {
+                statusCode: 200,
+                body: JSON.stringify(events),
+                headers: corsHeaders,
+            });
+        });
+    }
+    updateToc() {
+        this.store.list("graphs/latest/", (err, graphs) => {
+            if (err) {
+                console.error("Cannot read graphs/latest to write TOC.", err);
+                return;
+            }
+            const toc = {};
+            graphs.forEach((item) => {
+                const path = item.Key.split("/");
+                item.type = path[0] === "artifacts" ? "publishedGraph" : "graph";
+                toc[item.Key] = item;
+            });
+            this.store.set(`graphs/toc.json`, toc, (err, toc) => {
+                if (err) {
+                    return console.error("Cannot write TOC.", err);
+                }
+                this.broadcastService.broadcast("toc.json", toc, (err) => {
+                    if (err) {
+                        console.error("Cannot broadcast TOC.", err);
+                    }
+                });
+            });
+        });
+    }
+    getToc(event: any, context: any, callback: (err: any, response: any) => void) {
+        this.store.get(`graphs/toc.json`, (err, toc) => {
+            if (err && /NoSuchKey/.test(err.toString())) {
+                toc = {};
+                console.log("No TOC found.  Using empty object.");
+            } else if (err) {
+                return callback(err, null);
+            }
+            callback(null, {
+                statusCode: 200,
+                body: JSON.stringify(toc),
+                headers: corsHeaders,
+            });
+        });
+    }
     add(event: {graphId: string, crc: number, changes: any[], id: string}, callback: (err: any, response: any) => void) {
         const graphId = event.graphId;
-        this.store.get(`/graphs/{graphId}.json`, (err, graph) => {
-            if (err.code === "NoSuchKey") {
+        this.store.get(`graphs/${graphId}.json`, (err, graph) => {
+            if (err && /NoSuchKey/.test(err.toString())) {
                 graph = {};
+                console.log("No graph found.  Using empty object.");
             } else if (err) {
                 return callback(err, null);
             }
@@ -55,7 +111,7 @@ export default class EventSourceService {
                         changes: versionChanges,
                         crc: versionCrc,
                     };
-                    this.store.set(`/graphs/{graphId}/events/{versionEvent.id}.json`, versionEvent, (err) => {
+                    this.store.set(`graphs/${graphId}/events/${versionEvent.id}.json`, versionEvent, (err) => {
                         this.broadcastService.broadcast(graphId, event, (err) => {
                             if (err) {
                                 return failure(err);
@@ -65,7 +121,7 @@ export default class EventSourceService {
                     });
                 }),
                 new Promise((success, failure) => {
-                    this.store.set(`/graphs/{graphId}/events/{event.id}.json`, event, (err) => {
+                    this.store.set(`graphs/${graphId}/events/${event.id}.json`, event, (err) => {
                         if (err) {
                             return failure(err);
                         }
@@ -73,15 +129,16 @@ export default class EventSourceService {
                     });
                 }),
                 new Promise((success, failure) => {
-                    this.store.set(`/graphs/{graphId}.json`, graph, (err) => {
+                    this.store.set(`graphs/latest/${graphId}.json`, graph, (err) => {
                         if (err) {
                             return failure(err);
                         }
+                        this.updateToc();
                         success();
                     });
                 }),
                 new Promise((success, failure) => {
-                    this.store.set(`/graphs/{graphId}.{graph.version}.json`, graph, (err) => {
+                    this.store.set(`graphs/${graphId}/projections/${graphId}.${graph.version}.json`, graph, (err) => {
                         if (err) {
                             return failure(err);
                         }
@@ -102,11 +159,14 @@ export default class EventSourceService {
             if (err) {
                 callback(err, null);
             }
-            callback(null, null);
+            callback(null, this.okResponse);
         });
     }
     getGraph(event: any, context: any, callback: (err: any, response: any) => void) {
-        this.store.get(`/graphs/{graphId}.json`, (err, graph) => {
+        const path = event.path.version === "latest"
+            ? `graphs/${event.path.id}.json` 
+            : `graphs/${event.path.id}.${event.path.version}.json`;
+        this.store.get(path, (err, graph) => {
             if (err) {
                 return callback(err, null);
             }

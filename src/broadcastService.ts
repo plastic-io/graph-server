@@ -55,7 +55,7 @@ export default class BroadcastService {
                 console.error("Cannot remove connection record", err);
             }
         });
-        this.listSubscriptions(ctx.connectionId, (err, channels) => {
+        this._listSubscriptions(ctx.connectionId, (err, channels) => {
             channels.forEach((channel) => {
                 const path = channel.Key.split("/");
                 const connectionId = path[1];
@@ -79,6 +79,9 @@ export default class BroadcastService {
     unsubscribe(event: any, context: Context, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
         const body = JSON.parse(event.body);
+        if (!body.channelId) {
+            throw new TypeError("unsubscribe: Messages missing channelId from connection: " + ctx.connectionId);
+        }
         this.store.remove(`subscriptions/${body.channelId}/${ctx.connectionId}/${ctx.domainName}`, (err) => {
             if (err) {
                 console.error("unsubscribe: Cannot remove subscription record", err);
@@ -89,11 +92,20 @@ export default class BroadcastService {
                 console.error("unsubscribe: Cannot remove reverse subscription record", err);
             }
         });
+        this.postToClient(ctx.domainName, ctx.connectionId, {unsubscribed: body.channelId}, (err) => {
+            if (err) {
+                console.error("Error posting to client", err);
+                return callback(err, null);
+            }
+        });
         callback(null, this.okResponse);
     }
     subscribe(event: any, context: Context, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
         const body = JSON.parse(event.body);
+        if (!body.channelId) {
+            throw new TypeError("subscribe: Messages missing channelId from connection: " + ctx.connectionId);
+        }
         this.store.set(`subscriptions-reverse/${ctx.connectionId}/${body.channelId}/${ctx.domainName}`, event, (err) => {
             if (err) {
                 console.error("Cannot create reverse subscription record", err);
@@ -104,10 +116,16 @@ export default class BroadcastService {
                 console.error("Cannot create subscription record", err);
             }
         });
+        this.postToClient(ctx.domainName, ctx.connectionId, {subscribed: body.channelId}, (err) => {
+            if (err) {
+                console.error("Error posting to client", err);
+                return callback(err, null);
+            }
+        });
         callback(null, this.okResponse);
     }
     broadcast(channelId: string, value: any, callback: (err: any, response: any) => void) {
-        this.listSubscribers(channelId, (err: any, subscribers: any) => {
+        this._listSubscribers(channelId, (err: any, subscribers: any) => {
             subscribers.forEach((subscriber) => {
                 const path = subscriber.Key.split("/");
                 const domainName = path[3];
@@ -121,7 +139,7 @@ export default class BroadcastService {
             });
         });
     }
-    listSubscriptions(connectionId: string, callback: (err: any, channels: any[]) => void) {
+    _listSubscriptions(connectionId: string, callback: (err: any, channels: any[]) => void) {
         this.store.list(`subscriptions-reverse/${connectionId}`, (err: any, channels: any) => {
             if (err) {
                 console.error("Cannot list channels", err);
@@ -130,7 +148,7 @@ export default class BroadcastService {
             callback(null, channels);
         });
     }
-    listSubscribers(channelId: string, callback: (err: any, subscriptions: any[]) => void) {
+    _listSubscribers(channelId: string, callback: (err: any, subscriptions: any[]) => void) {
         this.store.list(`subscriptions/${channelId}`, (err: any, subscriptions: any) => {
             if (err) {
                 console.error("Cannot list subscribers", err);
@@ -139,14 +157,104 @@ export default class BroadcastService {
             callback(null, subscriptions);
         });
     }
+    listSubscribers(event: any, context: Context, callback: (err: any, response: any) => void) {
+        const ctx = event.requestContext;
+        const body = JSON.parse(event.body);
+        if (!body.channelId) {
+            throw new TypeError("sendToChannel: Messages missing channelId from connection: " + ctx.connectionId);
+        }
+        this._listSubscriptions(body.channelId, (err, subscribers) => {
+            if (err) {
+                console.error("Error listing subscribers", err);
+                return callback(err, null);
+            }
+            const value = {
+                requestId: body.requestId,
+                response: subscribers,
+            };
+            this.postToClient(ctx.domainName, ctx.connectionId, value, (err) => {
+                if (err) {
+                    console.error("Error posting to client", err);
+                    return callback(err, null);
+                }
+                callback(null, this.okResponse);
+            });
+        });
+    }
+    listSubscriptions(event: any, context: Context, callback: (err: any, response: any) => void) {
+        const ctx = event.requestContext;
+        const body = JSON.parse(event.body);
+        if (!body.connectionId) {
+            throw new TypeError("sendToConnection: Messages missing connectionId from connection: " + ctx.connectionId);
+        }
+        this._listSubscriptions(body.connectionId || ctx.connectionId, (err, subscriptions) => {
+            if (err) {
+                console.error("Error listing subscriptions", err);
+                return callback(err, null);
+            }
+            const value = {
+                requestId: body.requestId,
+                response: subscriptions,
+            };
+            this.postToClient(ctx.domainName, ctx.connectionId, value, (err) => {
+                if (err) {
+                    console.error("Error posting to client", err);
+                    return callback(err, null);
+                }
+                callback(null, this.okResponse);
+            });
+        });
+    }
+    _sendToAll(value: any) {
+        this.store.list(`connections/`, (err, connections) => {
+            connections.forEach((connection) => {
+                const path = connection.Key.split("/");
+                const domainName = path[2];
+                const connectionId = path[1];
+                this.postToClient(domainName, connectionId, value, (err) => {
+                    if (err) {
+                        console.error("Error posting to client", err);
+                    }
+                });
+            });
+        });
+    }
+    sendToAll(event: any, context: Context) {
+        const body = JSON.parse(event.body);
+        const ctx = event.requestContext;
+        const value = {
+            broadcast: true,
+            from: ctx.connectionId,
+            value: body.value,
+        };
+        this._sendToAll(value);
+    }
     sendToChannel(event: any, context: Context, callback: (err: any, response: any) => void) {
         const body = JSON.parse(event.body);
-        this.broadcast(body.channelId, body.value, callback);
+        const ctx = event.requestContext;
+        if (!body.channelId) {
+            throw new TypeError("sendToChannel: Messages missing channelId from connection: " + ctx.connectionId);
+        }
+        const value = {
+            channelId: body.channelId,
+            from: ctx.connectionId,
+            value: body.value,
+        };
+        this.broadcast(body.channelId, value, callback);
         callback(null, this.okResponse);
     }
     sendToConnection(event: any, context: Context, callback: (err: any, response: any) => void) {
+        const ctx = event.requestContext;
         const body = JSON.parse(event.body);
-        this.postToClient(body.domainName, body.connectionId, JSON.parse(body.value), (err) => {
+        if (!body.connectionId) {
+            throw new TypeError("sendToConnection: Messages missing connectionId from connection: " + ctx.connectionId);
+        }
+        const value = {
+            to: body.connectionId,
+            from: ctx.connectionId,
+            value: body.value,
+        };
+        this.postToClient(body.domainName || ctx.domainName, body.connectionId, value, (err) => {
             if (err) {
                 console.error("Error posting to client", err);
                 return callback(err, null);
