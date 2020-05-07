@@ -88,15 +88,10 @@ functions:
 
   addEvent:
     handler: src/handler.addEvent
+    timeout: 30
     events:
       - websocket:
           route: addEvent
-
-  getGraph:
-    handler: src/handler.getGraph
-    events:
-      - websocket:
-          route: getGraph
 
   listSubscribers:
     handler: src/handler.listSubscribers
@@ -109,6 +104,19 @@ functions:
     events:
       - websocket:
           route: listSubscriptions
+
+  graphWs:
+    handler: src/handler.getGraphWs
+    events:
+      - websocket:
+          route: getGraph
+
+  deleteGraphWs:
+    handler: src/handler.deleteGraphWs
+    timeout: 30
+    events:
+      - websocket:
+          route: deleteGraph
 
   events:
     handler: src/handler.getEvents
@@ -147,6 +155,21 @@ functions:
       - http:
           method: GET
           path: /toc.json
+          cors:
+            origin: '*'
+
+  deleteGraph:
+    handler: src/handler.deleteGraph
+    timeout: 30
+    events:
+      - http:
+          method: DELETE
+          path: /graph/{id}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 version: true
           cors:
             origin: '*'
 

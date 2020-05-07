@@ -30,7 +30,9 @@ export default class S3Service {
         }, (err) => {
             if (err) {
                 console.error("Cannot remove the file", err);
+                callback(err, null);
             }
+            callback(null, null);
         });
     }
     set(key: string, val: any, callback: (err: any, data: any) => void) {

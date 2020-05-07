@@ -32,11 +32,20 @@ function getToc(event: any, context: any, callback: (err: any, response: any) =>
 function getEvents(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getEvents(event, context, callback);
 }
+function deleteGraph(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.deleteGraph(event, context, callback);
+}
+function deleteGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.deleteGraphWs(event, context, callback);
+}
 function listSubscribers(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.listSubscribers(event, context, callback);
 }
 function listSubscriptions(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.listSubscriptions(event, context, callback);
+}
+function getGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.getGraphWs(event, context, callback);
 }
 export {
     connect,
@@ -47,8 +56,11 @@ export {
     unsubscribe,
     listSubscribers,
     listSubscriptions,
+    getGraphWs,
     addEvent,
     getGraph,
     getToc,
     getEvents,
+    deleteGraph,
+    deleteGraphWs,
 };

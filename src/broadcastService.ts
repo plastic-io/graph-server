@@ -25,8 +25,7 @@ export default class BroadcastService {
                 Data: buffer,
             }, (err) => {
                 if (err && err.statusCode === 410) {
-                    console.error("Error transmitting to a connection, client was disconnected unexpectedly, removing connection.");
-                    return;
+                    console.error("Error transmitting to a connection, client was disconnected unexpectedly.");
                 } else if (err && err.statusCode === 429) {
                     console.warn("Connection throttled, backing off: ", err);
                     setTimeout(post, backoffTimer);
@@ -36,8 +35,8 @@ export default class BroadcastService {
                 callback(null, this.okResponse);
             });
         }
-        backoffTimer += BACKOFF_TIMER_ADD;
         setTimeout(post, backoffTimer);
+        backoffTimer += BACKOFF_TIMER_ADD;
     }
     connect(event: any, context: Context, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
