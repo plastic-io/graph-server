@@ -4,7 +4,7 @@
     "inlineSourceMap": true,
     "moduleResolution": "node",
     "lib": [
-      "es5",
+      "es6",
       "es2015.promise",
       "esnext.asynciterable"
     ]

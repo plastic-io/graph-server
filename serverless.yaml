@@ -175,7 +175,7 @@ functions:
 
   # all other routes are passed to graph execution
   default:
-    handler: src/handler.default
+    handler: src/handler.defaultRoute
     timeout: 30
     events:
       - http:

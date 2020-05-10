@@ -13,8 +13,20 @@ export default class BroadcastService {
         this.store = new S3Service(process.env.S3_BUCKET);
     }
     postToClient(domainName: string, connectionId: string, message: any, callback: (err: any, data: any) => void) {
+        const getCircularReplacer = () => {
+            const seen = new WeakSet();
+            return (key, value) => {
+                if (typeof value === "object" && value !== null) {
+                    if (seen.has(value)) {
+                        return;
+                    }
+                    seen.add(value);
+                }
+                return value;
+            };
+        };
         let backoffTimer = 0;
-        const buffer = Buffer.from(JSON.stringify(message));
+        const buffer = Buffer.from(JSON.stringify(message, getCircularReplacer()));
         const client = new ApiGatewayManagementApi({
             apiVersion: "2018-11-29",
             endpoint: `https://${domainName}/${STAGE}`,
@@ -233,18 +245,20 @@ export default class BroadcastService {
         };
         this._sendToAll(value);
     }
+    _sendToChannel(channelId: string, value: any, callback: (err: any, response: any) => void) {
+        this.broadcast(channelId, {
+            channelId,
+            response: value,
+        }, callback);
+    }
     sendToChannel(event: any, context: Context, callback: (err: any, response: any) => void) {
         const body = JSON.parse(event.body);
         const ctx = event.requestContext;
-        if (!body.channelId) {
-            throw new TypeError("sendToChannel: Messages missing channelId from connection: " + ctx.connectionId);
-        }
-        const value = {
-            channelId: body.channelId,
-            from: ctx.connectionId,
-            response: body.value,
-        };
-        this.broadcast(body.channelId, value, callback);
+        this._sendToChannel(body.channelId, body.value, (err) => {
+            if (err) {
+                console.error(`Error sending to channel ${body.channelId} from connection ${ctx.connectionId}.`, err);
+            }
+        });
         callback(null, this.okResponse);
     }
     sendToConnection(event: any, context: Context, callback: (err: any, response: any) => void) {

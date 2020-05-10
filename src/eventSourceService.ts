@@ -1,8 +1,8 @@
 import {Context, S3CreateEvent, APIGatewayEvent} from "aws-lambda";
 import {diff, applyChange} from "deep-diff";
 import {CRC32} from "jshashes";
-import S3Service from './s3Service';
-import BroadcastService from './broadcastService';
+import S3Service from "./s3Service";
+import BroadcastService from "./broadcastService";
 export interface EventSourceEvent {
     id: string;
     graphId: string;

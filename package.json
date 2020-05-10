@@ -23,6 +23,7 @@
   },
   "author": "Tony.Germaneri@patientpop.com",
   "dependencies": {
+    "@plastic-io/plastic-io": "^1.0.12",
     "deep-diff": "^1.0.2",
     "jshashes": "^1.0.8"
   },

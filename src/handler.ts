@@ -1,7 +1,9 @@
 import EventSourceService from './eventSourceService';
 import BroadcastService from './broadcastService';
+import GraphService from './graphService';
 const broadcastService = new BroadcastService();
 const eventSourceService = new EventSourceService();
+const graphService = new GraphService();
 function connect(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.connect(event, context, callback);
 }
@@ -47,6 +49,9 @@ function listSubscriptions(event: any, context: any, callback: (err: any, respon
 function getGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getGraphWs(event, context, callback);
 }
+function defaultRoute(event: any, context: any, callback: (err: any, response: any) => void) {
+    graphService.router(event, context, callback);
+}
 export {
     connect,
     disconnect,
@@ -63,4 +68,5 @@ export {
     getEvents,
     deleteGraph,
     deleteGraphWs,
+    defaultRoute,
 };
