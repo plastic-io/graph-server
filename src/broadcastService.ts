@@ -19,22 +19,24 @@ export default class BroadcastService {
             apiVersion: "2018-11-29",
             endpoint: `https://${domainName}/${STAGE}`,
         });
-        function post() {
+        const post = () => {
             client.postToConnection({
                 ConnectionId: connectionId,
                 Data: buffer,
             }, (err) => {
                 if (err && err.statusCode === 410) {
-                    console.error("Error transmitting to a connection, client was disconnected unexpectedly.");
+                    console.error(`Error transmitting to a connection, client was disconnected unexpectedly domainName: ${domainName} connectionId: ${connectionId}.`);
+                    this._disconnect(domainName, connectionId);
                 } else if (err && err.statusCode === 429) {
                     console.warn("Connection throttled, backing off: ", err);
-                    setTimeout(post, backoffTimer);
+                    backoffTimer += BACKOFF_TIMER_ADD;
+                    return setTimeout(post, backoffTimer);
                 } else if (err) {
                     console.error("Error transmitting to a connection: ", err);
                 }
                 callback(null, this.okResponse);
             });
-        }
+        };
         setTimeout(post, backoffTimer);
         backoffTimer += BACKOFF_TIMER_ADD;
     }
@@ -47,14 +49,13 @@ export default class BroadcastService {
         });
         callback(null, this.okResponse);
     }
-    disconnect(event: any, context: Context, callback: (err: any, response: any) => void) {
-        const ctx = event.requestContext;
-        this.store.remove(`connections/${ctx.connectionId}/${ctx.domainName}`, (err) => {
+    _disconnect(domainName, connectionId) {
+        this.store.remove(`connections/${connectionId}/${domainName}`, (err) => {
             if (err) {
                 console.error("Cannot remove connection record", err);
             }
         });
-        this._listSubscriptions(ctx.connectionId, (err, channels) => {
+        this._listSubscriptions(connectionId, (err, channels) => {
             channels.forEach((channel) => {
                 const path = channel.Key.split("/");
                 const connectionId = path[1];
@@ -73,6 +74,10 @@ export default class BroadcastService {
                 });
             });
         });
+    }
+    disconnect(event: any, context: Context, callback: (err: any, response: any) => void) {
+        const ctx = event.requestContext;
+        this._disconnect(ctx.domainName, ctx.connectionId);
         callback(null, this.okResponse);
     }
     unsubscribe(event: any, context: Context, callback: (err: any, response: any) => void) {
@@ -168,7 +173,7 @@ export default class BroadcastService {
                 return callback(err, null);
             }
             const value = {
-                requestId: body.requestId,
+                messageId: body.messageId,
                 response: subscribers,
             };
             this.postToClient(ctx.domainName, ctx.connectionId, value, (err) => {
@@ -192,7 +197,7 @@ export default class BroadcastService {
                 return callback(err, null);
             }
             const value = {
-                requestId: body.requestId,
+                messageId: body.messageId,
                 response: subscriptions,
             };
             this.postToClient(ctx.domainName, ctx.connectionId, value, (err) => {
@@ -224,7 +229,7 @@ export default class BroadcastService {
         const value = {
             broadcast: true,
             from: ctx.connectionId,
-            value: body.value,
+            response: body.value,
         };
         this._sendToAll(value);
     }
@@ -237,7 +242,7 @@ export default class BroadcastService {
         const value = {
             channelId: body.channelId,
             from: ctx.connectionId,
-            value: body.value,
+            response: body.value,
         };
         this.broadcast(body.channelId, value, callback);
         callback(null, this.okResponse);
@@ -251,7 +256,7 @@ export default class BroadcastService {
         const value = {
             to: body.connectionId,
             from: ctx.connectionId,
-            value: body.value,
+            response: body.value,
         };
         this.postToClient(body.domainName || ctx.domainName, body.connectionId, value, (err) => {
             if (err) {
