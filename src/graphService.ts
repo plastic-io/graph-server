@@ -3,6 +3,7 @@ import Scheduler, {Vector, Graph} from "@plastic-io/plastic-io";
 import S3Service from "./s3Service";
 import * as path from "path";
 import BroadcastService from "./broadcastService";
+const STAGE = process.env.STAGE;
 class GraphService {
     graph: Graph;
     state: any;
@@ -54,7 +55,12 @@ class GraphService {
     router(event: any, context: Context, callback: (err: any, response: any) => void) {
         const startTimer = Date.now();
         const parsedPath = path.parse(event.path);
-        this.store.get(`graphs/latest/${parsedPath.name}.json`, (err, graph) => {
+        const graphUrl = parsedPath.name;
+        const target = parsedPath.ext ? parsedPath.ext.substring(1) : "index";
+        const storePath = STAGE === "production"
+            ? `graphs/published/endpoints/${graphUrl}.json`
+            : `graphs/endpoints/${graphUrl}.json`;
+        this.store.get(storePath, (err, graph) => {
             if (err) {
                 return callback(err, null);
             }
@@ -111,7 +117,6 @@ class GraphService {
                     console.debug(e);
                 },
             };
-            const target = parsedPath.ext ? parsedPath.ext.substring(1) : "index";
             if (graph.properties.broadcastConnectors !== undefined && typeof graph.properties.broadcastConnectors === "string") {
                 this.broadcastConnectors = graph.properties.broadcastConnectors.split(",");
             }

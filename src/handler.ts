@@ -49,10 +49,18 @@ function listSubscriptions(event: any, context: any, callback: (err: any, respon
 function getGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getGraphWs(event, context, callback);
 }
+function publishGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.publishGraphWs(event, context, callback);
+}
+function publishVectorWs(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.publishVectorWs(event, context, callback);
+}
 function defaultRoute(event: any, context: any, callback: (err: any, response: any) => void) {
     graphService.router(event, context, callback);
 }
 export {
+    publishGraphWs,
+    publishVectorWs,
     connect,
     disconnect,
     sendToChannel,

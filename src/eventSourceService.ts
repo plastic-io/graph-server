@@ -173,6 +173,14 @@ export default class EventSourceService {
                         success();
                     });
                 }),
+                new Promise((success, failure) => {
+                    this.store.set(`graphs/endpoints/${graph.url}.json`, graph, (err) => {
+                        if (err) {
+                            return failure(err);
+                        }
+                        success();
+                    });
+                }),
             ]).then(() => {
                 console.log("add success");
                 callback(null, this.okResponse);
@@ -211,6 +219,99 @@ export default class EventSourceService {
             callback(null, this.okResponse);
         });
     }
+    publishVectorWs(event: any, context: any, callback: (err: any, response: any) => void) {
+        const ctx = event.requestContext;
+        const body = JSON.parse(event.body);
+        const graphId = body.graphId;
+        const vectorId = body.vectorId;
+        const version = body.version;
+        this.store.get(`graphs/${graphId}/projections/${graphId}.${version}.json`, (err, graph) => {
+            if (err) {
+                console.error("Error getting graph to publish vector", err);
+                return callback(err, null);
+            }
+            const vector = graph.vectors.find((v: any) => {
+                return v.id === vectorId;
+            });
+            if (!vector) {
+                this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
+                    messageId: body.messageId,
+                    error: true,
+                    response: {
+                        err: "Cannot find vector",
+                    },
+                }, (err) => {
+                    if (err) {
+                        console.error("Error sending error to client");
+                    }
+                });
+            }
+            vector.publishedOn = Date.now();
+            vector.publishedBy = event.requestContext.identity.userArn || "Unknown userArn";
+            this.store.set(`graphs/published/vectors/${vector.id}.json`, vector, (err) => {
+                if (err) {
+                    console.error("Error writing published graph to store.");
+                    return callback(err, null);
+                }
+                console.log(`Publish vector success ${vector.id}`);
+                this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
+                    messageId: body.messageId,
+                    error: false,
+                    response: {
+                        type: "vector",
+                        url: vector.id,
+                        publishedBy: vector.publishedBy,
+                        publishedOn: vector.publishedOn,
+                    },
+                }, (err) => {
+                    if (err) {
+                        console.error("Error sending error to client");
+                        callback(err, null);
+                    }
+                });
+            });
+            callback(null, this.okResponse);
+        });
+    }
+    publishGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+        const ctx = event.requestContext;
+        const body = JSON.parse(event.body);
+        const graphId = body.id;
+        const version = body.version;
+        this.store.get(`graphs/${graphId}/projections/${graphId}.${version}.json`, (err, graph) => {
+            if (err) {
+                console.error("Error getting graph to publish", err);
+                return callback(err, null);
+            }
+            graph.publishedOn = Date.now();
+            graph.publishedBy = event.requestContext.identity.userArn || "Unknown userArn";
+            const sendResponse = (err) => {
+                if (err) {
+                    console.error("Error writing published graph to store.");
+                    return callback(err, null);
+                }
+                console.log(`Publish graph success ${graph.url}`);
+                this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
+                    messageId: body.messageId,
+                    error: false,
+                    response: {
+                        type: "graph",
+                        url: graph.url,
+                        publishedBy: graph.publishedBy,
+                        publishedOn: graph.publishedOn,
+                    },
+                }, (err) => {
+                    if (err) {
+                        console.error("Error sending error to client");
+                    }
+                });
+            };
+            this.store.set(`graphs/published/graphs/${graph.id}.latest.json`, graph, sendResponse);
+            this.store.set(`graphs/published/graphs/${graph.id}.${graph.version}.json`, graph, sendResponse);
+            this.store.set(`graphs/published/endpoints/${graph.url}.json`, graph, sendResponse);
+            callback(null, this.okResponse);
+        });
+    }
     getGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
         const body = JSON.parse(event.body);
@@ -225,7 +326,9 @@ export default class EventSourceService {
                     error: true,
                     response: err
                 }, (err) => {
-                    console.error("Error sending error to client");
+                    if (err) {
+                        console.error("Error sending error to client");
+                    }
                 });
                 return;
             }
@@ -233,7 +336,9 @@ export default class EventSourceService {
                 messageId: body.messageId,
                 response: graph,
             }, (err) => {
-                console.error("Error sending graph to client");
+                if (err) {
+                    console.error("Error sending graph to client");
+                }
             });
         });
         callback(null, this.okResponse);

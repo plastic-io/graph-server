@@ -40,7 +40,7 @@ provider:
 
 custom:
   prefix: ${opt:prefix, 'plastic'}
-  s3Bucket: "${opt:prefix, 'plastic'}-${self:provider.stage}-plastic-site"
+  s3Bucket: "${opt:prefix, 'plastic'}-plastic-site"
 
 functions:
   # manage connection and disconnection of clients
@@ -110,6 +110,20 @@ functions:
     events:
       - websocket:
           route: getGraph
+
+  publishVectorWs:
+    handler: src/handler.publishVectorWs
+    timeout: 30
+    events:
+      - websocket:
+          route: publishVector
+
+  publishGraphWs:
+    handler: src/handler.publishGraphWs
+    timeout: 30
+    events:
+      - websocket:
+          route: publishGraph
 
   deleteGraphWs:
     handler: src/handler.deleteGraphWs
