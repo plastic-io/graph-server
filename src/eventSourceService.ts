@@ -33,7 +33,7 @@ export default class EventSourceService {
         this.store = new S3Service(process.env.S3_BUCKET);
     }
     getEvents(event: any, context: any, callback: (err: any, response: any) => void) {
-        this.store.list(`graphs/${event.path.id}/events/`, (err, events) => {
+        this.store.list(`graphs/${event.pathParameters.id}/events/`, (err, events) => {
             if (err) {
                 return callback(err, null);
             }
@@ -43,7 +43,8 @@ export default class EventSourceService {
                 headers: corsHeaders,
             });
         });
-    }43000
+    }
+    // TODO something less expensive
     updateToc(callback: (err: any, response: any) => void) {
         this.store.list("graphs/projections/", (err, graphs) => {
             if (err) {
@@ -54,51 +55,48 @@ export default class EventSourceService {
             const endpointMatch = /.*\/([^\/]+\d?)/;
             const normalMatch = /.*\/([^\/]+\d?).json/;
             const toc = {};
-            graphs.forEach((item) => {
-                let type;
-                let isEndpoint = false;
-                if (/^graphs\/projections\/endpoints\//.test(item.Key)) {
-                    type = "endpoint";
-                    isEndpoint = true;
-                } else if (/^graphs\/projections\/latest\//.test(item.Key)) {
-                    type = "graph";
-                } else if (/^graphs\/projections\/published\/vectors\//.test(item.Key)) {
-                    type = "publishedVector"
-                } else if (/^graphs\/projections\/published\/graphs\//.test(item.Key)) {
-                    type = "publishedGraph"
-                } else if (/^graphs\/projections\/published\/endpoints/.test(item.Key)) {
-                    type = "publishedEndpoint"
-                    isEndpoint = true;
-                } else if (/^graphs\/projections\/toc.json/.test(item.Key)) {
-                    type = "toc"
-                } else {
-                    type = "unknown";
-                }
-                const path = item.Key.split("/");
-                item.type = type;
-                item.id = item.Key.replace(isEndpoint ? endpointMatch : normalMatch, "$1");
-                item.lastUpdate = new Date(item.LastModified).getTime();
-                item.name = item.id;
-                // TODO: write and get metadata?
-                toc[item.id] = item;
-            });
-            this.store.set(`graphs/projections/toc.json`, toc, (err) => {
-                if (err) {
-                    callback(err, null);
-                    return console.error("Cannot write TOC.", err);
-                }
-                callback(null, null);
-                this.broadcastService.broadcast("toc.json", {
-                    channelId: "toc.json",
-                    response: {
-                        type: "toc",
-                        toc,
-                    },
-                }, (err) => {
-                    if (err) {
-                        console.error("Cannot broadcast TOC.", err);
-                    }
+            Promise.all(graphs.filter((item) => {
+                return item.Key !== "graphs/projections/toc.json";
+            }).map((item) => {
+                return new Promise((success, failure) => {
+                    this.store.head(item.Key, (err, data) => {
+                        if (err) {
+                            return failure(new Error(err));
+                        }
+                        Object.keys(data.Metadata).forEach((metaKey) => {
+                            item[metaKey.replace("x-amz-meta-", "")] = data.Metadata[metaKey];
+                        });
+                        if (/^graphs\/projections\/endpoints\//.test(item.Key)) {
+                            item.type = "endpoint";
+                        }
+                        const tocId = item.type === "endpoint" ? ("endpoint/" + item.id) : item.id;
+                        const tocKey = tocId + (/published/.test(item.type) ? ("." + item.version) : "");
+                        toc[tocKey] = item;
+                        success();
+                    });
                 });
+            })).then(() => {
+                this.store.set(`graphs/projections/toc.json`, toc, {}, (err) => {
+                    if (err) {
+                        callback(err, null);
+                        return console.error("Cannot write TOC.", err);
+                    }
+                    callback(null, null);
+                    this.broadcastService.broadcast("toc.json", {
+                        channelId: "toc.json",
+                        response: {
+                            type: "toc",
+                            toc,
+                        },
+                    }, (err) => {
+                        if (err) {
+                            console.error("Cannot broadcast TOC.", err);
+                        }
+                    });
+                });
+            }).catch((err) => {
+                console.error("Cannot broadcast TOC.", err);
+                callback(err, null);
             });
         });
     }
@@ -117,7 +115,7 @@ export default class EventSourceService {
             });
         });
     }
-    add(event: {graphId: string, crc: number, changes: any[], id: string, graph: any, time?: number},
+    add(event: {graphId: string, crc: number, changes: any[], id: string, graph: any, time?: number, userId: string},
         callback: (err: any, response: any) => void) {
         const graphId = event.graphId;
         this.store.get(`graphs/projections/latest/${graphId}.json`, (err, graph) => {
@@ -136,7 +134,7 @@ export default class EventSourceService {
             if (crc !== event.crc) {
                 return callback(new Error(`Event CRC failure.  Expected ${crc} got ${event.crc}.`), null);
             }
-            const ver = Number(graph.version + 1);
+            const ver = Number(graph.version) + 1;
             graph.version = ver;
             graph.vectors.forEach((v: any) => {
                 v.version = ver;
@@ -148,13 +146,26 @@ export default class EventSourceService {
             });
             const versionChanges = diff(JSON.parse(serializedState), graph);
             const versionCrc = CRC32(JSON.stringify(graph));
+            const graphMeta = {
+                "id": graph.id,
+                "name": graph.properties.name || "Unnamed",
+                "version": String(graph.version),
+                "description": graph.properties.description || "No description",
+                "icon": graph.properties.icon || "mdi-graph",
+                "tags": graph.properties.tags.join(",") || "None",
+                "type": "graph",
+                "url": graph.url || graph.id,
+                "user-id": event.userId || "Unknown",
+            };
             Promise.all([
                 new Promise((success, failure) => {
                     // store latest projection
-                    this.store.set(`graphs/projections/latest/${graphId}.json`, graph, (err) => {
+                    this.store.set(`graphs/projections/latest/${graphId}.json`, graph, graphMeta, (err) => {
                         if (err) {
+                            console.error("Error storing latest version.", graphMeta);
                             return failure(err);
                         }
+                        // TODO maybe don't do this every time, check the event.changes for triggers
                         this.updateToc(success);
                     });
                 }),
@@ -166,8 +177,12 @@ export default class EventSourceService {
                         crc: versionCrc,
                     };
                     // store version event
-                    this.store.set(`graphs/${graphId}/events/${versionEvent.id}.json`, versionEvent, (err) => {
+                    this.store.set(`graphs/${graphId}/events/${versionEvent.id}.json`, versionEvent, {
+                        ...graphMeta,
+                        type: "event",
+                    }, (err) => {
                         if (err) {
+                            console.error("Error storing version event.", graphMeta);
                             return failure(err);
                         }
                         success();
@@ -177,15 +192,19 @@ export default class EventSourceService {
                             response: [event, versionEvent],
                         }, (err) => {
                             if (err) {
-                                return console.error("Error sending message to graph event subscribers.");
+                                return console.error("Error sending message to graph event subscribers.", graphMeta);
                             }
                         });
                     });
                 }),
                 new Promise((success, failure) => {
                     // store edit event
-                    this.store.set(`graphs/${graphId}/events/${event.id}.json`, event, (err) => {
+                    this.store.set(`graphs/${graphId}/events/${event.id}.json`, event, {
+                        ...graphMeta,
+                        type: "event",
+                    }, (err) => {
                         if (err) {
+                            console.error("Error storing edit event.", graphMeta);
                             return failure(err);
                         }
                         success();
@@ -193,18 +212,40 @@ export default class EventSourceService {
                 }),
                 new Promise((success, failure) => {
                     // store versioned projection
-                    this.store.set(`graphs/${graphId}/projections/${graphId}.${graph.version}.json`, graph, (err) => {
+                    this.store.set(`graphs/${graphId}/projections/${graphId}.${graph.version}.json`, graph, graphMeta, (err) => {
                         if (err) {
+                            console.error("Error storing version projection.", graphMeta);
                             return failure(err);
                         }
                         success();
                     });
                 }),
-                // TODO, examine event, if graph URL has changed, delete the old endpoint first
+                new Promise((success, failure) => {
+                    let urlChange = event.changes.find((change) => {
+                        return change.path[0] === "url"
+                            && change.path.length === 1
+                            && change.kind === "E";
+                    });
+                    if (urlChange) {
+                        this.store.remove(`graphs/projections/endpoints/${urlChange.lhs}.json`, (err) => {
+                            if (err) {
+                                console.error("Error removing previous named endpoint.", graphMeta);
+                                return failure(err);
+                            }
+                            success();
+                        });
+                    } else {
+                        success();
+                    }
+                }),
                 // store endpoint graph
                 new Promise((success, failure) => {
-                    this.store.set(`graphs/projections/endpoints/${graph.url}.json`, graph, (err) => {
+                    this.store.set(`graphs/projections/endpoints/${graph.url}.json`, graph, {
+                        ...graphMeta,
+                        type: "endpoint",
+                    }, (err) => {
                         if (err) {
+                            console.error("Error storing endpoint.", graphMeta);
                             return failure(err);
                         }
                         success();
@@ -224,18 +265,22 @@ export default class EventSourceService {
         const event = body.event;
         const ctx = _event.requestContext;
         event.time = Date.now();
+        event.userId = ctx.identity.userArn || "Unknown userArn";
         this.add(event, (err) => {
             if (err) {
-                this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
-                    messageId: body.messageId,
+                return this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
+                    messageId: event.id,
                     error: true,
-                    response: err,
+                    response: {
+                        eventId: event.id,
+                        err: err.toString(),
+                    },
                 }, (err) => {
                     if (err) {
                         console.error("Error sending graph to client");
                     }
+                    return callback(err, null);
                 });
-                return callback(err, null);
             }
             this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
                 messageId: body.messageId,
@@ -276,8 +321,22 @@ export default class EventSourceService {
                 });
             }
             vector.publishedOn = Date.now();
-            vector.publishedBy = event.requestContext.identity.userArn || "Unknown userArn";
-            this.store.set(`graphs/projections/published/vectors/${vector.id}.{vector.version}.json`, vector, (err) => {
+            vector.userId = event.requestContext.identity.userArn || "Unknown userArn";
+            const vectorMeta = {
+                "graph-id": graph.id,
+                "graph-url": graph.url,
+                "id": "artifacts/" + vector.id,
+                "name": vector.properties.name || "Unnamed",
+                "version": String(vector.version),
+                "description": vector.properties.description || "No description",
+                "icon": vector.properties.icon || "mdi-vector-point",
+                "tags": vector.properties.tags.join(",") || "None",
+                "type": "publishedVector",
+                "url": vector.url || vector.id,
+                "artifact-url": "artifacts/" + vector.id + "/" + vector.version,
+                "user-id": vector.userId || "Unknown",
+            }
+            this.store.set(`graphs/projections/published/artifacts/${vector.id}.${vector.version}.json`, vector, vectorMeta, (err) => {
                 if (err) {
                     console.error("Error writing published graph to store.");
                     return callback(err, null);
@@ -337,10 +396,43 @@ export default class EventSourceService {
                     }
                 });
             };
-            this.store.set(`graphs/projections/published/graphs/${graph.id}.${graph.version}.json`, graph, sendResponse);
-            this.store.set(`graphs/projections/published/endpoints/${graph.url}.json`, graph, sendResponse);
+            const graphMeta = {
+                "id": "artifacts/" + graph.id,
+                "name": graph.properties.name || "Unnamed",
+                "version": String(graph.version),
+                "description": graph.properties.description || "No description",
+                "icon": graph.properties.icon || "mdi-graph",
+                "tags": graph.properties.tags.join(",") || "None",
+                "type": "publishedGraph",
+                "url": graph.url || graph.id,
+                "artifact-url": "artifacts/" + graph.id + "/" + graph.version,
+                "user-id": event.requestContext.identity.userArn || "Unknown userArn",
+            };
+            this.store.set(`graphs/projections/published/artifacts/${graph.id}.${graph.version}.json`, graph, graphMeta, sendResponse);
+            this.store.set(`graphs/projections/published/endpoints/${graph.url}.json`, graph, graphMeta, sendResponse);
             this.updateToc(() => {
                 callback(null, this.okResponse);
+            });
+        });
+    }
+    getArtifact(event: any, context: any, callback: (err: any, response: any) => void) {
+        this.store.get(`graphs/projections/published/artifacts/${event.pathParameters.id}.${event.pathParameters.version}.json`, (err, artifact) => {
+            if (err) {
+                if (/NoSuchKey/.test(err.toString())) {
+                    return callback(err, {
+                        statusCode: 404,
+                        headers: corsHeaders,
+                    });
+                }
+                return callback(err, {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                });
+            }
+            callback(null, {
+                statusCode: 200,
+                body: JSON.stringify(artifact),
+                headers: corsHeaders,
             });
         });
     }
@@ -356,7 +448,9 @@ export default class EventSourceService {
                 this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
                     messageId: body.messageId,
                     error: true,
-                    response: err
+                    response: {
+                        err: err.toString(),
+                    },
                 }, (err) => {
                     if (err) {
                         console.error("Error sending error to client");
@@ -377,8 +471,8 @@ export default class EventSourceService {
     }
     getGraph(event: any, context: any, callback: (err: any, response: any) => void) {
         const path = event.path.version === "latest"
-            ? `graphs/projections/latest/${event.path.id}.json`
-            : `graphs/${event.path.id}.${event.path.version}.json`;
+            ? `graphs/projections/latest/${event.pathParameters.id}.json`
+            : `graphs/${event.pathParameters.id}.${event.pathParameters.version}.json`;
         this.store.get(path, (err, graph) => {
             if (err) {
                 return callback(err, null);
@@ -387,43 +481,63 @@ export default class EventSourceService {
         });
     }
     _deleteGraph(id: string, callback: (err: any, response: any) => void) {
-        Promise.all([
-            new Promise((success, failure) => {
-                this.store.list(`graphs/${id}`, (err, events) => {
-                    Promise.all(events.map((ev) => {
-                        return new Promise((pass, fail) => {
-                            this.store.remove(ev.Key, (err) => {
-                                if (err) {
-                                    return fail(err);
-                                }
-                                pass();
-                            });
-                        });
-                    })).then(() => {
+        this.store.head(`graphs/projections/latest/${id}.json`, (err, data) => {
+            if (err) {
+                return console.error("Delete graph all failure: ", err);
+            }
+            const url = data.Metadata["x-amz-meta-url"];
+            Promise.all([
+                new Promise((success, failure) => {
+                    this.store.removePath(`graphs/${id}/projections`, (err) => {
+                        if (err) {
+                            return failure(err);
+                        }
                         success();
-                    }).catch((err) => {
-                        failure(err);
                     });
-                });
-            }),
-            new Promise((success, failure) => {
-                this.store.remove(`graphs/projections/latest/${id}.json`, (err) => {
+                }),
+                new Promise((success, failure) => {
+                    this.store.removePath(`graphs/${id}/events`, (err) => {
+                        if (err) {
+                            return failure(err);
+                        }
+                        success();
+                    });
+                }),
+                new Promise((success, failure) => {
+                    this.store.remove(`graphs/projections/endpoints/${id}.json`, (err) => {
+                        if (err) {
+                            return failure(err);
+                        }
+                        success();
+                    });
+                }),
+                new Promise((success, failure) => {
+                    this.store.remove(`graphs/projections/endpoints/${url}.json`, (err) => {
+                        if (err) {
+                            return failure(err);
+                        }
+                        success();
+                    });
+                }),
+                new Promise((success, failure) => {
+                    this.store.remove(`graphs/projections/latest/${id}.json`, (err) => {
+                        if (err) {
+                            return failure(err);
+                        }
+                        success();
+                    });
+                }),
+            ]).then(() => {
+                this.updateToc((err) => {
                     if (err) {
-                        return failure(err);
+                        return callback(err, null);
                     }
-                    success();
+                    callback(null, null);
                 });
-            }),
-        ]).then(() => {
-            this.updateToc((err) => {
-                if (err) {
-                    return callback(err, null);
-                }
-                callback(null, null);
+            }).catch((err) => {
+                console.error("Delete graph all failure: ", err);
+                callback(err, null);
             });
-        }).catch((err) => {
-            console.error("Delete graph all failure: ", err);
-            callback(err, null);
         });
     }
     deleteGraph(event: any, context: any, callback: (err: any, response: any) => void) {

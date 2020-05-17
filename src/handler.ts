@@ -58,7 +58,11 @@ function publishVectorWs(event: any, context: any, callback: (err: any, response
 function defaultRoute(event: any, context: any, callback: (err: any, response: any) => void) {
     graphService.router(event, context, callback);
 }
+function getArtifact(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.getArtifact(event, context, callback);
+}
 export {
+    getArtifact,
     publishGraphWs,
     publishVectorWs,
     connect,

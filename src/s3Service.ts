@@ -23,6 +23,24 @@ export default class S3Service {
             callback(null, parsedData);
         });
     }
+    removePath(path: string, callback: (err: any, data: any) => void) {
+        this.list(path, (err, items) => {
+            Promise.all(items.map((item) => {
+                return new Promise((pass, fail) => {
+                    this.remove(item.Key, (err) => {
+                        if (err) {
+                            return fail(err);
+                        }
+                        pass();
+                    });
+                });
+            })).then(() => {
+                callback(null, null);
+            }).catch((err) => {
+                callback(err, null);
+            });
+        });
+    }
     remove(key: string, callback: (err: any, data: any) => void) {
         this.s3.deleteObject({
             Bucket: this.bucketName,
@@ -35,11 +53,18 @@ export default class S3Service {
             callback(null, null);
         });
     }
-    set(key: string, val: any, callback: (err: any, data: any) => void) {
+    head(key: string, callback: (err: any, data: any) => void) {
+        this.s3.headObject({
+            Bucket: this.bucketName,
+            Key: key,
+        }, callback);
+    }
+    set(key: string, val: any, meta: any, callback: (err: any, data: any) => void) {
         this.s3.putObject({
             Body: JSON.stringify(val),
             Bucket: this.bucketName,
             Key: key,
+            Metadata: meta,
         }, (err) => {
             if (err) {
                 console.error("Error writing file", err);

@@ -54,7 +54,7 @@ export default class BroadcastService {
     }
     connect(event: any, context: Context, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
-        this.store.set(`connections/${ctx.connectionId}/${ctx.domainName}`, event, (err) => {
+        this.store.set(`connections/${ctx.connectionId}/${ctx.domainName}`, event, {}, (err) => {
             if (err) {
                 console.error("Cannot create connection record", err);
             }
@@ -122,12 +122,12 @@ export default class BroadcastService {
         if (!body.channelId) {
             throw new TypeError("subscribe: Messages missing channelId from connection: " + ctx.connectionId);
         }
-        this.store.set(`subscriptions-reverse/${ctx.connectionId}/${body.channelId}/${ctx.domainName}`, event, (err) => {
+        this.store.set(`subscriptions-reverse/${ctx.connectionId}/${body.channelId}/${ctx.domainName}`, event, {}, (err) => {
             if (err) {
                 console.error("Cannot create reverse subscription record", err);
             }
         });
-        this.store.set(`subscriptions/${body.channelId}/${ctx.connectionId}/${ctx.domainName}`, event, (err) => {
+        this.store.set(`subscriptions/${body.channelId}/${ctx.connectionId}/${ctx.domainName}`, event, {}, (err) => {
             if (err) {
                 console.error("Cannot create subscription record", err);
             }

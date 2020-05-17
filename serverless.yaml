@@ -147,6 +147,21 @@ functions:
           cors:
             origin: '*'
 
+  artifact:
+    handler: src/handler.getArtifact
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /artifacts/{id}/{version}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 version: true
+          cors:
+            origin: '*'
+
   graph:
     handler: src/handler.getGraph
     timeout: 30
