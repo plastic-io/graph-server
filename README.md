@@ -6,7 +6,7 @@
 4. `npm install`
 5. `sls deploy`
 
-Your service is ready to use.  Take note of the WSS and HTTP domain names.  You will need them when using the [Plastic-IO IDE](https://github.com/plastic-io/graph-editor) and running your server based graphs.
+Your service is ready to use. Take note of the endpoints beginning with `ANY - https://` and `wss://`.  You will need them when using the [Plastic-IO IDE](https://github.com/plastic-io/graph-editor) and running your server based graphs.  Is OK if you forget to write them down, you can see them again by running `sls info`.
 
 # Plastic-IO Graph Server
 
@@ -26,9 +26,9 @@ Additionally, this server provides a multi user environment to develop, share, a
 
 # What are Plastic-IO Graphs?
 
-Plastic-IO graphs are a high level graph programming language built on top of JavaScript and executed with the [Plastic-IO Scheduling Engine](https://github.com/plastic-io/plastic-io).  Plastic-IO graphs are stored as JSON files.  The GUI for [Plastic-IO IDE](https://github.com/plastic-io/graph-editor).
+Plastic-IO graphs are a high level graph programming language built on top of JavaScript and executed with the [Plastic-IO Scheduling Engine](https://github.com/plastic-io/plastic-io).  Plastic-IO graphs are stored as JSON files.  The GUI for Plastic-IO is the [Plastic-IO Graph Editor IDE](https://github.com/plastic-io/graph-editor).
 
-# Executing Graphs
+# Executing Graphs on the Graph Server
 
 You can execute graphs on the server by subscribing events to the lambda "DefaultRoute" in this project.  By default, all unbound HTTP traffic to the domain will come to the graph route.  What graph gets executed is based on the URL.
 
@@ -58,7 +58,7 @@ Because you can share the parts of the graph, and entire hypergraphs, Plastic-IO
 
 ## Maximize Code Reuse
 
-Because each vector and graph in Plastic-IO are implictly modular, this makes it so you can reuse the artifacts you create in other graphs very easily.  Plastic-IO graph server provides a marketplace of graphs and vectors for developers to choose from, safely and securely.
+Because each vector and graph in Plastic-IO are implicitly modular, this makes it so you can reuse the artifacts you create in other graphs very easily.  Plastic-IO graph server provides a marketplace of graphs and vectors for developers to choose from, safely and securely.
 
 See https://github.com/plastic-io/graph-editor for for the GUI client for this server.
 
