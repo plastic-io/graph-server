@@ -1,6 +1,7 @@
 import {Context, S3CreateEvent, APIGatewayEvent, APIGatewayEventRequestContext} from "aws-lambda";
 import Scheduler, {Vector, Graph} from "@plastic-io/plastic-io";
 import S3Service from "./s3Service";
+import * as AWS from "aws-sdk";
 import * as path from "path";
 import BroadcastService from "./broadcastService";
 const STAGE = process.env.STAGE;
@@ -59,15 +60,24 @@ class GraphService {
         const target = parsedPath.ext ? parsedPath.ext.substring(1) : "index";
         const storePath = STAGE === "production"
             ? `graphs/published/endpoints/${graphUrl}.json`
-            : `graphs/endpoints/${graphUrl}.json`;
+            : `graphs/projections/endpoints/${graphUrl}.json`;
+        console.log("Fetching graph ", storePath);
         this.store.get(storePath, (err, graph) => {
             if (err) {
                 return callback(err, null);
             }
+            console.log("Found graph ", graph.id);
             this.graph = graph;
             const timeout = setTimeout(() => {
-                const duration = Date.now() - startTimer;
-                console.log("Request duration " + duration + "ms");
+                const vect = graph.vectors.find((v: any) => {
+                    return v.url === target;
+                });
+                this.send("error")({
+                    graphId: graph.id,
+                    vectorId: vect ? vect.id : undefined,
+                    targetUrl: target,
+                    message: "Response timeout.  You muse respond to HTTP requests within 30 seconds.",
+                });
                 callback(null, {
                     statusCode: 500,
                     body: "internal server error",
@@ -82,39 +92,50 @@ class GraphService {
             const logger = {
                 error: (e: any) => {
                     if (this.logLevel > -1) {
-                        e.logLevel = "error";
-                        this.send("log")(e);
+                        this.send("log")({
+                            level: "error",
+                            err: {
+                                message: e,
+                            }
+                        });
                         console.error(e);
                     }
                 },
                 warn: (e: any) => {
                     if (this.logLevel > 0) {
-                        e.logLevel = "warn";
-                        this.send("log")(e);
+                        this.send("log")({
+                            level: "warn",
+                            message: e
+                        });
                         console.warn(e);
                     }
                 },
                 log: (e: any) => {
                     if (this.logLevel > 1) {
-                        e.logLevel = "log";
-                        this.send("log")(e);
+                        this.send("log")({
+                            level: "log",
+                            message: e
+                        });
                         console.log(e);
                     }
                 },
                 info: (e: any) => {
                     if (this.logLevel > 2) {
-                        e.logLevel = "info";
-                        this.send("log")(e);
+                        this.send("log")({
+                            level: "info",
+                            message: e
+                        });
                         console.info(e);
                     }
                 },
                 debug: (e: any) => {
                     if (this.logLevel > 3) {
-                        e.logLevel = "debug";
-                        this.send("log")(e);
-                        console.info(e);
+                        this.send("log")({
+                            level: "debug",
+                            message: e
+                        });
+                        console.debug(e);
                     }
-                    console.debug(e);
                 },
             };
             if (graph.properties.broadcastConnectors !== undefined && typeof graph.properties.broadcastConnectors === "string") {
@@ -126,12 +147,48 @@ class GraphService {
             if (graph.properties.logLevel !== undefined && !isNaN(graph.properties.logLevel)) {
                 this.logLevel = graph.properties.logLevel;
             }
+            console.log("Instantiate scheduler");
             const scheduler = new Scheduler(graph, {event, context, callback: cb}, this.state, logger);
+            console.log("Add scheduler events");
+            scheduler.addEventListener("set", (e: any) => {
+                if (!e.vectorInterface) {
+                    return;
+                }
+                e.setContext({
+                    event,
+                    context,
+                    callback: cb,
+                    AWS,
+                    console: {
+                        log: (e) => { 
+                            console.log(e);
+                            this.send("log")({level: "log", message: e});
+                        },
+                        warn: (e) => {
+                            console.warn(e);
+                            this.send("log")({level: "warn", message: e});
+                        },
+                        debug: (e) => {
+                            console.debug(e);
+                            this.send("log")({level: "debug", message: e});
+                        },
+                        info: (e) => {
+                            console.info(e);
+                            this.send("log")({level: "info", message: e});
+                        },
+                        error: (e) => {
+                            console.error(e);
+                            this.send("log")({level: "error", err: { message: e }});
+                        },
+                    }
+                });
+            });
             this.graphEvents.forEach((eventName) => {
                 scheduler.addEventListener(eventName, (ev) => {
                     this.send(eventName)(ev);
                 });
             });
+            console.log("Navigate to vector URL: ", event.path);
             scheduler.url(target, event, event.path, null);
         });
     }
