@@ -3,6 +3,7 @@ import {diff, applyChange} from "deep-diff";
 import {CRC32} from "jshashes";
 import S3Service from "./s3Service";
 import BroadcastService from "./broadcastService";
+const tocUpdateTimeout = 250;
 export interface EventSourceEvent {
     id: string;
     graphId: string;
@@ -46,59 +47,62 @@ export default class EventSourceService {
     }
     // TODO something less expensive
     updateToc(callback: (err: any, response: any) => void) {
-        this.store.list("graphs/projections/", (err, graphs) => {
-            if (err) {
-                console.error("Cannot read graphs/projections/ to write TOC.", err);
-                return;
-            }
-            const suffixJsonReg = /\.json$/;
-            const endpointMatch = /.*\/([^\/]+\d?)/;
-            const normalMatch = /.*\/([^\/]+\d?).json/;
-            const toc = {};
-            Promise.all(graphs.filter((item) => {
-                return item.Key !== "graphs/projections/toc.json";
-            }).map((item) => {
-                return new Promise((success, failure) => {
-                    this.store.head(item.Key, (err, data) => {
-                        if (err) {
-                            return failure(new Error(err));
-                        }
-                        Object.keys(data.Metadata).forEach((metaKey) => {
-                            item[metaKey.replace("x-amz-meta-", "")] = data.Metadata[metaKey];
+        const update = () => {
+            this.store.list("graphs/projections/", (err, graphs) => {
+                if (err) {
+                    console.error("Cannot read graphs/projections/ to write TOC.", err);
+                    return;
+                }
+                const suffixJsonReg = /\.json$/;
+                const endpointMatch = /.*\/([^\/]+\d?)/;
+                const normalMatch = /.*\/([^\/]+\d?).json/;
+                const toc = {};
+                Promise.all(graphs.filter((item) => {
+                    return item.Key !== "graphs/projections/toc.json";
+                }).map((item) => {
+                    return new Promise((success, failure) => {
+                        this.store.head(item.Key, (err, data) => {
+                            if (err) {
+                                return failure(new Error(err));
+                            }
+                            Object.keys(data.Metadata).forEach((metaKey) => {
+                                item[metaKey.replace("x-amz-meta-", "")] = data.Metadata[metaKey];
+                            });
+                            if (/^graphs\/projections\/endpoints\//.test(item.Key)) {
+                                item.type = "endpoint";
+                            }
+                            const tocId = item.type === "endpoint" ? ("endpoint/" + item.id) : item.id;
+                            const tocKey = tocId + (/published/.test(item.type) ? ("." + item.version) : "");
+                            toc[tocKey] = item;
+                            success();
                         });
-                        if (/^graphs\/projections\/endpoints\//.test(item.Key)) {
-                            item.type = "endpoint";
-                        }
-                        const tocId = item.type === "endpoint" ? ("endpoint/" + item.id) : item.id;
-                        const tocKey = tocId + (/published/.test(item.type) ? ("." + item.version) : "");
-                        toc[tocKey] = item;
-                        success();
                     });
-                });
-            })).then(() => {
-                this.store.set(`graphs/projections/toc.json`, toc, {}, (err) => {
-                    if (err) {
-                        callback(err, null);
-                        return console.error("Cannot write TOC.", err);
-                    }
-                    callback(null, null);
-                    this.broadcastService.broadcast("toc.json", {
-                        channelId: "toc.json",
-                        response: {
-                            type: "toc",
-                            toc,
-                        },
-                    }, (err) => {
+                })).then(() => {
+                    this.store.set(`graphs/projections/toc.json`, toc, {}, (err) => {
                         if (err) {
-                            console.error("Cannot broadcast TOC.", err);
+                            callback(err, null);
+                            return console.error("Cannot write TOC.", err);
                         }
+                        callback(null, null);
+                        this.broadcastService.broadcast("toc.json", {
+                            channelId: "toc.json",
+                            response: {
+                                type: "toc",
+                                toc,
+                            },
+                        }, (err) => {
+                            if (err) {
+                                console.error("Cannot broadcast TOC.", err);
+                            }
+                        });
                     });
+                }).catch((err) => {
+                    console.error("Cannot broadcast TOC.", err);
+                    callback(err, null);
                 });
-            }).catch((err) => {
-                console.error("Cannot broadcast TOC.", err);
-                callback(err, null);
             });
-        });
+        };
+        setTimeout(update, tocUpdateTimeout);
     }
     getToc(event: any, context: any, callback: (err: any, response: any) => void) {
         this.store.get(`graphs/projections/toc.json`, (err, toc) => {
