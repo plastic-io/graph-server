@@ -136,7 +136,7 @@ export default class EventSourceService {
             const serializedState = JSON.stringify(graph);
             const crc = CRC32(serializedState);
             if (crc !== event.crc) {
-                return callback(new Error(`Event CRC failure.  Expected ${crc} got ${event.crc}.`), null);
+                console.warn(`Event CRC failure.  Expected ${crc} got ${event.crc}.`);
             }
             const ver = Number(graph.version) + 1;
             graph.version = ver;
@@ -179,6 +179,8 @@ export default class EventSourceService {
                         graphId,
                         changes: versionChanges,
                         crc: versionCrc,
+                        time: Date.now(),
+                        userId: event.userId,
                     };
                     // store version event
                     this.store.set(`graphs/${graphId}/events/${versionEvent.id}.json`, versionEvent, {
