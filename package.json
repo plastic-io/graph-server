@@ -1,7 +1,7 @@
 {
-  "name": "communications-platform-orchestration-poc",
+  "name": "@plastic-io/plastic-io",
   "version": "1.0.0",
-  "description": "Basically S3 CRUD functions.",
+  "description": "Services for Plastic-IO Graphs.",
   "scripts": {
     "test": "./node_modules/.bin/jest",
     "build-docs": "./node_modules/.bin/typedoc"
@@ -14,7 +14,6 @@
     "handlebars": "^4.5.0",
     "jest": "^22.4.4",
     "serverless": "^1.69.0",
-    "serverless-cloudfront-distribution-certificate": "0.0.7",
     "serverless-webpack": "^4.4.0",
     "ts-loader": "^3.5.0",
     "typedoc": "^0.16.11",
@@ -23,7 +22,7 @@
   },
   "author": "Tony.Germaneri@patientpop.com",
   "dependencies": {
-    "@plastic-io/plastic-io": "^1.0.12",
+    "@plastic-io/plastic-io": "^1.0.14",
     "deep-diff": "^1.0.2",
     "jshashes": "^1.0.8"
   },

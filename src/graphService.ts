@@ -5,6 +5,7 @@ import * as AWS from "aws-sdk";
 import * as path from "path";
 import BroadcastService from "./broadcastService";
 const STAGE = process.env.STAGE;
+const objectCache = {};
 class GraphService {
     graph: Graph;
     state: any;
@@ -53,6 +54,20 @@ class GraphService {
             });
         }
     }
+    getGraph(key: string, callback: (err: any, graph: any) => void) {
+        if (objectCache[key] && STAGE !== "production") {
+            return callback(null, objectCache[key]);
+        }
+        this.store.get(key, (err, graph) => {
+            if (err) {
+                return callback(err, null);
+            }
+            if (STAGE === "production") {
+                objectCache[key] = graph;
+            }
+            callback(null, graph);
+        });
+    }
     router(event: any, context: Context, callback: (err: any, response: any) => void) {
         const startTimer = Date.now();
         const parsedPath = path.parse(event.path);
@@ -62,7 +77,7 @@ class GraphService {
             ? `graphs/published/endpoints/${graphUrl}.json`
             : `graphs/projections/endpoints/${graphUrl}.json`;
         console.log("Fetching graph ", storePath);
-        this.store.get(storePath, (err, graph) => {
+        this.getGraph(storePath, (err, graph) => {
             if (err) {
                 return callback(err, null);
             }
@@ -147,6 +162,17 @@ class GraphService {
             if (graph.properties.logLevel !== undefined && !isNaN(graph.properties.logLevel)) {
                 this.logLevel = graph.properties.logLevel;
             }
+            function uncaught(err) {
+                this.send("log")({
+                    level: "error",
+                    err: {
+                        message: err ? err.toString() : "Unknown exception error",
+                    }
+                });
+                console.error("Unhandled error", err);
+            }
+            process.on('unhandledRejection', uncaught);
+            process.on('uncaughtException', uncaught);
             console.log("Instantiate scheduler");
             const scheduler = new Scheduler(graph, {event, context, callback: cb}, this.state, logger);
             console.log("Add scheduler events");
@@ -189,7 +215,16 @@ class GraphService {
                 });
             });
             console.log("Navigate to vector URL: ", event.path);
-            scheduler.url(target, event, event.path, null);
+            scheduler.url(target, event, event.path, null).then(() => {
+                console.log("URL promise completed: ", event.path);
+            }).catch((err) => {
+                this.send("log")({
+                    level: "error",
+                    err: {
+                        message: err,
+                    }
+                });
+            });
         });
     }
 }

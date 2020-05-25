@@ -1,6 +1,6 @@
 # Installation
 
-1. Setup AWS CLI profile on the machine you are using to deploy this project
+1. [Install serverless and setup your AWS profile](https://www.serverless.com/framework/docs/getting-started/)
 2. `git clone git@github.com:plastic-io/graph-server.git`
 3. `cd graph-server`
 4. `npm install`
@@ -62,3 +62,20 @@ Because each vector and graph in Plastic-IO are implicitly modular, this makes i
 
 See https://github.com/plastic-io/graph-editor for for the GUI client for this server.
 
+## Client Server Sequence Diagram
+
+    +-----------+ +------------------+ +-----------------------------+       +----------------+
+    |           | |                  | |                             |       |                |
+    |  Browser  | |   Local Graph    | |   Local Remote Graph Copy   |       |  Remote Graph  |
+    |           | |                  | |                             |       |                |
+    +-----+-----+ +--------+---------+ +-------------+---------------+       +--------+-------+
+          |                |                         |                                |
+          |               +++                        |                               +++
+          +----Change---> | | +----Diff Calc----------------Change sent to Server--> | |
+          |               | |                        |                               | |
+          |               | |                       +++                              | |
+          |               | |                       | |                              | |
+          |               | | <----Diff Calc------+ | | <---Change Sent to Client--+ | |
+          |               +++                       +++                              +++
+          |                |                         |                                |
+          |                |                         |                                |
