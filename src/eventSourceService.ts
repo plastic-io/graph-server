@@ -139,6 +139,8 @@ export default class EventSourceService {
                 console.warn(`Event CRC failure.  Expected ${crc} got ${event.crc}.`);
             }
             const ver = Number(graph.version) + 1;
+            graph.properties.lastUpdate = Date.now();
+            graph.properties.lastUpdatedBy = event.userId;
             graph.version = ver;
             graph.vectors.forEach((v: any) => {
                 v.version = ver;
@@ -478,7 +480,7 @@ export default class EventSourceService {
     getGraph(event: any, context: any, callback: (err: any, response: any) => void) {
         const path = event.path.version === "latest"
             ? `graphs/projections/latest/${event.pathParameters.id}.json`
-            : `graphs/${event.pathParameters.id}.${event.pathParameters.version}.json`;
+            : `graphs/${event.pathParameters.id}/projections/${event.pathParameters.id}.${event.pathParameters.version}.json`;
         this.store.get(path, (err, graph) => {
             if (err) {
                 return callback(err, null);
