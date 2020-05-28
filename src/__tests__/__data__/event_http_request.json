@@ -1,0 +1,9 @@
+{
+    "event": {
+        "requestContext": {
+            "domainName": "localhost",
+            "connectionId": "123456"
+        }
+    },
+    "context": {}
+}
