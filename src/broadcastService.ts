@@ -49,8 +49,7 @@ export default class BroadcastService {
                 callback(null, this.okResponse);
             });
         };
-        setTimeout(post, backoffTimer);
-        backoffTimer += BACKOFF_TIMER_ADD;
+        post();
     }
     connect(event: any, context: Context, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;

@@ -4,7 +4,7 @@ plugins:
   - serverless-webpack
 provider:
   name: aws
-  runtime: nodejs10.x
+  runtime: nodejs12.x
   versionFunctions: false
   stackName: ${self:service}-${self:provider.stage}
   stage: ${opt:stage, 'dev'}
