@@ -102,6 +102,12 @@ class GraphService {
                 const duration = Date.now() - startTimer;
                 console.log("Request duration " + duration + "ms");
                 clearTimeout(timeout);
+                if (!response.headers) {
+                    response.headers = {
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Credentials": true,
+                    };
+                }
                 callback(null, response);
             };
             const logger = {

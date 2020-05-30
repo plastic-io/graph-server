@@ -1,7 +1,6 @@
 {
   "name": "@plastic-io/plastic-io",
   "version": "1.0.0",
-  "type": "module",
   "description": "Services for Plastic-IO Graphs.",
   "scripts": {
     "test": "jest",
@@ -22,11 +21,11 @@
     "ts-loader": "^7.0.5",
     "typedoc": "^0.16.11",
     "typescript": "^2.9.2",
-    "webpack": "^3.12.0"
+    "webpack": "^4.43.0"
   },
-  "author": "Tony.Germaneri@patientpop.com",
+  "author": "TonyGermaneri@gmail.com",
   "dependencies": {
-    "@plastic-io/plastic-io": "^1.0.14",
+    "@plastic-io/plastic-io": "^1.0.17",
     "deep-diff": "^1.0.2",
     "jshashes": "^1.0.8"
   }
