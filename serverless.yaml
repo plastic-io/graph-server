@@ -92,6 +92,11 @@ functions:
     events:
       - websocket:
           route: addEvent
+      - http:
+          method: POST
+          path: /addEvent
+          cors:
+            origin: '*'
 
   listSubscribers:
     handler: src/handler.listSubscribers
