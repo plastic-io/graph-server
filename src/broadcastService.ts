@@ -1,8 +1,10 @@
 import {Context, S3CreateEvent, APIGatewayEvent} from "aws-lambda";
 import {ApiGatewayManagementApi} from "aws-sdk";
 import S3Service from './s3Service';
+import {newId} from './eventSourceService';
 const STAGE = process.env.STAGE;
 const BACKOFF_TIMER_ADD = 35;
+const CHUNK_SIZE = 35000;
 export default class BroadcastService {
     store: S3Service;
     okResponse: {statusCode: number};
@@ -11,6 +13,22 @@ export default class BroadcastService {
             statusCode: 200
         };
         this.store = new S3Service(process.env.S3_BUCKET);
+    }
+    createChunks(msg, chunkCollectionId, chunkSize) {
+        const chunks = [];
+        const parts = Math.ceil(msg.length / chunkSize);
+        const totalLength = msg.length;
+        for (let x = 0, part = 0; x < totalLength; x += chunkSize, part += 1) {
+            chunks.push({
+                chunkCollectionId,
+                totalLength,
+                chunkSize,
+                parts,
+                part,
+                value: msg.substring(x, x + chunkSize),
+            });
+        }
+        return chunks;
     }
     postToClient(domainName: string, connectionId: string, message: any, callback: (err: any, data: any) => void) {
         const getCircularReplacer = () => {
@@ -25,31 +43,47 @@ export default class BroadcastService {
                 return value;
             };
         };
-        let backoffTimer = 0;
-        const buffer = Buffer.from(JSON.stringify(message, getCircularReplacer()));
-        const client = new ApiGatewayManagementApi({
-            apiVersion: "2018-11-29",
-            endpoint: `https://${domainName}/${STAGE}`,
-        });
-        const post = () => {
-            client.postToConnection({
-                ConnectionId: connectionId,
-                Data: buffer,
-            }, (err) => {
-                if (err && err.statusCode === 410) {
-                    console.error(`Error transmitting to a connection, client was disconnected unexpectedly domainName: ${domainName} connectionId: ${connectionId}.`);
-                    this._disconnect(domainName, connectionId);
-                } else if (err && err.statusCode === 429) {
-                    console.warn("Connection throttled, backing off: ", err);
-                    backoffTimer += BACKOFF_TIMER_ADD;
-                    return setTimeout(post, backoffTimer);
-                } else if (err) {
-                    console.error("Error transmitting to a connection: ", err);
-                }
-                callback(null, this.okResponse);
+        const postChunk = (chunk: string) => {
+            let backoffTimer = 0;
+            const buffer = Buffer.from(chunk);
+            const client = new ApiGatewayManagementApi({
+                apiVersion: "2018-11-29",
+                endpoint: `https://${domainName}/${STAGE}`,
             });
-        };
-        post();
+            const post = () => {
+                client.postToConnection({
+                    ConnectionId: connectionId,
+                    Data: buffer,
+                }, (err) => {
+                    if (err && err.statusCode === 410) {
+                        console.error(`Error transmitting to a connection, client was disconnected unexpectedly domainName: ${domainName} connectionId: ${connectionId}.`);
+                        this._disconnect(domainName, connectionId);
+                    } else if (err && err.statusCode === 429) {
+                        console.warn("Connection throttled, backing off: ", err);
+                        backoffTimer += BACKOFF_TIMER_ADD;
+                        return setTimeout(post, backoffTimer);
+                    } else if (err) {
+                        console.error("Error transmitting to a connection: ", err);
+                    }
+                    callback(null, this.okResponse);
+                });
+            };
+            post();
+        }
+        const msgVal = JSON.stringify(message, getCircularReplacer());
+        const valueLen = msgVal.length;
+        if (valueLen > CHUNK_SIZE) {
+            const chunkCollectionId = newId();
+            const chunks = this.createChunks(msgVal, chunkCollectionId, CHUNK_SIZE);
+            console.log("POST CHUNK COLLECTION", chunkCollectionId, valueLen, chunks);
+            chunks.forEach((chunk: any) => {
+                const val = JSON.stringify(chunk);
+                console.log("POST chunk", val);
+                postChunk(val);
+            });
+            return;
+        }
+        postChunk(msgVal);
     }
     connect(event: any, context: Context, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;

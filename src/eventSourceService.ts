@@ -290,15 +290,26 @@ export default class EventSourceService {
                     return callback(err, null);
                 });
             }
-            this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
-                messageId: body.messageId,
-                response: { success: true, event },
-            }, (err) => {
-                if (err) {
-                    console.error("Error sending graph to client");
-                }
+            if (ctx.connectionId) {
+                this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
+                    messageId: body.messageId,
+                    response: { success: true, event },
+                }, (err) => {
+                    if (err) {
+                        console.error("Error sending graph to client");
+                    }
+                });
+                callback(null, this.okResponse);
+                return;
+            }
+            callback(null, {
+                statusCode: 200,
+                body: JSON.stringify({
+                    messageId: body.messageId,
+                    response: { success: true, event },
+                }),
+                headers: corsHeaders,
             });
-            callback(null, this.okResponse);
         });
     }
     publishVectorWs(event: any, context: any, callback: (err: any, response: any) => void) {
