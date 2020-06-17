@@ -178,6 +178,8 @@ export default class EventSourceService {
                     "url": graph.url || graph.id,
                     "user-id": event.userId || "Unknown",
                 };
+                // hide the token
+                delete event.token;
                 Promise.all([
                     new Promise((success, failure) => {
                         // store latest projection
