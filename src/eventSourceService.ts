@@ -3,9 +3,11 @@ import {diff, applyChange} from "deep-diff";
 import {CRC32} from "jshashes";
 import S3Service from "./s3Service";
 import BroadcastService from "./broadcastService";
+import AuthService from "./authService";
 const tocUpdateTimeout = 250;
 export interface EventSourceEvent {
     id: string;
+    token: string;
     graphId: string;
     crc: number;
     version: number;
@@ -26,12 +28,14 @@ export default class EventSourceService {
     store: S3Service;
     broadcastService: BroadcastService;
     okResponse: {statusCode: number};
+    authService: AuthService;
     constructor() {
         this.broadcastService = new BroadcastService();
         this.okResponse = {
             statusCode: 200
         };
         this.store = new S3Service(process.env.S3_BUCKET);
+        this.authService = new AuthService();
     }
     getEvents(event: any, context: any, callback: (err: any, response: any) => void) {
         this.store.list(`graphs/${event.pathParameters.id}/events/`, (err, events) => {
@@ -119,8 +123,7 @@ export default class EventSourceService {
             });
         });
     }
-    add(event: {graphId: string, crc: number, changes: any[], id: string, graph: any, time?: number, userId: string},
-        callback: (err: any, response: any) => void) {
+    add(event: {token: string, graphId: string, crc: number, changes: any[], id: string, graph: any, time?: number, userId: string}, callback: (err: any, response: any) => void) {
         const graphId = event.graphId;
         this.store.get(`graphs/projections/latest/${graphId}.json`, (err, graph) => {
             if (err && /NoSuchKey/.test(err.toString())) {
@@ -129,142 +132,165 @@ export default class EventSourceService {
             } else if (err) {
                 return callback(err, null);
             }
-            event.time = Date.now();
-            event.changes.forEach((change) => {
-                applyChange(graph, true, change);
-            });
-            const serializedState = JSON.stringify(graph);
-            const crc = CRC32(serializedState);
-            if (crc !== event.crc) {
-                console.warn(`Event CRC failure.  Expected ${crc} got ${event.crc}.`);
-            }
-            const ver = Number(graph.version) + 1;
-            graph.properties.lastUpdate = Date.now();
-            graph.properties.lastUpdatedBy = event.userId;
-            graph.version = ver;
-            graph.vectors.forEach((v: any) => {
-                v.version = ver;
-                v.edges.forEach((edge: any) => {
-                    edge.connectors.forEach((connector: any) => {
-                        connector.version = ver;
-                    });
+            const submitEvent = (user: any) => {
+                // require created and updated to contain the correct userId or fail
+                for (const change of event.changes) {
+                    if ((change.path[0] === "createdBy" || change.path[0] === "lastUpdatedBy")
+                        && change.path.length === 1
+                        && (change.kind === "E" || change.kind === "A")) {
+                        if (change.rhs !== user.email) {
+                            return callback("Cannot add changes on behalf of another user.", null);
+                        }
+                    }
+                }
+                event.userId = user.email;
+                event.time = Date.now();
+                event.changes.forEach((change) => {
+                    applyChange(graph, true, change);
                 });
-            });
-            const versionChanges = diff(JSON.parse(serializedState), graph);
-            const versionCrc = CRC32(JSON.stringify(graph));
-            const graphMeta = {
-                "id": graph.id,
-                "name": graph.properties.name || "Unnamed",
-                "version": String(graph.version),
-                "description": graph.properties.description || "No description",
-                "icon": graph.properties.icon || "mdi-graph",
-                "tags": graph.properties.tags.join(",") || "None",
-                "type": "graph",
-                "url": graph.url || graph.id,
-                "user-id": event.userId || "Unknown",
-            };
-            Promise.all([
-                new Promise((success, failure) => {
-                    // store latest projection
-                    this.store.set(`graphs/projections/latest/${graphId}.json`, graph, graphMeta, (err) => {
-                        if (err) {
-                            console.error("Error storing latest version.", graphMeta);
-                            return failure(err);
-                        }
-                        // TODO maybe don't do this every time, check the event.changes for triggers
-                        this.updateToc(success);
-                    });
-                }),
-                new Promise((success, failure) => {
-                    const versionEvent = {
-                        id: newId(),
-                        graphId,
-                        changes: versionChanges,
-                        crc: versionCrc,
-                        time: Date.now(),
-                        userId: event.userId,
-                    };
-                    // store version event
-                    this.store.set(`graphs/${graphId}/events/${versionEvent.id}.json`, versionEvent, {
-                        ...graphMeta,
-                        type: "event",
-                    }, (err) => {
-                        if (err) {
-                            console.error("Error storing version event.", graphMeta);
-                            return failure(err);
-                        }
-                        success();
-                        // broadcast edit and version events
-                        this.broadcastService.broadcast("graph-event-" + graphId, {
-                            channelId: "graph-event-" + graphId,
-                            response: [event, versionEvent],
-                        }, (err) => {
-                            if (err) {
-                                return console.error("Error sending message to graph event subscribers.", graphMeta);
-                            }
+                const serializedState = JSON.stringify(graph);
+                const crc = CRC32(serializedState);
+                if (crc !== event.crc) {
+                    console.warn(`Event CRC failure.  Expected ${crc} got ${event.crc}.`);
+                }
+                const ver = Number(graph.version) + 1;
+                graph.properties.lastUpdate = Date.now();
+                graph.properties.lastUpdatedBy = event.userId;
+                graph.version = ver;
+                graph.vectors.forEach((v: any) => {
+                    v.version = ver;
+                    v.edges.forEach((edge: any) => {
+                        edge.connectors.forEach((connector: any) => {
+                            connector.version = ver;
                         });
                     });
-                }),
-                new Promise((success, failure) => {
-                    // store edit event
-                    this.store.set(`graphs/${graphId}/events/${event.id}.json`, event, {
-                        ...graphMeta,
-                        type: "event",
-                    }, (err) => {
-                        if (err) {
-                            console.error("Error storing edit event.", graphMeta);
-                            return failure(err);
-                        }
-                        success();
-                    });
-                }),
-                new Promise((success, failure) => {
-                    // store versioned projection
-                    this.store.set(`graphs/${graphId}/projections/${graphId}.${graph.version}.json`, graph, graphMeta, (err) => {
-                        if (err) {
-                            console.error("Error storing version projection.", graphMeta);
-                            return failure(err);
-                        }
-                        success();
-                    });
-                }),
-                new Promise((success, failure) => {
-                    let urlChange = event.changes.find((change) => {
-                        return change.path[0] === "url"
-                            && change.path.length === 1
-                            && change.kind === "E";
-                    });
-                    if (urlChange) {
-                        this.store.remove(`graphs/projections/endpoints/${urlChange.lhs}.json`, (err) => {
+                });
+                const versionChanges = diff(JSON.parse(serializedState), graph);
+                const versionCrc = CRC32(JSON.stringify(graph));
+                const graphMeta = {
+                    "id": graph.id,
+                    "name": graph.properties.name || "Unnamed",
+                    "version": String(graph.version),
+                    "description": graph.properties.description || "No description",
+                    "icon": graph.properties.icon || "mdi-graph",
+                    "tags": graph.properties.tags.join(",") || "None",
+                    "type": "graph",
+                    "url": graph.url || graph.id,
+                    "user-id": event.userId || "Unknown",
+                };
+                Promise.all([
+                    new Promise((success, failure) => {
+                        // store latest projection
+                        this.store.set(`graphs/projections/latest/${graphId}.json`, graph, graphMeta, (err) => {
                             if (err) {
-                                console.error("Error removing previous named endpoint.", graphMeta);
+                                console.error("Error storing latest version.", graphMeta);
+                                return failure(err);
+                            }
+                            // TODO maybe don't do this every time, check the event.changes for triggers
+                            this.updateToc(success);
+                        });
+                    }),
+                    new Promise((success, failure) => {
+                        const versionEvent = {
+                            id: newId(),
+                            graphId,
+                            changes: versionChanges,
+                            crc: versionCrc,
+                            time: Date.now(),
+                            userId: event.userId,
+                        };
+                        // store version event
+                        this.store.set(`graphs/${graphId}/events/${versionEvent.id}.json`, versionEvent, {
+                            ...graphMeta,
+                            type: "event",
+                        }, (err) => {
+                            if (err) {
+                                console.error("Error storing version event.", graphMeta);
+                                return failure(err);
+                            }
+                            success();
+                            // broadcast edit and version events
+                            this.broadcastService.broadcast("graph-event-" + graphId, {
+                                channelId: "graph-event-" + graphId,
+                                response: [event, versionEvent],
+                            }, (err) => {
+                                if (err) {
+                                    return console.error("Error sending message to graph event subscribers.", graphMeta);
+                                }
+                            });
+                        });
+                    }),
+                    new Promise((success, failure) => {
+                        // store edit event
+                        this.store.set(`graphs/${graphId}/events/${event.id}.json`, event, {
+                            ...graphMeta,
+                            type: "event",
+                        }, (err) => {
+                            if (err) {
+                                console.error("Error storing edit event.", graphMeta);
                                 return failure(err);
                             }
                             success();
                         });
-                    } else {
-                        success();
-                    }
-                }),
-                // store endpoint graph
-                new Promise((success, failure) => {
-                    this.store.set(`graphs/projections/endpoints/${graph.url}.json`, graph, {
-                        ...graphMeta,
-                        type: "endpoint",
-                    }, (err) => {
-                        if (err) {
-                            console.error("Error storing endpoint.", graphMeta);
-                            return failure(err);
+                    }),
+                    new Promise((success, failure) => {
+                        // store versioned projection
+                        this.store.set(`graphs/${graphId}/projections/${graphId}.${graph.version}.json`, graph, graphMeta, (err) => {
+                            if (err) {
+                                console.error("Error storing version projection.", graphMeta);
+                                return failure(err);
+                            }
+                            success();
+                        });
+                    }),
+                    new Promise((success, failure) => {
+                        let urlChange = event.changes.find((change) => {
+                            return change.path[0] === "url"
+                                && change.path.length === 1
+                                && change.kind === "E";
+                        });
+                        if (urlChange) {
+                            this.store.remove(`graphs/projections/endpoints/${urlChange.lhs}.json`, (err) => {
+                                if (err) {
+                                    console.error("Error removing previous named endpoint.", graphMeta);
+                                    return failure(err);
+                                }
+                                success();
+                            });
+                        } else {
+                            success();
                         }
-                        success();
-                    });
-                }),
-            ]).then(() => {
-                console.log("add event success");
-                callback(null, this.okResponse);
-            }).catch((err) => {
-                console.log("add event failure", err);
-                callback(err, null);
+                    }),
+                    // store endpoint graph
+                    new Promise((success, failure) => {
+                        this.store.set(`graphs/projections/endpoints/${graph.url}.json`, graph, {
+                            ...graphMeta,
+                            type: "endpoint",
+                        }, (err) => {
+                            if (err) {
+                                console.error("Error storing endpoint.", graphMeta);
+                                return failure(err);
+                            }
+                            success();
+                        });
+                    }),
+                ]).then(() => {
+                    console.log("add event success");
+                    callback(null, this.okResponse);
+                }).catch((err) => {
+                    console.log("add event failure", err);
+                    callback(err, null);
+                });
+            };
+            // authenticate change
+            this.authService.userInfo(event.token, (err, user) => {
+                if (err) {
+                    console.log("add event failure, cannot lookup user:", err);
+                    callback(err, null);
+                    return;
+                }
+                console.log("add event, got user", user);
+                submitEvent(user);
             });
         });
     }
@@ -276,19 +302,23 @@ export default class EventSourceService {
         event.userId = ctx.identity.userArn || "Unknown userArn";
         this.add(event, (err) => {
             if (err) {
-                return this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
-                    messageId: event.id,
-                    error: true,
-                    response: {
-                        eventId: event.id,
-                        err: err.toString(),
-                    },
-                }, (err) => {
-                    if (err) {
-                        console.error("Error sending graph to client");
-                    }
-                    return callback(err, null);
-                });
+                if (ctx.connectionId) {
+                    this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
+                        messageId: event.id,
+                        error: true,
+                        response: {
+                            eventId: event.id,
+                            err: err.toString(),
+                        },
+                    }, (err) => {
+                        if (err) {
+                            console.error("Error sending graph to client");
+                        }
+                        return callback(err, null);
+                    });
+                    return;
+                }
+                return callback(err, null);
             }
             if (ctx.connectionId) {
                 this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {

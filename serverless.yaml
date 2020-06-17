@@ -31,7 +31,12 @@ provider:
     API_REGION: ${self:provider.region}
     S3_BUCKET: ${self:custom.s3Bucket}
     STAGE: ${self:provider.stage}
-
+    AUTH0_CLIENT_ID: ${self:custom.auth0ClientId}
+    AUTH0_PUBLIC_KEY: ${self:custom.auth0PublicKey}
+    AUTH0_AUDIENCE: ${self:custom.auth0Audience}
+    AUTH0_ISSUER: ${self:custom.auth0Issuer}
+    AUTH0_ALGORITHM: ${self:custom.auth0Algorithm}
+    AUTH0_API: ${self:custom.auth0Api}
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"
   # required for websocket apis
   # this selects from your payload what your "route" parameter is
@@ -41,9 +46,17 @@ provider:
 custom:
   prefix: ${opt:prefix, 'plastic'}
   s3Bucket: "${opt:prefix, 'plastic'}-plastic-site"
+  auth0Api: ${opt:auth0Api, 'https://dev-7q-g69up.us.auth0.com/'}
+  auth0Issuer: ${opt:auth0Issuer, 'https://dev-7q-g69up.us.auth0.com/'}
+  auth0Algorithm: ${opt:auth0Algorithm, 'RS256'}
+  auth0Audience: ${opt:auth0Audience, 'plastic-io-graph-server'}
+  auth0ClientId: ${opt:auth0ClientId, 'VCDSy72k7efF46kRfsJyizaXOl1gtUKl'}
+  auth0PublicKey: ${file(${opt:auth0PublicKeyFile, './public_key.pem'})}
 
 functions:
-  # manage connection and disconnection of clients
+  auth:
+    handler: src/handler.auth
+
   connect:
     handler: src/handler.connect
     events:
@@ -95,6 +108,10 @@ functions:
       - http:
           method: POST
           path: /addEvent
+          authorizer:
+            name: auth
+            identitySource: method.request.header.Authorization
+            type: token
           cors:
             origin: '*'
 
@@ -227,6 +244,30 @@ resources:
       Properties:
         AccessControl: Private
         BucketName: ${self:custom.s3Bucket}
+    # These reponses are needed for custom authorizer failures cors support
+    GatewayResponse:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+        ResponseType: EXPIRED_TOKEN
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+        StatusCode: '401'
+    AuthFailureGatewayResponse:
+      Type: 'AWS::ApiGateway::GatewayResponse'
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+        ResponseType: UNAUTHORIZED
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+        StatusCode: '401'
+
+
+
   Outputs:
     Prefix:
       Value: ${self:custom.prefix}

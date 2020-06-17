@@ -27,6 +27,8 @@
   "dependencies": {
     "@plastic-io/plastic-io": "^1.0.17",
     "deep-diff": "^1.0.2",
-    "jshashes": "^1.0.8"
+    "jshashes": "^1.0.8",
+    "jsonwebtoken": "^8.5.1",
+    "node-fetch": "^2.6.0"
   }
 }

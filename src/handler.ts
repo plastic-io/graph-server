@@ -1,9 +1,14 @@
 import EventSourceService from './eventSourceService';
 import BroadcastService from './broadcastService';
+import AuthService from './authService';
 import GraphService from './graphService';
 const broadcastService = new BroadcastService();
 const eventSourceService = new EventSourceService();
 const graphService = new GraphService();
+const authService = new AuthService();
+function auth(event: any, context: any, callback: (err: any, response: any) => void) {
+    authService.authHttpEvent(event, context, callback);
+}
 function connect(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.connect(event, context, callback);
 }
@@ -62,6 +67,7 @@ function getArtifact(event: any, context: any, callback: (err: any, response: an
     eventSourceService.getArtifact(event, context, callback);
 }
 export {
+    auth,
     getArtifact,
     publishGraphWs,
     publishVectorWs,
