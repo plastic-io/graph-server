@@ -1,4 +1,5 @@
 import {Context, S3CreateEvent, APIGatewayEvent} from "aws-lambda";
+import * as Automerge from "automerge";
 import {diff, applyChange} from "deep-diff";
 import {CRC32} from "jshashes";
 import S3Service from "./s3Service";
@@ -9,12 +10,22 @@ export interface EventSourceEvent {
     graphId: string;
     crc: number;
     version: number;
-    changes: any[];
+    changes: any;
 };
+interface GraphEvent {
+    graphId: string;
+    crc: number;
+    changes: any;
+    id: string;
+    graph: any;
+    time?: number;
+    userId: string;
+    isNewGraph: boolean;
+}
 /** Creates a new v4 UUID */
 export function newId() {
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-        var r = Math.random() * 16 | 0, v = c == "x" ? r : (r & 0x3 | 0x8); // eslint-disable-line 
+        var r = Math.random() * 16 | 0, v = c == "x" ? r : (r & 0x3 | 0x8); // eslint-disable-line
         return v.toString(16);
     });
 }
@@ -119,42 +130,48 @@ export default class EventSourceService {
             });
         });
     }
-    add(event: {graphId: string, crc: number, changes: any[], id: string, graph: any, time?: number, userId: string},
-        callback: (err: any, response: any) => void) {
+    add(event: GraphEvent, callback: (err: any, response: any) => void) {
         const graphId = event.graphId;
+        // TODO: Deal with very high concurrency.  I think this will fall apart
+        // as lambda A fetches from S3 lambda B is writing change, this makes lambda A
+        // miss the record the lambda B wrote.  Maybe give it a timeout an apply it again?
+        // not a bad idea... CRDT should allow that behavior ... double writes
         this.store.get(`graphs/projections/latest/${graphId}.json`, (err, graph) => {
-            if (err && /NoSuchKey/.test(err.toString())) {
-                graph = {};
-                console.log("No graph found.  Using empty object.");
+            // !! makes isNewGraph a boolean and not null in the response
+            const isNewGraph = !!(err && /NoSuchKey/.test(err.toString()));
+            if (isNewGraph) {
+                // no graph, assume payload was a saved automerge document
+                graph = Automerge.load(event.changes, event.userId);
             } else if (err) {
+                // some other terminal error, report as much to the client
                 return callback(err, null);
             }
-            event.time = Date.now();
-            event.changes.forEach((change) => {
-                applyChange(graph, true, change);
-            });
-            const serializedState = JSON.stringify(graph);
-            const crc = CRC32(serializedState);
-            if (crc !== event.crc) {
-                console.warn(`Event CRC failure.  Expected ${crc} got ${event.crc}.`);
+            const oldGraph = graph;
+            if (!isNewGraph) {
+                graph = Automerge.load(graph, event.userId);
+                graph = Automerge.applyChanges(graph, event.changes);
+                const ver = Number(graph.version) + 1;
+                graph.version = ver;
             }
-            const ver = Number(graph.version) + 1;
             graph.properties.lastUpdate = Date.now();
             graph.properties.lastUpdatedBy = event.userId;
-            graph.version = ver;
             graph.vectors.forEach((v: any) => {
-                v.version = ver;
+                v.version = graph.version;
                 v.edges.forEach((edge: any) => {
                     edge.connectors.forEach((connector: any) => {
-                        connector.version = ver;
+                        connector.version = graph.version;
                     });
                 });
             });
-            const versionChanges = diff(JSON.parse(serializedState), graph);
+            const serializedState = JSON.stringify(graph);
+            const crc = CRC32(serializedState);
+            const versionChanges = event.changes;
             const versionCrc = CRC32(JSON.stringify(graph));
+            const automergeDoc = Automerge.save(graph);
             const graphMeta = {
                 "id": graph.id,
                 "name": graph.properties.name || "Unnamed",
+                "crc": crc.toString(),
                 "version": String(graph.version),
                 "description": graph.properties.description || "No description",
                 "icon": graph.properties.icon || "mdi-graph",
@@ -165,8 +182,19 @@ export default class EventSourceService {
             };
             Promise.all([
                 new Promise((success, failure) => {
-                    // store latest projection
-                    this.store.set(`graphs/projections/latest/${graphId}.json`, graph, graphMeta, (err) => {
+                    // store state
+                    this.store.set(`graphs/projections/latest-state/${graphId}.json`, graph, graphMeta, (err) => {
+                        if (err) {
+                            console.error("Error storing latest version.", graphMeta);
+                            return failure(err);
+                        }
+                        // TODO maybe don't do this every time, check the event.changes for triggers
+                        this.updateToc(success);
+                    });
+                }),
+                new Promise((success, failure) => {
+                    // store Automerge document
+                    this.store.set(`graphs/projections/latest/${graphId}.json`, automergeDoc, graphMeta, (err) => {
                         if (err) {
                             console.error("Error storing latest version.", graphMeta);
                             return failure(err);
@@ -181,6 +209,7 @@ export default class EventSourceService {
                         graphId,
                         changes: versionChanges,
                         crc: versionCrc,
+                        isNewGraph,
                         time: Date.now(),
                         userId: event.userId,
                     };
@@ -195,6 +224,7 @@ export default class EventSourceService {
                         }
                         success();
                         // broadcast edit and version events
+                        event.isNewGraph = isNewGraph;
                         this.broadcastService.broadcast("graph-event-" + graphId, {
                             channelId: "graph-event-" + graphId,
                             response: [event, versionEvent],
@@ -229,13 +259,8 @@ export default class EventSourceService {
                     });
                 }),
                 new Promise((success, failure) => {
-                    let urlChange = event.changes.find((change) => {
-                        return change.path[0] === "url"
-                            && change.path.length === 1
-                            && change.kind === "E";
-                    });
-                    if (urlChange) {
-                        this.store.remove(`graphs/projections/endpoints/${urlChange.lhs}.json`, (err) => {
+                    if (oldGraph.url !== graph.url) {
+                        this.store.remove(`graphs/projections/endpoints/${oldGraph.url}.json`, (err) => {
                             if (err) {
                                 console.error("Error removing previous named endpoint.", graphMeta);
                                 return failure(err);
@@ -540,6 +565,14 @@ export default class EventSourceService {
                 }),
                 new Promise((success, failure) => {
                     this.store.remove(`graphs/projections/latest/${id}.json`, (err) => {
+                        if (err) {
+                            return failure(err);
+                        }
+                        success();
+                    });
+                }),
+                new Promise((success, failure) => {
+                    this.store.remove(`graphs/projections/latest-state/${id}.json`, (err) => {
                         if (err) {
                             return failure(err);
                         }
