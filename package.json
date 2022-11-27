@@ -25,7 +25,7 @@
   },
   "author": "TonyGermaneri@gmail.com",
   "dependencies": {
-    "@plastic-io/plastic-io": "^1.0.17",
+    "@plastic-io/plastic-io": "2.0.1",
     "deep-diff": "^1.0.2",
     "jshashes": "^1.0.8"
   }

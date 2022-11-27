@@ -1,5 +1,5 @@
 import {Context, S3CreateEvent, APIGatewayEvent, APIGatewayEventRequestContext} from "aws-lambda";
-import Scheduler, {Vector, Graph} from "@plastic-io/plastic-io";
+import Scheduler, {Node, Graph} from "@plastic-io/plastic-io";
 import S3Service from "./s3Service";
 import * as AWS from "aws-sdk";
 import * as path from "path";
@@ -46,7 +46,7 @@ class GraphService {
     send(type: string) {
         return (e: any) => {
             e.eventType = type;
-            delete e.vectorInterface;
+            delete e.nodeInterface;
             this.broadcastService._sendToChannel("graph-notify-" + this.graph.id, e, (err) => {
                 if (err) {
                     console.error("Cannot send graph notification.", err);
@@ -84,12 +84,12 @@ class GraphService {
             console.log("Found graph ", graph.id);
             this.graph = graph;
             const timeout = setTimeout(() => {
-                const vect = graph.vectors.find((v: any) => {
+                const vect = graph.nodes.find((v: any) => {
                     return v.url === target;
                 });
                 this.send("error")({
                     graphId: graph.id,
-                    vectorId: vect ? vect.id : undefined,
+                    nodeId: vect ? vect.id : undefined,
                     targetUrl: target,
                     message: "Response timeout.  You muse respond to HTTP requests within 30 seconds.",
                 });
@@ -183,7 +183,7 @@ class GraphService {
             const scheduler = new Scheduler(graph, {event, context, callback: cb}, this.state, logger);
             console.log("Add scheduler events");
             scheduler.addEventListener("set", (e: any) => {
-                if (!e.vectorInterface) {
+                if (!e.nodeInterface) {
                     return;
                 }
                 e.setContext({
@@ -220,7 +220,7 @@ class GraphService {
                     this.send(eventName)(ev);
                 });
             });
-            console.log("Navigate to vector URL: ", event.path);
+            console.log("Navigate to node URL: ", event.path);
             scheduler.url(target, event, event.path, null).then(() => {
                 console.log("URL promise completed: ", event.path);
             }).catch((err) => {

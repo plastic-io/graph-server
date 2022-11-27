@@ -142,7 +142,7 @@ export default class EventSourceService {
             graph.properties.lastUpdate = Date.now();
             graph.properties.lastUpdatedBy = event.userId;
             graph.version = ver;
-            graph.vectors.forEach((v: any) => {
+            graph.nodes.forEach((v: any) => {
                 v.version = ver;
                 v.edges.forEach((edge: any) => {
                     edge.connectors.forEach((connector: any) => {
@@ -312,26 +312,26 @@ export default class EventSourceService {
             });
         });
     }
-    publishVectorWs(event: any, context: any, callback: (err: any, response: any) => void) {
+    publishNodeWs(event: any, context: any, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
         const body = JSON.parse(event.body);
         const graphId = body.graphId;
-        const vectorId = body.vectorId;
+        const nodeId = body.nodeId;
         const version = body.version;
         this.store.get(`graphs/${graphId}/projections/${graphId}.${version}.json`, (err, graph) => {
             if (err) {
-                console.error("Error getting graph to publish vector", err);
+                console.error("Error getting graph to publish node", err);
                 return callback(err, null);
             }
-            const vector = graph.vectors.find((v: any) => {
-                return v.id === vectorId;
+            const node = graph.nodes.find((v: any) => {
+                return v.id === nodeId;
             });
-            if (!vector) {
+            if (!node) {
                 this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
                     messageId: body.messageId,
                     error: true,
                     response: {
-                        err: "Cannot find vector",
+                        err: "Cannot find node",
                     },
                 }, (err) => {
                     if (err) {
@@ -339,36 +339,36 @@ export default class EventSourceService {
                     }
                 });
             }
-            vector.publishedOn = Date.now();
-            vector.userId = event.requestContext.identity.userArn || "Unknown userArn";
-            const vectorMeta = {
+            node.publishedOn = Date.now();
+            node.userId = event.requestContext.identity.userArn || "Unknown userArn";
+            const nodeMeta = {
                 "graph-id": graph.id,
                 "graph-url": graph.url,
-                "id": "artifacts/" + vector.id,
-                "name": vector.properties.name || "Unnamed",
-                "version": String(vector.version),
-                "description": vector.properties.description || "No description",
-                "icon": vector.properties.icon || "mdi-vector-point",
-                "tags": vector.properties.tags.join(",") || "None",
-                "type": "publishedVector",
-                "url": vector.url || vector.id,
-                "artifact-url": "artifacts/" + vector.id + "/" + vector.version,
-                "user-id": vector.userId || "Unknown",
+                "id": "artifacts/" + node.id,
+                "name": node.properties.name || "Unnamed",
+                "version": String(node.version),
+                "description": node.properties.description || "No description",
+                "icon": node.properties.icon || "mdi-node-point",
+                "tags": node.properties.tags.join(",") || "None",
+                "type": "publishedNode",
+                "url": node.url || node.id,
+                "artifact-url": "artifacts/" + node.id + "/" + node.version,
+                "user-id": node.userId || "Unknown",
             }
-            this.store.set(`graphs/projections/published/artifacts/${vector.id}.${vector.version}.json`, vector, vectorMeta, (err) => {
+            this.store.set(`graphs/projections/published/artifacts/${node.id}.${node.version}.json`, node, nodeMeta, (err) => {
                 if (err) {
                     console.error("Error writing published graph to store.");
                     return callback(err, null);
                 }
-                console.log(`Publish vector success ${vector.id}`);
+                console.log(`Publish node success ${node.id}`);
                 this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
                     messageId: body.messageId,
                     error: false,
                     response: {
-                        type: "vector",
-                        url: vector.id,
-                        publishedBy: vector.publishedBy,
-                        publishedOn: vector.publishedOn,
+                        type: "node",
+                        url: node.id,
+                        publishedBy: node.publishedBy,
+                        publishedOn: node.publishedOn,
                     },
                 }, (err) => {
                     if (err) {

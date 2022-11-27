@@ -1,5 +1,5 @@
 service:
-  name: ${self:custom.prefix}-plastic-server
+  name: ${self:custom.prefix}-plastic-io-server
 plugins:
   - serverless-webpack
 provider:
@@ -116,12 +116,12 @@ functions:
       - websocket:
           route: getGraph
 
-  publishVectorWs:
-    handler: src/handler.publishVectorWs
+  publishNodeWs:
+    handler: src/handler.publishNodeWs
     timeout: 30
     events:
       - websocket:
-          route: publishVector
+          route: publishNode
 
   publishGraphWs:
     handler: src/handler.publishGraphWs
