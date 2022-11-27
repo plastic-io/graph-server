@@ -31,7 +31,7 @@ export default class S3Service {
                         if (err) {
                             return fail(err);
                         }
-                        pass();
+                        pass(null);
                     });
                 });
             })).then(() => {

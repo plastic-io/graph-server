@@ -1,14 +1,13 @@
-service:
-  name: ${self:custom.prefix}-plastic-io-server
+service: plastic-io-server
 plugins:
   - serverless-webpack
 provider:
   name: aws
   runtime: nodejs12.x
   versionFunctions: false
-  stackName: ${self:service}-${self:provider.stage}
+  stackName: ${self:service}
   stage: ${opt:stage, 'dev'}
-  region: ${opt:region, 'us-east-1'}
+  region: ${opt:region, 'us-west-1'}
   iamRoleStatements:
     - Effect: Allow
       Action:
@@ -40,7 +39,7 @@ provider:
 
 custom:
   prefix: ${opt:prefix, 'plastic'}
-  s3Bucket: "${opt:prefix, 'plastic'}-plastic-site"
+  s3Bucket: "plastic-site"
 
 functions:
   # manage connection and disconnection of clients

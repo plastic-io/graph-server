@@ -59,7 +59,7 @@ export default class EventSourceService {
                 const toc = {};
                 Promise.all(graphs.filter((item) => {
                     return item.Key !== "graphs/projections/toc.json";
-                }).map((item) => {
+                }).map((item): Promise<void> => {
                     return new Promise((success, failure) => {
                         this.store.head(item.Key, (err, data) => {
                             if (err) {
@@ -193,7 +193,7 @@ export default class EventSourceService {
                             console.error("Error storing version event.", graphMeta);
                             return failure(err);
                         }
-                        success();
+                        success(null);
                         // broadcast edit and version events
                         this.broadcastService.broadcast("graph-event-" + graphId, {
                             channelId: "graph-event-" + graphId,
@@ -215,7 +215,7 @@ export default class EventSourceService {
                             console.error("Error storing edit event.", graphMeta);
                             return failure(err);
                         }
-                        success();
+                        success(null);
                     });
                 }),
                 new Promise((success, failure) => {
@@ -225,7 +225,7 @@ export default class EventSourceService {
                             console.error("Error storing version projection.", graphMeta);
                             return failure(err);
                         }
-                        success();
+                        success(null);
                     });
                 }),
                 new Promise((success, failure) => {
@@ -240,10 +240,10 @@ export default class EventSourceService {
                                 console.error("Error removing previous named endpoint.", graphMeta);
                                 return failure(err);
                             }
-                            success();
+                            success(null);
                         });
                     } else {
-                        success();
+                        success(null);
                     }
                 }),
                 // store endpoint graph
@@ -256,7 +256,7 @@ export default class EventSourceService {
                             console.error("Error storing endpoint.", graphMeta);
                             return failure(err);
                         }
-                        success();
+                        success(null);
                     });
                 }),
             ]).then(() => {
@@ -511,7 +511,7 @@ export default class EventSourceService {
                         if (err) {
                             return failure(err);
                         }
-                        success();
+                        success(null);
                     });
                 }),
                 new Promise((success, failure) => {
@@ -519,7 +519,7 @@ export default class EventSourceService {
                         if (err) {
                             return failure(err);
                         }
-                        success();
+                        success(null);
                     });
                 }),
                 new Promise((success, failure) => {
@@ -527,7 +527,7 @@ export default class EventSourceService {
                         if (err) {
                             return failure(err);
                         }
-                        success();
+                        success(null);
                     });
                 }),
                 new Promise((success, failure) => {
@@ -535,7 +535,7 @@ export default class EventSourceService {
                         if (err) {
                             return failure(err);
                         }
-                        success();
+                        success(null);
                     });
                 }),
                 new Promise((success, failure) => {
@@ -543,7 +543,7 @@ export default class EventSourceService {
                         if (err) {
                             return failure(err);
                         }
-                        success();
+                        success(null);
                     });
                 }),
             ]).then(() => {

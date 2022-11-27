@@ -52,8 +52,8 @@ function getGraphWs(event: any, context: any, callback: (err: any, response: any
 function publishGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.publishGraphWs(event, context, callback);
 }
-function publishVectorWs(event: any, context: any, callback: (err: any, response: any) => void) {
-    eventSourceService.publishVectorWs(event, context, callback);
+function publishNodeWs(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.publishNodeWs(event, context, callback);
 }
 function defaultRoute(event: any, context: any, callback: (err: any, response: any) => void) {
     graphService.router(event, context, callback);
@@ -64,7 +64,7 @@ function getArtifact(event: any, context: any, callback: (err: any, response: an
 export {
     getArtifact,
     publishGraphWs,
-    publishVectorWs,
+    publishNodeWs,
     connect,
     disconnect,
     sendToChannel,

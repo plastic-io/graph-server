@@ -7,9 +7,9 @@
     "build-docs": "./node_modules/.bin/typedoc"
   },
   "devDependencies": {
-    "@babel/core": "^7.10.0",
+    "@babel/core": "^7.20.2",
     "@babel/preset-env": "^7.10.0",
-    "@babel/preset-typescript": "^7.9.0",
+    "@babel/preset-typescript": "^7.18.6",
     "@types/aws-lambda": "^8.10.51",
     "@types/node": "^9.6.56",
     "aws-sdk": "^2.684.0",
@@ -17,11 +17,11 @@
     "handlebars": "^4.5.0",
     "jest": "^26.0.1",
     "serverless": "^3.25.0",
-    "serverless-webpack": "^4.4.0",
-    "ts-loader": "^7.0.5",
+    "serverless-webpack": "^5.11.0",
+    "ts-loader": "^9.4.1",
     "typedoc": "^0.23.21",
     "typescript": "^4.9.3",
-    "webpack": "^4.43.0"
+    "webpack": "^5.75.0"
   },
   "author": "TonyGermaneri@gmail.com",
   "dependencies": {
