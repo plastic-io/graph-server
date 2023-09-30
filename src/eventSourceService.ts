@@ -135,9 +135,6 @@ export default class EventSourceService {
             });
             const serializedState = JSON.stringify(graph);
             const crc = CRC32(serializedState);
-            if (crc !== event.crc) {
-                console.warn(`Event CRC failure.  Expected ${crc} got ${event.crc}.`);
-            }
             const ver = Number(graph.version) + 1;
             graph.properties.lastUpdate = Date.now();
             graph.properties.lastUpdatedBy = event.userId;

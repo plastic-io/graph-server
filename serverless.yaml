@@ -1,9 +1,9 @@
-service: plastic-io-server
+service: plastic-io-graph-server
 plugins:
   - serverless-webpack
 provider:
   name: aws
-  runtime: nodejs12.x
+  runtime: nodejs18.x
   versionFunctions: false
   stackName: ${self:service}
   stage: ${opt:stage, 'dev'}
@@ -32,14 +32,10 @@ provider:
     STAGE: ${self:provider.stage}
 
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"
-  # required for websocket apis
-  # this selects from your payload what your "route" parameter is
-  # from the websocket event types on your function
-  websocketApiRouteSelectionExpression: $request.body.action
 
 custom:
   prefix: ${opt:prefix, 'plastic'}
-  s3Bucket: "plastic-site"
+  s3Bucket: ${self:service}
 
 functions:
   # manage connection and disconnection of clients
