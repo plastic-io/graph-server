@@ -155,7 +155,7 @@ export default class EventSourceService {
                 "version": String(graph.version),
                 "description": graph.properties.description || "No description",
                 "icon": graph.properties.icon || "mdi-graph",
-                "tags": graph.properties.tags.join(",") || "None",
+                "tags": (graph.properties.tags || '').join(",") || "None",
                 "type": "graph",
                 "url": graph.url || graph.id,
                 "user-id": event.userId || "Unknown",
