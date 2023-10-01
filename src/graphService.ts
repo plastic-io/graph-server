@@ -1,5 +1,7 @@
 import {Context, S3CreateEvent, APIGatewayEvent, APIGatewayEventRequestContext} from "aws-lambda";
 import Scheduler, {Node, Graph} from "@plastic-io/plastic-io";
+import {createDeepProxy, type Path} from "./proxy";
+import {toJSON} from "flatted";
 import S3Service from "./s3Service";
 import * as AWS from "aws-sdk";
 import * as path from "path";
@@ -187,7 +189,27 @@ class GraphService {
             process.on('unhandledRejection', uncaught);
             process.on('uncaughtException', uncaught);
             console.log("Instantiate scheduler");
-            const scheduler = new Scheduler(graph, {event, context, callback: cb}, this.state, logger);
+
+            const sendUpdate = (path: Path, value: any): void => {
+                console.log('send update to subscribers');
+                this.send('state-update')(toJSON({ path, value }));
+            };
+
+            const workerObj: { [key: string]: any } = {foo: 'bar'};
+
+            const workerObjProxy = createDeepProxy(workerObj, [], sendUpdate);
+
+            let obj: any = workerObj;
+            const nodes = {} as any;
+            graph.nodes.forEach((node: any) => {
+              nodes[node.id] = {};
+              node.properties.inputs.forEach((input: any) => {
+                nodes[node.id][input.field] = {};
+              });
+            });
+            workerObjProxy.nodes = nodes;
+
+            const scheduler = new Scheduler(graph, {event, context, callback: cb}, workerObjProxy, logger);
             console.log("Add scheduler events");
             scheduler.addEventListener("set", (e: any) => {
                 if (!e.nodeInterface) {
