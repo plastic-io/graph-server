@@ -70,10 +70,17 @@ class GraphService {
     }
     router(event: any, context: Context, callback: (err: any, response: any) => void) {
         const startTimer = Date.now();
-        const parsedPath = path.parse(event.path);
-        const graphUrl = parsedPath.name;
-        const target = parsedPath.ext ? parsedPath.ext.substring(1) : "index";
-        const storePath = STAGE === "production"
+        // Split the path into segments based on both '/' and '.' delimiters
+        const segments = event.path.split(/[/.]/);
+
+        // Extract graphUrl and nodeUrl from the segments
+        const graphUrl = segments[1];  // Assumes that the path starts with '/'
+        const nodeUrl = segments[2];
+
+        const target = nodeUrl || 'index';  // Default to 'index' if nodeUrl is undefined
+
+        // Determine the storePath based on the STAGE environment variable
+        const storePath = STAGE === 'production'
             ? `graphs/published/endpoints/${graphUrl}.json`
             : `graphs/projections/endpoints/${graphUrl}.json`;
         console.log("Fetching graph ", storePath);
