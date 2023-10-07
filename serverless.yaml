@@ -26,10 +26,16 @@ provider:
         - "execute-api:ManageConnections"
       Resource:
         - "arn:aws:execute-api:*:*:**/@connections/*"
+    - Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - "arn:aws:secretsmanager:us-west-1:695527765921:secret:OPENAI_API_KEY-kcvByO"
   environment:
     API_REGION: ${self:provider.region}
     S3_BUCKET: ${self:custom.s3Bucket}
     STAGE: ${self:provider.stage}
+    NODE_OPTIONS: "--enable-source-maps --unhandled-rejections=warn"
 
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"
 
@@ -201,9 +207,22 @@ functions:
                  version: true
           cors:
             origin: '*'
+  panic:
+    handler: src/handler.panic
+    timeout: 6
+    events:
+      - websocket:
+          route: panic
 
   # all other routes are passed to graph execution
   default:
+    handler: src/handler.defaultRoute
+    timeout: 30
+    events:
+      - websocket:
+          route: $default
+
+  httpDefault:
     handler: src/handler.defaultRoute
     timeout: 30
     events:
@@ -212,8 +231,6 @@ functions:
           path: /{proxy+}
           cors:
             origin: '*'
-      - websocket:
-          route: $default
 
 resources:
   Resources:
