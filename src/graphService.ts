@@ -358,8 +358,8 @@ class GraphService {
             if (graph.properties.logLevel !== undefined && !isNaN(graph.properties.logLevel)) {
                 this.logLevel = graph.properties.logLevel;
             }
-            const uncaught = (err) => {
-                this.send("log")({
+            const uncaught = async (err) => {
+                await this.send("log")({
                     level: "error",
                     graphId: graph.id,
                     nodeId: node.id,
@@ -368,8 +368,8 @@ class GraphService {
                         message: err ? err.toString() : "Unknown exception error",
                     }
                 });
-                parentPort.postMessage('shutdown');
                 console.error("router: Unhandled error", err);
+                parentPort.postMessage('shutdown');
                 resolve({ statusCode: 200, body: "ok", });
             }
             process.on('unhandledRejection', uncaught);
@@ -390,9 +390,9 @@ class GraphService {
             let obj: any = workerObj;
             const nodes = {} as any;
             graph.nodes.forEach((node: any) => {
-              nodes[node.id] = {};
+              nodes[node.id] = nodes[node.id] || {};
               node.properties.inputs.forEach((input: any) => {
-                nodes[node.id][input.name] = {};
+                nodes[node.id][input.name] = nodes[node.id][input.name] || undefined;
               });
             });
             workerObjProxy.nodes = nodes;
@@ -492,7 +492,7 @@ if (!isMainThread) {
         parsedData.event,
         parsedData.context)
     .then(() => {
-        console.log("worker: ending router");
+        console.log("worker: ending router, waiting for handles and requests to complete.");
         let activityTimeout;
         const pollActivity = () => {
             clearTimeout(activityTimeout);
