@@ -135,9 +135,6 @@ export default class EventSourceService {
             });
             const serializedState = JSON.stringify(graph);
             const crc = CRC32(serializedState);
-            if (crc !== event.crc) {
-                console.warn(`Event CRC failure.  Expected ${crc} got ${event.crc}.`);
-            }
             const ver = Number(graph.version) + 1;
             graph.properties.lastUpdate = Date.now();
             graph.properties.lastUpdatedBy = event.userId;
@@ -158,7 +155,6 @@ export default class EventSourceService {
                 "version": String(graph.version),
                 "description": graph.properties.description || "No description",
                 "icon": graph.properties.icon || "mdi-graph",
-                "tags": graph.properties.tags.join(",") || "None",
                 "type": "graph",
                 "url": graph.url || graph.id,
                 "user-id": event.userId || "Unknown",
@@ -349,7 +345,6 @@ export default class EventSourceService {
                 "version": String(node.version),
                 "description": node.properties.description || "No description",
                 "icon": node.properties.icon || "mdi-node-point",
-                "tags": node.properties.tags.join(",") || "None",
                 "type": "publishedNode",
                 "url": node.url || node.id,
                 "artifact-url": "artifacts/" + node.id + "/" + node.version,
@@ -421,7 +416,6 @@ export default class EventSourceService {
                 "version": String(graph.version),
                 "description": graph.properties.description || "No description",
                 "icon": graph.properties.icon || "mdi-graph",
-                "tags": graph.properties.tags.join(",") || "None",
                 "type": "publishedGraph",
                 "url": graph.url || graph.id,
                 "artifact-url": "artifacts/" + graph.id + "/" + graph.version,
@@ -489,14 +483,21 @@ export default class EventSourceService {
         callback(null, this.okResponse);
     }
     getGraph(event: any, context: any, callback: (err: any, response: any) => void) {
-        const path = event.path.version === "latest"
+        const path = event.pathParameters.version === "latest"
             ? `graphs/projections/latest/${event.pathParameters.id}.json`
             : `graphs/${event.pathParameters.id}/projections/${event.pathParameters.id}.${event.pathParameters.version}.json`;
+        console.log('getGraph: Getting path:', path);
         this.store.get(path, (err, graph) => {
             if (err) {
+                console.log('getGraph: Error getting path:', err);
                 return callback(err, null);
             }
-            callback(null, graph);
+            console.log('getGraph: Got graph', graph);
+            callback(null, {
+                statusCode: 200,
+                body: JSON.stringify(graph),
+                headers: corsHeaders,
+            });
         });
     }
     _deleteGraph(id: string, callback: (err: any, response: any) => void) {

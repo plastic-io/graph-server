@@ -1,14 +1,19 @@
-service: plastic-io-server
+service: plastic-io-graph-server
 plugins:
   - serverless-webpack
 provider:
   name: aws
-  runtime: nodejs12.x
+  runtime: nodejs18.x
   versionFunctions: false
   stackName: ${self:service}
   stage: ${opt:stage, 'dev'}
   region: ${opt:region, 'us-west-1'}
   iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - lambda:GetLayerVersion
+      Resource:
+        - "arn:aws:lambda:${self:provider.region}:553035198032:layer:git-lambda2:8"
     - Effect: Allow
       Action:
         - s3:GetObject
@@ -26,20 +31,22 @@ provider:
         - "execute-api:ManageConnections"
       Resource:
         - "arn:aws:execute-api:*:*:**/@connections/*"
+    - Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - "arn:aws:secretsmanager:us-west-1:695527765921:secret:OPENAI_API_KEY-kcvByO"
   environment:
     API_REGION: ${self:provider.region}
     S3_BUCKET: ${self:custom.s3Bucket}
     STAGE: ${self:provider.stage}
+    NODE_OPTIONS: "--enable-source-maps --unhandled-rejections=warn"
 
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"
-  # required for websocket apis
-  # this selects from your payload what your "route" parameter is
-  # from the websocket event types on your function
-  websocketApiRouteSelectionExpression: $request.body.action
 
 custom:
   prefix: ${opt:prefix, 'plastic'}
-  s3Bucket: "plastic-site"
+  s3Bucket: ${self:service}
 
 functions:
   # manage connection and disconnection of clients
@@ -205,9 +212,24 @@ functions:
                  version: true
           cors:
             origin: '*'
+  panic:
+    handler: src/handler.panic
+    timeout: 6
+    events:
+      - websocket:
+          route: panic
 
   # all other routes are passed to graph execution
   default:
+    handler: src/handler.defaultRoute
+    layers:
+      - arn:aws:lambda:${self:provider.region}:553035198032:layer:git-lambda2:8
+    timeout: 30
+    events:
+      - websocket:
+          route: $default
+
+  httpDefault:
     handler: src/handler.defaultRoute
     timeout: 30
     events:
@@ -216,8 +238,6 @@ functions:
           path: /{proxy+}
           cors:
             origin: '*'
-      - websocket:
-          route: $default
 
 resources:
   Resources:

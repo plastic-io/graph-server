@@ -1,6 +1,6 @@
 import EventSourceService from './eventSourceService';
 import BroadcastService from './broadcastService';
-import GraphService from './graphService';
+import GraphService, {panic as _panic} from './graphService';
 const broadcastService = new BroadcastService();
 const eventSourceService = new EventSourceService();
 const graphService = new GraphService();
@@ -56,7 +56,16 @@ function publishNodeWs(event: any, context: any, callback: (err: any, response: 
     eventSourceService.publishNodeWs(event, context, callback);
 }
 function defaultRoute(event: any, context: any, callback: (err: any, response: any) => void) {
-    graphService.router(event, context, callback);
+    graphService.init(event, context).then((res) => {
+        console.error("Handler: complete");
+        callback(null, { statusCode: 200, body: "ok", });
+    }).catch((err) => {
+        console.error("Handler: Caught a top level router error", err);
+        callback(null, { statusCode: 200, body: "ok", });
+    });
+}
+function panic(event: any, context: any, callback: (err: any, response: any) => void) {
+    _panic(event, context, callback);
 }
 function getArtifact(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getArtifact(event, context, callback);
@@ -81,4 +90,5 @@ export {
     deleteGraph,
     deleteGraphWs,
     defaultRoute,
+    panic,
 };

@@ -15,7 +15,6 @@ export default class S3Service {
             Key: key,
         }, (err, data) => {
             if (err) {
-                console.error("Cannot get file", err);
                 return callback(err, null);
             }
             const decodedData = data.Body.toString();
