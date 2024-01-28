@@ -483,14 +483,21 @@ export default class EventSourceService {
         callback(null, this.okResponse);
     }
     getGraph(event: any, context: any, callback: (err: any, response: any) => void) {
-        const path = event.path.version === "latest"
+        const path = event.pathParameters.version === "latest"
             ? `graphs/projections/latest/${event.pathParameters.id}.json`
             : `graphs/${event.pathParameters.id}/projections/${event.pathParameters.id}.${event.pathParameters.version}.json`;
+        console.log('getGraph: Getting path:', path);
         this.store.get(path, (err, graph) => {
             if (err) {
+                console.log('getGraph: Error getting path:', err);
                 return callback(err, null);
             }
-            callback(null, graph);
+            console.log('getGraph: Got graph', graph);
+            callback(null, {
+                statusCode: 200,
+                body: JSON.stringify(graph),
+                headers: corsHeaders,
+            });
         });
     }
     _deleteGraph(id: string, callback: (err: any, response: any) => void) {

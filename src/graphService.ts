@@ -484,7 +484,7 @@ export default GraphService;
 if (!isMainThread) {
     const graphService = new GraphService();
     const parsedData = JSON.parse(workerData);
-    console.log("worker: starting router");
+    console.log("Worker: Starting router");
     graphService.router(parsedData.graph,
         parsedData.nodeUrl,
         parsedData.field,
@@ -492,7 +492,7 @@ if (!isMainThread) {
         parsedData.event,
         parsedData.context)
     .then(() => {
-        console.log("worker: ending router, waiting for handles and requests to complete.");
+        console.log("Worker: Ending router, waiting for handles and requests to complete.");
         let activityTimeout;
         const pollActivity = () => {
             clearTimeout(activityTimeout);
@@ -510,7 +510,7 @@ if (!isMainThread) {
                 });
                 if (handles.length === 0 && requests.length === 0) {
                     clearTimeout(activityTimeout);
-                    console.log("worker: empty event loop, worker shutting down");
+                    console.log("Worker: Empty event loop, worker shutting down");
                     parentPort.postMessage('shutdown');
                     return;
                 }
@@ -519,7 +519,7 @@ if (!isMainThread) {
         };
         pollActivity();
     }).catch((err) => {
-        console.log("worker: ending router with error" + err);
+        console.log("Worker: Ending router with error" + err);
         process.exit(1);
     });
     
