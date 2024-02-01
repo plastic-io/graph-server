@@ -129,10 +129,15 @@ export default class EventSourceService {
             } else if (err) {
                 return callback(err, null);
             }
+            const nodeChangeIds = [];
             event.time = Date.now();
             event.changes.forEach((change) => {
                 applyChange(graph, true, change);
+                if (change.path[0] === 'nodes') {
+                    nodeChangeIds.push(graph.nodes[change.path[1]].id);
+                }
             });
+            
             const serializedState = JSON.stringify(graph);
             const crc = CRC32(serializedState);
             const ver = Number(graph.version) + 1;
@@ -140,7 +145,10 @@ export default class EventSourceService {
             graph.properties.lastUpdatedBy = event.userId;
             graph.version = ver;
             graph.nodes.forEach((v: any) => {
+                if (nodeChangeIds.indexOf(v.id) === -1) { return; }
                 v.version = ver;
+                v.properties.lastUpdate = Date.now();
+                v.properties.lastUpdatedBy = event.userId;
                 v.edges.forEach((edge: any) => {
                     edge.connectors.forEach((connector: any) => {
                         connector.version = ver;
