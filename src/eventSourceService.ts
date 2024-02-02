@@ -133,7 +133,12 @@ export default class EventSourceService {
             event.time = Date.now();
             event.changes.forEach((change) => {
                 applyChange(graph, true, change);
-                if (change.path[0] === 'nodes') {
+                if (change
+                    && change.path
+                    && change.path[0] === 'nodes'
+                    && change.path[1]
+                    && graph.nodes
+                    && graph.nodes.length > 0) {
                     nodeChangeIds.push(graph.nodes[change.path[1]].id);
                 }
             });
