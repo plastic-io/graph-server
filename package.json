@@ -27,7 +27,7 @@
   "author": "TonyGermaneri@gmail.com",
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.421.0",
-    "@plastic-io/plastic-io": "2.0.1",
+    "@plastic-io/plastic-io": "2.0.4",
     "deep-diff": "^1.0.2",
     "flatted": "^3.2.9",
     "jshashes": "^1.0.8",

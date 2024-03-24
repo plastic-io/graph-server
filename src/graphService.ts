@@ -91,6 +91,7 @@ class GraphService {
     store: S3Service;
     logLevel: number;
     graphEvents: string[];
+    globalNodes: Node[];
     broadcastConnectors: string[];
     broadcastEvents: string[];
     broadcastService: BroadcastService;
@@ -108,7 +109,6 @@ class GraphService {
             "afterSet",
             "error",
             "warning",
-            "load",
         ];
         this.broadcastEvents = [
             "begin",
@@ -121,6 +121,75 @@ class GraphService {
             "warning",
             "load",
         ];
+    }
+    async loadAndIntegrateLinkedGraphsWithFields(graph: Graph, globalNodes: Node[], rootGraph: Graph): Promise<void> {
+      for (const node of graph.nodes) {
+        if (node.linkedGraph) {
+          const path = `graphs/projections/published/${node.linkedGraph.id}.${node.linkedGraph.version}.json`; 
+          console.log("trying to load linked graph from s3 path " + path);
+          let loadedGraph = await this.getGraphPromise(path);
+          node.linkedGraph.graph = loadedGraph;
+          console.log('loadedGraph', loadedGraph);
+          // this node has potential connected inputs
+          // needing to be proxied into the loaded graph
+          // check every node to see if any connectors
+          // connect to this node, if they do, then rewrite them to
+          // connect to the nodeId specified as inputField.id
+          globalNodes.forEach((globalNode) => {
+            globalNode.edges.forEach((edge) => {
+              edge.connectors.forEach((connector) => {
+                if (connector.nodeId === node.id) {
+                  // this should be connected to another node
+                  Object.keys(node.linkedGraph!.fields.inputs).forEach((inputFieldKey: string) => {
+                    const inputField = node.linkedGraph!.fields.inputs[inputFieldKey];
+                    console.log("linked_graph: input", {
+                      "Source graphId": node.graphId,
+                      "Source nodeId": node.id,
+                      "Target graphId": loadedGraph.id,
+                      "Target nodeId": inputField.id,
+                      "Field": inputFieldKey,
+                    });
+                    connector.graphId = rootGraph.id;
+                    connector.nodeId = inputField.id;
+                  })
+                }
+              })
+            });
+          });
+          // add linked graph nodes into global nodes
+          loadedGraph.nodes.forEach((node: any) => {
+            node.graphId = rootGraph.id;
+          })
+          globalNodes.push(...loadedGraph.nodes);
+          // Process outputs
+          Object.entries(node.linkedGraph.fields.outputs).forEach(([outputHostField, output]) => {
+            node.edges.forEach(edge => {
+              if (outputHostField !== edge.field) return;
+              edge.connectors.forEach(connector => {
+                // Find the corresponding node and add this connector
+                const innerNode = loadedGraph.nodes.find(n => n.id === output.id);
+                if (innerNode) {
+                  const innerEdge = innerNode.edges.find(e => e.field === output.field);
+                  if (innerEdge) {
+                    console.log("linked_graph: output", {
+                      "Source graphId": loadedGraph.id,
+                      "Source nodeId": innerNode.id,
+                      "Target graphId": node.graphId,
+                      "Target nodeId": node.id,
+                      "Field": output.field,
+                    });
+                    connector.graphId = rootGraph.id;
+                    innerEdge.connectors.push({...connector});
+                  }
+                }
+              });
+            });
+          });
+          await this.loadAndIntegrateLinkedGraphsWithFields(loadedGraph, globalNodes, rootGraph);
+          (node as any).loadedGraph = node.linkedGraph;
+          delete node.linkedGraph;
+        }
+      }
     }
     send(type: string) {
         return (e: any): Promise<void> => {
@@ -140,6 +209,16 @@ class GraphService {
                 });
             })
         }
+    }
+    getGraphPromise(key: string): Promise<Graph> {
+        return new Promise((resolve, reject) => {
+            this.getGraph(key, (err, item) => {
+                if (err) {
+                    return reject(err);
+                }
+                resolve(item);
+            });
+        });
     }
     getGraph(key: string, callback: (err: any, graph: any) => void) {
         if (objectCache[key] && STAGE !== "production") {
@@ -168,7 +247,7 @@ class GraphService {
     }
     init(event: any, context: Context): Promise<any> {
         const startTimer = Date.now();
-        return new Promise((resolve) => {
+        return new Promise(async (resolve) => {
             const isWs = !event.path;
             let graphUrl, nodeUrl, target, value, field;
             // normalize ws/http
@@ -195,69 +274,74 @@ class GraphService {
                 ? `graphs/published/endpoints/${graphUrl}.json`
                 : `graphs/projections/endpoints/${graphUrl}.json`;
             console.log('loading s3 graph document', storePath);
-            this.getGraph(storePath, async (err, graph) => {
-                if (err) {
-                    console.error('Error fetching graph', err);
-                    return resolve({
-                        statusCode: 500,
-                        body: "internal server error",
-                    });
-                }
-                this.graph = graph;
-                const node = graph.nodes.find((n) => n.url === nodeUrl);
-                this.node = node;
-                const params = JSON.stringify({
-                    graph,
-                    nodeUrl,
-                    value,
-                    field,
-                    event,
-                    context,
+            let graph;
+            try {
+                graph = JSON.parse(JSON.stringify(await this.getGraphPromise(storePath)));
+            } catch (err) {
+                console.error('Error fetching graph', err);
+                return resolve({
+                    statusCode: 500,
+                    body: "internal server error",
                 });
-                console.log('got graph, starting worker', __filename);
-
-                this.worker = new Worker(__filename, {
-                    workerData: params,
-                });
-                this.worker.on("message", (result) => {
-                    console.log("worker-message", result);
-                    if (result === 'shutdown') {
-                        console.log("Shutting down");
-                        this.worker.terminate().then((exitCode) => {
-                            console.log("Shutdown exit code", exitCode);
-                            resolve({ statusCode: 200, body: "ok", });
-                        });
-                        
-                    }
-                });
-                this.worker.on("error", async (error) => {
-                    console.log("worker-error", error);
-                    console.log("worker-error-this", this);
-                    await this.send("info")({
-                        graphId: graph.id,
-                        nodeId: this.node.id,
-                        nodeUrl: nodeUrl,
-                        field: field,
-                        error: {
-                            message: error,
-                        },
-                    });
-                    resolve({ statusCode: 200, body: "ok", });
-                });
-                this.worker.on("exit", async (exitCode) => {
-                    console.log("worker-exit", exitCode);
-                    await this.send("info")({
-                        graphId: graph.id,
-                        nodeId: this.node.id,
-                        nodeUrl: nodeUrl,
-                        field: field,
-                        message: {exitCode},
-                    });
-                    resolve({ statusCode: 200, body: "ok", });
-                });
-                
-                console.log('worker started, promise waiting for exit');
+            }
+            this.globalNodes = [...graph.nodes] as any[];
+            await this.loadAndIntegrateLinkedGraphsWithFields(graph, this.globalNodes, graph);
+            graph.nodes = this.globalNodes;
+            this.graph = graph;
+            console.log('Integrated Graph', JSON.stringify(this.graph, null, '\n'));
+            const node = graph.nodes.find((n) => n.url === nodeUrl);
+            this.node = node;
+            const params = JSON.stringify({
+                graph,
+                nodeUrl,
+                value,
+                field,
+                event,
+                context,
             });
+            console.log('got graph, starting worker', __filename);
+
+            this.worker = new Worker(__filename, {
+                workerData: params,
+            });
+            this.worker.on("message", (result) => {
+                console.log("worker-message", result);
+                if (result === 'shutdown') {
+                    console.log("Shutting down");
+                    this.worker.terminate().then((exitCode) => {
+                        console.log("Shutdown exit code", exitCode);
+                        resolve({ statusCode: 200, body: "ok", });
+                    });
+                    
+                }
+            });
+            this.worker.on("error", async (error) => {
+                console.log("worker-error", error);
+                console.log("worker-error-this", this);
+                await this.send("info")({
+                    graphId: graph.id,
+                    nodeId: this.node.id,
+                    nodeUrl: nodeUrl,
+                    field: field,
+                    error: {
+                        message: error,
+                    },
+                });
+                resolve({ statusCode: 200, body: "ok", });
+            });
+            this.worker.on("exit", async (exitCode) => {
+                console.log("worker-exit", exitCode);
+                await this.send("info")({
+                    graphId: graph.id,
+                    nodeId: this.node.id,
+                    nodeUrl: nodeUrl,
+                    field: field,
+                    message: {exitCode},
+                });
+                resolve({ statusCode: 200, body: "ok", });
+            });
+            
+            console.log('worker started, promise waiting for exit');
         });
     }
     router(graph: any, nodeUrl: string, field: string, value: string, event: any, context: any): Promise<any> {
@@ -405,6 +489,9 @@ class GraphService {
 
             const scheduler = new Scheduler(graph, {openai, event, context, callback: cb}, workerObjProxy, logger);
 
+            scheduler.addEventListener("load", (e: any) => {
+                return e.setValue(scheduler.graph);
+            });
             scheduler.addEventListener("set", (e: any) => {
                 if (!e.nodeInterface) {
                     return;
