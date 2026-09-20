@@ -3,6 +3,8 @@ import {diff, applyChange} from "deep-diff";
 import {CRC32} from "jshashes";
 import S3Service from "./s3Service";
 import BroadcastService from "./broadcastService";
+import CrdtService from "./crdtService";
+import CrdtStore from "./crdtStore";
 const tocUpdateTimeout = 250;
 export interface EventSourceEvent {
     id: string;
@@ -25,9 +27,13 @@ const corsHeaders = {
 export default class EventSourceService {
     store: S3Service;
     broadcastService: BroadcastService;
+    crdtService: CrdtService;
+    crdtStore: CrdtStore;
     okResponse: {statusCode: number};
     constructor() {
         this.broadcastService = new BroadcastService();
+        this.crdtService = new CrdtService();
+        this.crdtStore = new CrdtStore();
         this.okResponse = {
             statusCode: 200
         };
@@ -119,6 +125,15 @@ export default class EventSourceService {
             });
         });
     }
+    /**
+     * DEPRECATED.  The pre-CRDT write path: read the projection, apply a diff,
+     * write it back.  Two edits arriving together lose one of them, which is
+     * why graphs now sync through `crdtService` instead.
+     *
+     * It is kept only so that an editor bundle still cached on a CDN keeps
+     * working until it is replaced.  Nothing in the current editor calls it,
+     * and it can be deleted once no old clients remain.
+     */
     add(event: {graphId: string, crc: number, changes: any[], id: string, graph: any, time?: number, userId: string},
         callback: (err: any, response: any) => void) {
         const graphId = event.graphId;
@@ -322,6 +337,13 @@ export default class EventSourceService {
         });
     }
     publishNodeWs(event: any, context: any, callback: (err: any, response: any) => void) {
+        // Publishing reads a versioned projection file, and under the CRDT
+        // pipeline those are only written at checkpoints, so force one first.
+        this.crdtService.ensureProjection(JSON.parse(event.body).graphId)
+            .catch((err) => console.error("Cannot refresh projection before publishing a node.", err))
+            .then(() => this._publishNodeWs(event, context, callback));
+    }
+    _publishNodeWs(event: any, context: any, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
         const body = JSON.parse(event.body);
         const graphId = body.graphId;
@@ -391,6 +413,11 @@ export default class EventSourceService {
         });
     }
     publishGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+        this.crdtService.ensureProjection(JSON.parse(event.body).id)
+            .catch((err) => console.error("Cannot refresh projection before publishing a graph.", err))
+            .then(() => this._publishGraphWs(event, context, callback));
+    }
+    _publishGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
         const body = JSON.parse(event.body);
         const graphId = body.id;
@@ -465,9 +492,36 @@ export default class EventSourceService {
     getGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
         const body = JSON.parse(event.body);
-        const path = (body.version === "latest" || !body.version)
+        const wantsLatest = body.version === "latest" || !body.version;
+        const path = wantsLatest
             ? `graphs/projections/latest/${body.id}.json`
             : `graphs/${body.id}/projections/${body.id}.${body.version}.json`;
+        if (wantsLatest) {
+            // A collaborative graph is projected straight from its document, so
+            // a read never waits for the next checkpoint to catch up.
+            this.crdtStore.projectGraph(body.id).then((graph) => {
+                if (!graph) {
+                    return this.getStoredGraphWs(event, path, callback);
+                }
+                this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
+                    messageId: body.messageId,
+                    response: graph,
+                }, (err) => {
+                    if (err) {
+                        console.error("Error sending graph to client");
+                    }
+                });
+                callback(null, this.okResponse);
+            }).catch(() => {
+                this.getStoredGraphWs(event, path, callback);
+            });
+            return;
+        }
+        this.getStoredGraphWs(event, path, callback);
+    }
+    getStoredGraphWs(event: any, path: string, callback: (err: any, response: any) => void) {
+        const ctx = event.requestContext;
+        const body = JSON.parse(event.body);
         this.store.get(path, (err, graph) => {
             if (err) {
                 console.error("Cannot find graph at path:", path);
@@ -496,10 +550,27 @@ export default class EventSourceService {
         callback(null, this.okResponse);
     }
     getGraph(event: any, context: any, callback: (err: any, response: any) => void) {
-        const path = event.pathParameters.version === "latest"
+        const wantsLatest = event.pathParameters.version === "latest";
+        const path = wantsLatest
             ? `graphs/projections/latest/${event.pathParameters.id}.json`
             : `graphs/${event.pathParameters.id}/projections/${event.pathParameters.id}.${event.pathParameters.version}.json`;
         console.log('getGraph: Getting path:', path);
+        if (wantsLatest) {
+            this.crdtStore.projectGraph(event.pathParameters.id).then((graph) => {
+                if (!graph) {
+                    return this.getStoredGraph(path, callback);
+                }
+                callback(null, {
+                    statusCode: 200,
+                    body: JSON.stringify(graph),
+                    headers: corsHeaders,
+                });
+            }).catch(() => this.getStoredGraph(path, callback));
+            return;
+        }
+        this.getStoredGraph(path, callback);
+    }
+    getStoredGraph(path: string, callback: (err: any, response: any) => void) {
         this.store.get(path, (err, graph) => {
             if (err) {
                 console.log('getGraph: Error getting path:', err);
@@ -514,6 +585,9 @@ export default class EventSourceService {
         });
     }
     _deleteGraph(id: string, callback: (err: any, response: any) => void) {
+        this.crdtStore.removeAll(id).catch((err) => {
+            console.error("Cannot remove the collaborative document.", id, err);
+        });
         this.store.head(`graphs/projections/latest/${id}.json`, (err, data) => {
             if (err) {
                 return console.error("Delete graph all failure: ", err);
