@@ -92,10 +92,40 @@ Handling an edit never reads the graph.  That is the whole point: the previous
 design read the projection, applied a diff and wrote it back, so two edits
 arriving together lost one of them.
 
+## The list of graphs
+
+The list is a Yjs document rather than a file. It used to be rebuilt from
+scratch on every write: list every object under the projections, read the
+metadata of each one, assemble the whole list and write it back. That is a
+request per graph per save, and two saves landing together threw one of the
+results away, because the whole file was the unit of writing.
+
+Each entry is now a key in a document. Saving a graph writes a small update
+describing that entry and nothing else, updates from different graphs merge
+rather than overwrite, and the log folds into a snapshot as it grows.
+
+| Graphs stored | Reads per save | Bytes written per save |
+| --- | --- | --- |
+| 100 | 0 | 45 |
+| 1000 | 0 | 46 |
+| 10000 | 0 | 46 |
+
+Reads per save was previously the number of objects stored.
+
+It builds itself the first time it is used, from the previous list if that is
+still there, or from a walk of the projections if it is not. Neither path runs
+twice and neither discards work done since. `POST /toc/rebuild` does the walk
+on demand, as a repair tool.
+
+`GET /toc.json` returns what it always did. `GET /toc/state?sv=` returns the
+list as a document update, so a caller that already has most of it fetches
+only what changed: on the current 115 graphs that is 13 bytes against 60KB.
+
 ## Storage layout
 
     graphs/<id>/crdt/v2/updates/<ulid>~<label>.bin  one update, with its label
     graphs/<id>/crdt/v2/snapshots/<ulid>.bin        merged state up to <ulid>
+    index/toc/crdt/v2/...                           the list of graphs
     graphs/projections/latest/<id>.json           plain JSON, for execution
     graphs/<id>/projections/<id>.<version>.json   plain JSON, for publishing
     graphs/projections/endpoints/<url>.json       plain JSON, routed by URL
@@ -123,6 +153,10 @@ defaults to ten seconds.
 | `GET /crdt/{id}/history` | the action log, for rewind |
 | `POST /crdt/{id}/update` | fallback for updates too large for a frame |
 | `POST /crdt/{id}/checkpoint` | force the JSON projections up to date |
+| `GET /toc.json` | the list of graphs |
+| `GET /toc/state?sv=` | the list as a document update, differentially |
+| `POST /toc/rebuild` | rebuild the list from the projections |
+| `GET /deleted.json` | the graphs that are hidden |
 
 Presence (pointers, selections, who is here) rides the same socket on an
 awareness channel and is never stored.
