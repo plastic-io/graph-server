@@ -1,3 +1,7 @@
+// Interim hardening (2026-09-20): the client-callable fan-out routes (sendToChannel,
+// sendToConnection, broadcast), the connection-enumeration routes (listSubscribers,
+// listSubscriptions) and the deprecated addEvent write path are no longer exported.
+// The BroadcastService/EventSourceService methods remain for internal use and tests.
 import EventSourceService from './eventSourceService';
 import BroadcastService from './broadcastService';
 import CrdtService from './crdtService';
@@ -17,15 +21,6 @@ function subscribe(event: any, context: any, callback: (err: any, response: any)
 }
 function unsubscribe(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.unsubscribe(event, context, callback);
-}
-function sendToChannel(event: any, context: any, callback: (err: any, response: any) => void) {
-    broadcastService.sendToChannel(event, context, callback);
-}
-function sendToConnection(event: any, context: any, callback: (err: any, response: any) => void) {
-    broadcastService.sendToConnection(event, context, callback);
-}
-function addEvent(event: any, context: any, callback: (err: any, response: any) => void) {
-    eventSourceService.addEvent(event, context, callback);
 }
 function getGraph(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getGraph(event, context, callback);
@@ -56,12 +51,6 @@ function getTocState(event: any, context: any, callback: (err: any, response: an
 }
 function rebuildToc(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.rebuildToc(event, context, callback);
-}
-function listSubscribers(event: any, context: any, callback: (err: any, response: any) => void) {
-    broadcastService.listSubscribers(event, context, callback);
-}
-function listSubscriptions(event: any, context: any, callback: (err: any, response: any) => void) {
-    broadcastService.listSubscriptions(event, context, callback);
 }
 function getGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getGraphWs(event, context, callback);
@@ -118,14 +107,9 @@ export {
     publishNodeWs,
     connect,
     disconnect,
-    sendToChannel,
-    sendToConnection,
     subscribe,
     unsubscribe,
-    listSubscribers,
-    listSubscriptions,
     getGraphWs,
-    addEvent,
     getGraph,
     getToc,
     getEvents,

@@ -36,7 +36,18 @@ provider:
         - secretsmanager:GetSecretValue
       Resource:
         - "arn:aws:secretsmanager:us-west-1:695527765921:secret:OPENAI_API_KEY-kcvByO"
+  # Interim access control until the admission service lands (plan §4.4): the HTTP
+  # execution route and the destructive/expensive HTTP routes require the stage API
+  # key (x-api-key); WebSocket execution is off unless explicitly enabled.
+  apiGateway:
+    apiKeys:
+      - ${self:service}-${self:provider.stage}-execute
+    usagePlan:
+      throttle:
+        burstLimit: 20
+        rateLimit: 10
   environment:
+    WS_EXECUTION_ENABLED: ${opt:wsExecution, 'false'}
     API_REGION: ${self:provider.region}
     S3_BUCKET: ${self:custom.s3Bucket}
     STAGE: ${self:provider.stage}
@@ -76,50 +87,6 @@ functions:
     events:
       - websocket:
           route: unsubscribe
-
-  sendToConnection:
-    handler: src/handler.sendToConnection
-    events:
-      - websocket:
-          route: sendToConnection
-
-  sendToChannel:
-    handler: src/handler.sendToChannel
-    events:
-      - websocket:
-          route: sendToChannel
-
-  broadcast:
-    handler: src/handler.broadcast
-    events:
-      - websocket:
-          route: broadcast
-
-  # DEPRECATED: the pre-CRDT write path.  Kept so that an editor bundle still
-  # cached on a CDN keeps working; nothing in the current editor calls it.
-  addEvent:
-    handler: src/handler.addEvent
-    timeout: 30
-    events:
-      - websocket:
-          route: addEvent
-      - http:
-          method: POST
-          path: /addEvent
-          cors:
-            origin: '*'
-
-  listSubscribers:
-    handler: src/handler.listSubscribers
-    events:
-      - websocket:
-          route: listSubscribers
-
-  listSubscriptions:
-    handler: src/handler.listSubscriptions
-    events:
-      - websocket:
-          route: listSubscriptions
 
   graphWs:
     handler: src/handler.getGraphWs
@@ -214,6 +181,7 @@ functions:
       - http:
           method: DELETE
           path: /graph/{id}
+          private: true
           request:
             parameters:
                paths:
@@ -230,6 +198,7 @@ functions:
       - http:
           method: POST
           path: /graph/{id}/restore
+          private: true
           request:
             parameters:
                paths:
@@ -262,6 +231,7 @@ functions:
       - http:
           method: POST
           path: /toc/rebuild
+          private: true
           cors:
             origin: '*'
 
@@ -387,6 +357,7 @@ functions:
       - http:
           method: ANY
           path: /{proxy+}
+          private: true
           cors:
             origin: '*'
 
@@ -397,6 +368,18 @@ resources:
       Properties:
         AccessControl: Private
         BucketName: ${self:custom.s3Bucket}
+        # Every graph document, projection and artifact is recoverable for 30 days
+        # after an overwrite or delete (a poisoned CRDT log can be rolled back).
+        VersioningConfiguration:
+          Status: Enabled
+        LifecycleConfiguration:
+          Rules:
+            - Id: expire-noncurrent-versions
+              Status: Enabled
+              NoncurrentVersionExpiration:
+                NoncurrentDays: 30
+              AbortIncompleteMultipartUpload:
+                DaysAfterInitiation: 7
   Outputs:
     Prefix:
       Value: ${self:custom.prefix}

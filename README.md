@@ -160,3 +160,24 @@ defaults to ten seconds.
 
 Presence (pointers, selections, who is here) rides the same socket on an
 awareness channel and is never stored.
+
+## Interim access control (2026-09-20)
+
+Until the admission service from the polymorphic-application plan lands
+(`graph-editor/docs/polymorphic-application-plan/`), the dev stage is hardened as follows:
+
+- The client-callable fan-out routes (`sendToChannel`, `sendToConnection`, `broadcast`), the
+  connection-enumeration routes (`listSubscribers`, `listSubscriptions`) and the deprecated
+  `addEvent` write path (WebSocket and `POST /addEvent`) are no longer deployed. An editor
+  bundle older than the CRDT migration can therefore no longer save.
+- The HTTP execution route (`ANY /{proxy+}`), `POST /toc/rebuild`, `DELETE /graph/{id}` and
+  `POST /graph/{id}/restore` require the stage API key in an `x-api-key` header.
+  `npx serverless info --aws-profile <profile>` prints the key; the usage plan throttles it to
+  10 requests/s with a burst of 20.
+- Execution over WebSocket (the `$default` route) is disabled unless the stage is deployed
+  with `--wsExecution true` (`WS_EXECUTION_ENABLED`). The editor's "impulse (server)" node
+  action does nothing on a stage where it is off.
+- The OpenAI secret is fetched only for graphs whose `properties.openai` is `true`; node code
+  in every other graph sees `this.openai === undefined`.
+- The S3 bucket is versioned; overwritten or deleted objects (including a poisoned CRDT update
+  log) can be restored for 30 days.

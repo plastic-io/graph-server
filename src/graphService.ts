@@ -170,6 +170,12 @@ class GraphService {
         const startTimer = Date.now();
         return new Promise((resolve) => {
             const isWs = !event.path;
+            if (isWs && process.env.WS_EXECUTION_ENABLED !== 'true') {
+                // Interim: WebSocket execution has no authorizer and no API key, so it is
+                // off unless the stage was deployed with --wsExecution true.
+                console.error('Execution over WebSocket is disabled on this stage (WS_EXECUTION_ENABLED != true)');
+                return resolve({ statusCode: 403, body: 'websocket execution disabled' });
+            }
             let graphUrl, nodeUrl, target, value, field;
             // normalize ws/http
             if (isWs) {
@@ -397,11 +403,16 @@ class GraphService {
             });
             workerObjProxy.nodes = nodes;
 
-            const apiKey = await getSecret();
-            const openai = new OpenAI({
-                apiKey,
-            });
-            (global as any).openai = openai;
+            // The OpenAI key is fetched only for graphs that opt in; every other graph's
+            // node code sees `this.openai === undefined`.
+            let openai;
+            if (graph.properties && graph.properties.openai === true) {
+                const apiKey = await getSecret();
+                openai = new OpenAI({
+                    apiKey,
+                });
+                (global as any).openai = openai;
+            }
 
             const scheduler = new Scheduler(graph, {openai, event, context, callback: cb}, workerObjProxy, logger);
 
