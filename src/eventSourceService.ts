@@ -125,8 +125,16 @@ export default class EventSourceService {
                 const endpointMatch = /.*\/([^\/]+\d?)/;
                 const normalMatch = /.*\/([^\/]+\d?).json/;
                 const toc = {};
+                // Files that live alongside the projections but are not
+                // graphs.  Anything listed here without an id in its metadata
+                // is skipped below as well, so adding another one later cannot
+                // put a nameless entry in the list.
+                const notGraphs = [
+                    "graphs/projections/toc.json",
+                    deletedIndexKey,
+                ];
                 Promise.all(graphs.filter((item) => {
-                    return item.Key !== "graphs/projections/toc.json";
+                    return notGraphs.indexOf(item.Key) === -1;
                 }).map((item): Promise<void> => {
                     return new Promise((success, failure) => {
                         this.store.head(item.Key, (err, data) => {
@@ -138,6 +146,11 @@ export default class EventSourceService {
                             });
                             if (/^graphs\/projections\/endpoints\//.test(item.Key)) {
                                 item.type = "endpoint";
+                            }
+                            if (!item.id) {
+                                // Not a graph: it carries none of the metadata
+                                // a projection is written with.
+                                return success();
                             }
                             const tocId = item.type === "endpoint" ? ("endpoint/" + item.id) : item.id;
                             const tocKey = tocId + (/published/.test(item.type) ? ("." + item.version) : "");

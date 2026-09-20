@@ -64,6 +64,20 @@ describe("deleting a graph", () => {
      */
     const settle = () => new Promise((resolve) => setTimeout(resolve, 400));
 
+    it("keeps files that are not graphs out of the list", async () => {
+        // The deleted index lives beside the projections.  It was being listed
+        // as a graph with no name, which put an "undefined" entry in the list.
+        await invoke(service, "deleteGraph", {
+            pathParameters: { id: "hide-me" }, queryStringParameters: null, requestContext: {},
+        });
+        await settle();
+        const toc = await readToc(service);
+        expect(Object.keys(toc)).not.toContain("undefined");
+        Object.keys(toc).forEach((key) => {
+            expect(toc[key].id).toBeTruthy();
+        });
+    });
+
     it("lists both graphs before anything is deleted", async () => {
         service.updateToc(() => undefined);
         await settle();
