@@ -2,6 +2,21 @@
 // https://jestjs.io/docs/en/configuration.html
 
 module.exports = {
+  // yjs and lib0 ship as ES modules, and the shared CRDT package is linked in
+  // as TypeScript source, so all three have to go through babel rather than
+  // being skipped the way node_modules normally is.
+  transformIgnorePatterns: ["/node_modules/(?!(lib0|yjs|y-protocols|@plastic-io/graph-crdt)/)"],
+  moduleFileExtensions: ["js", "ts", "json", "node"],
+  setupFiles: ["<rootDir>/jest.setup.js"],
+  // The shared CRDT package is a symlink into the editor repository, and Jest
+  // resolves symlinks, so its `yjs` import would otherwise bind to the
+  // editor's copy.  Two Yjs instances in one process break every constructor
+  // check the codec relies on.  The deployment bundle avoids this with
+  // `resolve.symlinks: false` in webpack.config.js; this is the same fix.
+  moduleNameMapper: {
+    "^yjs$": "<rootDir>/node_modules/yjs",
+    "^lib0/(.*)$": "<rootDir>/node_modules/lib0/$1",
+  },
   // All imported modules in your tests should be mocked automatically
   // automock: false,
 

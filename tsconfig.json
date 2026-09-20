@@ -3,9 +3,14 @@
     "outDir": "./dist",
     "inlineSourceMap": true,
     "moduleResolution": "node",
+    "module": "commonjs",
+    // Without an explicit target TypeScript assumes ES3, and then spreading an
+    // iterator such as `[...map.keys()]` compiles to array-like handling and
+    // silently yields an empty array.  The Lambda runtime is Node 18, so there
+    // is no reason to downlevel at all.
+    "target": "es2019",
     "lib": [
-      "es6",
-      "es2015.promise",
+      "es2019",
       "esnext.asynciterable"
     ]
   }

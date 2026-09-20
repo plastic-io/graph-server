@@ -173,12 +173,19 @@ export default class BroadcastService {
         });
         callback(null, this.okResponse);
     }
-    broadcast(channelId: string, value: any, callback: (err: any, response: any) => void) {
+    broadcast(channelId: string, value: any, callback: (err: any, response: any) => void,
+              excludeConnectionId?: string) {
         this._listSubscribers(channelId, (err: any, subscribers: any) => {
             subscribers.forEach((subscriber) => {
                 const path = subscriber.Key.split("/");
                 const domainName = path[3];
                 const connectionId = path[2];
+                // The sender already has the change it just made.  Echoing it
+                // back would double every edit on the wire and force the client
+                // to guess which messages were its own.
+                if (excludeConnectionId && connectionId === excludeConnectionId) {
+                    return;
+                }
                 this.postToClient(domainName, connectionId, value, (err) => {
                     if (err) {
                         console.error("Error transmitting to a connection", err);
@@ -278,11 +285,12 @@ export default class BroadcastService {
         };
         this._sendToAll(value);
     }
-    _sendToChannel(channelId: string, value: any, callback: (err: any, response: any) => void) {
+    _sendToChannel(channelId: string, value: any, callback: (err: any, response: any) => void,
+                   excludeConnectionId?: string) {
         this.broadcast(channelId, {
             channelId,
             response: value,
-        }, callback);
+        }, callback, excludeConnectionId);
     }
     sendToChannel(event: any, context: Context, callback: (err: any, response: any) => void) {
         const body = JSON.parse(event.body);

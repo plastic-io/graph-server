@@ -14,13 +14,13 @@ Your service is ready to use. Take note of the endpoints beginning with `ANY - h
 * Plastic-IO Graph Editor IDE Notification Service
 * HTTP Graph Scheduler Host
 * HTTP/WSS Graph API
-* S3 Event Sourced Graph Database
+* S3 CRDT Document Store
 * S3 Artifact Storage
 * APIGWv2 Multiuser Connection Manager
 
 # What is this server?
 
-This server provides graph services to the [Plastic-IO IDE](https://github.com/plastic-io/graph-editor) as well as the production runtime for Plastic-IO graphs.
+This server provides graph services to the [Plastic-IO IDE](https://github.com/plastic-io/graph-editor) as well as the production runtime for Plastic-IO graphs.  Graph documents are stored as CRDTs, so any number of people can edit the same graph at the same time.
 
 Additionally, this server provides a multi user environment to develop, share, and monitor Plastic-IO graphs.
 
@@ -62,20 +62,67 @@ Because each vector and graph in Plastic-IO are implicitly modular, this makes i
 
 See https://github.com/plastic-io/graph-editor for for the GUI client for this server.
 
-## Client Server Sequence Diagram
+# Collaborative Editing
 
-    +-----------+ +------------------+ +-----------------------------+       +----------------+
-    |           | |                  | |                             |       |                |
-    |  Browser  | |   Local Graph    | |   Local Remote Graph Copy   |       |  Remote Graph  |
-    |           | |                  | |                             |       |                |
-    +-----+-----+ +--------+---------+ +-------------+---------------+       +--------+-------+
-          |                |                         |                                |
-          |               +++                        |                               +++
-          +----Change---> | | +----Diff Calc----------------Change sent to Server--> | |
-          |               | |                        |                               | |
-          |               | |                       +++                              | |
-          |               | |                       | |                              | |
-          |               | | <----Diff Calc------+ | | <---Change Sent to Client--+ | |
-          |               +++                       +++                              +++
-          |                |                         |                                |
-          |                |                         |                                |
+Graphs are [Yjs](https://yjs.dev/) documents.  An edit is a small binary update
+rather than a diff against a shared baseline, and updates commute, so the order
+they arrive in does not matter and two people editing at once cannot overwrite
+each other.
+
+Updates use the Yjs V2 encoding, which is about 35% smaller on graph-shaped
+content.  The version is part of the storage path and is stated on every wire
+message, because Yjs does not reject an update written in the other encoding,
+it decodes it into a different document.  A message declaring another format is
+refused.
+
+## How a change travels
+
+    +-----------+          +------------------+          +-----------------+
+    |  Browser  |          |  yjs WS route    |          |   S3 (append)   |
+    +-----+-----+          +---------+--------+          +--------+--------+
+          |                          |                            |
+          +---update (base64)------> |                            |
+          |                          +---write one object-------> |
+          |                          |                            |
+          |                          +---fan out to the graph's   |
+          | <------------------------+   other subscribers        |
+          |                          |                            |
+
+Handling an edit never reads the graph.  That is the whole point: the previous
+design read the projection, applied a diff and wrote it back, so two edits
+arriving together lost one of them.
+
+## Storage layout
+
+    graphs/<id>/crdt/v2/updates/<ulid>~<label>.bin  one update, with its label
+    graphs/<id>/crdt/v2/snapshots/<ulid>.bin        merged state up to <ulid>
+    graphs/projections/latest/<id>.json           plain JSON, for execution
+    graphs/<id>/projections/<id>.<version>.json   plain JSON, for publishing
+    graphs/projections/endpoints/<url>.json       plain JSON, routed by URL
+
+A reader takes the newest snapshot plus every update that sorts after it, and
+answers a request by computing the difference against the caller's state vector
+rather than sending the whole graph, so a browser reopening a graph it already
+has transfers almost nothing.
+Snapshots are an optimisation, never the source of truth, and updates are kept
+after one is written: the log is also what the rewind feature replays, and
+keeping it means a snapshot can never race a delete into losing data.
+
+Graph execution, publishing and the table of contents still read plain JSON, so
+a checkpoint refreshes those files once an edit has left them stale.  How stale
+they may get is set by the `CHECKPOINT_INTERVAL_MS` environment variable, which
+defaults to ten seconds.
+
+## Endpoints
+
+| Route | Purpose |
+| ----- | ------- |
+| `wss` route `yjs` | sync protocol and presence |
+| `GET /crdt/{id}/state?sv=` | the document, or only what the caller's state vector is missing |
+| `GET /crdt/{id}/state/{updateId}` | the document as it stood at one point |
+| `GET /crdt/{id}/history` | the action log, for rewind |
+| `POST /crdt/{id}/update` | fallback for updates too large for a frame |
+| `POST /crdt/{id}/checkpoint` | force the JSON projections up to date |
+
+Presence (pointers, selections, who is here) rides the same socket on an
+awareness channel and is never stored.

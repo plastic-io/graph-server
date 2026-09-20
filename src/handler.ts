@@ -1,8 +1,10 @@
 import EventSourceService from './eventSourceService';
 import BroadcastService from './broadcastService';
+import CrdtService from './crdtService';
 import GraphService, {panic as _panic} from './graphService';
 const broadcastService = new BroadcastService();
 const eventSourceService = new EventSourceService();
+const crdtService = new CrdtService();
 const graphService = new GraphService();
 function connect(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.connect(event, context, callback);
@@ -70,7 +72,32 @@ function panic(event: any, context: any, callback: (err: any, response: any) => 
 function getArtifact(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getArtifact(event, context, callback);
 }
+/* ---- collaborative editing ---- */
+function crdtSync(event: any, context: any, callback: (err: any, response: any) => void) {
+    crdtService.sync(event, context, callback);
+}
+function crdtState(event: any, context: any, callback: (err: any, response: any) => void) {
+    crdtService.getState(event, context, callback);
+}
+function crdtStateAt(event: any, context: any, callback: (err: any, response: any) => void) {
+    crdtService.getStateAt(event, context, callback);
+}
+function crdtHistory(event: any, context: any, callback: (err: any, response: any) => void) {
+    crdtService.getHistory(event, context, callback);
+}
+function crdtUpdate(event: any, context: any, callback: (err: any, response: any) => void) {
+    crdtService.postUpdate(event, context, callback);
+}
+function crdtCheckpoint(event: any, context: any, callback: (err: any, response: any) => void) {
+    crdtService.checkpoint(event, context, callback);
+}
 export {
+    crdtSync,
+    crdtState,
+    crdtStateAt,
+    crdtHistory,
+    crdtUpdate,
+    crdtCheckpoint,
     getArtifact,
     publishGraphWs,
     publishNodeWs,

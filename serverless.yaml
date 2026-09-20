@@ -40,6 +40,9 @@ provider:
     API_REGION: ${self:provider.region}
     S3_BUCKET: ${self:custom.s3Bucket}
     STAGE: ${self:provider.stage}
+    # How stale the JSON projection of a collaborative graph may get before an
+    # edit refreshes it.  Graph execution and publishing read those files.
+    CHECKPOINT_INTERVAL_MS: ${opt:checkpointInterval, '10000'}
     NODE_OPTIONS: "--enable-source-maps --unhandled-rejections=warn"
 
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"
@@ -92,6 +95,8 @@ functions:
       - websocket:
           route: broadcast
 
+  # DEPRECATED: the pre-CRDT write path.  Kept so that an editor bundle still
+  # cached on a CDN keeps working; nothing in the current editor calls it.
   addEvent:
     handler: src/handler.addEvent
     timeout: 30
@@ -212,6 +217,87 @@ functions:
                  version: true
           cors:
             origin: '*'
+  # ---- collaborative editing (Yjs) ----
+  # The write path never reads the graph: an update is appended to its own S3
+  # object and fanned out, so concurrent edits cannot overwrite each other.
+  crdtSync:
+    handler: src/handler.crdtSync
+    timeout: 30
+    events:
+      - websocket:
+          route: yjs
+
+  crdtState:
+    handler: src/handler.crdtState
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/state
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  crdtStateAt:
+    handler: src/handler.crdtStateAt
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/state/{updateId}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 updateId: true
+          cors:
+            origin: '*'
+
+  crdtHistory:
+    handler: src/handler.crdtHistory
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/history
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  crdtUpdate:
+    handler: src/handler.crdtUpdate
+    timeout: 30
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/update
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  crdtCheckpoint:
+    handler: src/handler.crdtCheckpoint
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/checkpoint
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
   panic:
     handler: src/handler.panic
     timeout: 6

@@ -58,6 +58,34 @@ export default class S3Service {
             Key: key,
         }, callback);
     }
+    /** Read an object without assuming it holds JSON. */
+    getRaw(key: string, callback: (err: any, data: Buffer) => void) {
+        this.s3.getObject({
+            Bucket: this.bucketName,
+            Key: key,
+        }, (err, data) => {
+            if (err) {
+                return callback(err, null);
+            }
+            callback(null, data.Body as Buffer);
+        });
+    }
+    /** Write an opaque binary body, used for Yjs updates and snapshots. */
+    setRaw(key: string, body: Buffer, meta: any, callback: (err: any, data: any) => void) {
+        this.s3.putObject({
+            Body: body,
+            Bucket: this.bucketName,
+            Key: key,
+            ContentType: "application/octet-stream",
+            Metadata: meta || {},
+        }, (err) => {
+            if (err) {
+                console.error("Error writing binary object", key, err);
+                return callback(err, null);
+            }
+            callback(null, null);
+        });
+    }
     set(key: string, val: any, meta: any, callback: (err: any, data: any) => void) {
         this.s3.putObject({
             Body: JSON.stringify(val),

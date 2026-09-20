@@ -1,10 +1,11 @@
 {
-  "name": "@plastic-io/plastic-io",
+  "name": "@plastic-io/graph-server",
   "version": "1.0.0",
   "description": "Services for Plastic-IO Graphs.",
   "scripts": {
     "test": "jest",
-    "build-docs": "./node_modules/.bin/typedoc"
+    "build-docs": "./node_modules/.bin/typedoc",
+    "dev-server": "node scripts/build-dev-server.js && node .devserver/devServer.js"
   },
   "devDependencies": {
     "@babel/core": "^7.20.2",
@@ -12,6 +13,7 @@
     "@babel/preset-typescript": "^7.18.6",
     "@types/aws-lambda": "^8.10.51",
     "@types/node": "^9.6.61",
+    "@types/ws": "^8.18.1",
     "aws-sdk": "^2.684.0",
     "babel-jest": "^26.0.1",
     "handlebars": "^4.5.0",
@@ -22,15 +24,21 @@
     "ts-node": "^10.9.1",
     "typedoc": "^0.23.21",
     "typescript": "^4.9.3",
-    "webpack": "^5.75.0"
+    "webpack": "^5.75.0",
+    "ws": "^8.21.3"
   },
   "author": "TonyGermaneri@gmail.com",
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.421.0",
+    "@plastic-io/graph-crdt": "file:../graph-editor/packages/GraphCrdt",
     "@plastic-io/plastic-io": "2.0.1",
     "deep-diff": "^1.0.2",
     "flatted": "^3.2.9",
     "jshashes": "^1.0.8",
-    "openai": "^4.11.0"
+    "lib0": "^0.2.99",
+    "openai": "^4.11.0",
+    "ulid": "^2.3.0",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.27"
   }
 }
