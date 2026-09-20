@@ -339,6 +339,15 @@ describe("CRDT sync service", () => {
         expect(s3.objects.has("graphs/projections/endpoints/Sample.json")).toBe(true);
     });
 
+    it("a checkpoint puts a new graph on the list", async () => {
+        // Writing the projection is not enough on its own.  Without the list
+        // being rebuilt, a graph somebody just made never shows up for them.
+        await store.seedFromJson("g1", sampleGraph(), "tester");
+        await invoke(service, "checkpoint", httpEvent({ id: "g1" }));
+        const listed = JSON.parse(s3.objects.get("graphs/projections/toc.json").toString());
+        expect(Object.keys(listed)).toContain("g1");
+    });
+
     it("a checkpoint on an unknown graph reports that there was nothing to do", async () => {
         const { response } = await invoke(service, "checkpoint", httpEvent({ id: "missing" }));
         expect(JSON.parse(response.body).ok).toBe(false);

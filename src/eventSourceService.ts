@@ -5,17 +5,13 @@ import S3Service from "./s3Service";
 import BroadcastService from "./broadcastService";
 import CrdtService from "./crdtService";
 import CrdtStore from "./crdtStore";
-const tocUpdateTimeout = 250;
+import {
+    updateToc as buildToc,
+    getDeletedIndex as readDeletedIndex,
+    setDeletedIndex as writeDeletedIndex,
+    deletedIndexKey,
+} from "./tocService";
 
-/**
- * Graphs that have been deleted but not destroyed.
- *
- * Deleting a graph hides it rather than removing it. The index is a single
- * small object so that building the table of contents costs one extra read
- * rather than a lookup per graph, and so that putting a graph back is a matter
- * of taking one entry out of it.
- */
-const deletedIndexKey = "graphs/projections/deleted.json";
 export interface EventSourceEvent {
     id: string;
     graphId: string;
@@ -63,19 +59,11 @@ export default class EventSourceService {
     }
     /** Graph ids that are hidden, keyed by id. */
     getDeletedIndex(callback: (err: any, index: any) => void) {
-        this.store.get(deletedIndexKey, (err, index) => {
-            if (err && /NoSuchKey/.test(err.toString())) {
-                return callback(null, {});
-            }
-            if (err) {
-                return callback(err, null);
-            }
-            callback(null, index || {});
-        });
+        readDeletedIndex(this.store, callback);
     }
 
     setDeletedIndex(index: any, callback: (err: any, response: any) => void) {
-        this.store.set(deletedIndexKey, index, {}, callback);
+        writeDeletedIndex(this.store, index, callback);
     }
 
     /** Hide a graph, keeping everything it is made of. */
@@ -113,95 +101,11 @@ export default class EventSourceService {
         });
     }
 
-    // TODO something less expensive
+    /** Rebuild the list of graphs.  See tocService. */
     updateToc(callback: (err: any, response: any) => void) {
-        const update = () => {
-            this.store.list("graphs/projections/", (err, graphs) => {
-                if (err) {
-                    console.error("Cannot read graphs/projections/ to write TOC.", err);
-                    return;
-                }
-                const suffixJsonReg = /\.json$/;
-                const endpointMatch = /.*\/([^\/]+\d?)/;
-                const normalMatch = /.*\/([^\/]+\d?).json/;
-                const toc = {};
-                // Files that live alongside the projections but are not
-                // graphs.  Anything listed here without an id in its metadata
-                // is skipped below as well, so adding another one later cannot
-                // put a nameless entry in the list.
-                const notGraphs = [
-                    "graphs/projections/toc.json",
-                    deletedIndexKey,
-                ];
-                Promise.all(graphs.filter((item) => {
-                    return notGraphs.indexOf(item.Key) === -1;
-                }).map((item): Promise<void> => {
-                    return new Promise((success, failure) => {
-                        this.store.head(item.Key, (err, data) => {
-                            if (err) {
-                                return failure(new Error(err));
-                            }
-                            Object.keys(data.Metadata).forEach((metaKey) => {
-                                item[metaKey.replace("x-amz-meta-", "")] = data.Metadata[metaKey];
-                            });
-                            if (/^graphs\/projections\/endpoints\//.test(item.Key)) {
-                                item.type = "endpoint";
-                            }
-                            if (!item.id) {
-                                // Not a graph: it carries none of the metadata
-                                // a projection is written with.
-                                return success();
-                            }
-                            const tocId = item.type === "endpoint" ? ("endpoint/" + item.id) : item.id;
-                            const tocKey = tocId + (/published/.test(item.type) ? ("." + item.version) : "");
-                            toc[tocKey] = item;
-                            success();
-                        });
-                    });
-                })).then(() => {
-                    return new Promise<void>((done) => {
-                        this.getDeletedIndex((err, deleted) => {
-                            if (err) {
-                                console.error("Cannot read the deleted index; listing everything.", err);
-                                return done();
-                            }
-                            // A hidden graph keeps its projection and its
-                            // endpoint, so both have to be left out here.
-                            Object.keys(toc).forEach((key) => {
-                                if (toc[key] && deleted[toc[key].id]) {
-                                    delete toc[key];
-                                }
-                            });
-                            done();
-                        });
-                    });
-                }).then(() => {
-                    this.store.set(`graphs/projections/toc.json`, toc, {}, (err) => {
-                        if (err) {
-                            callback(err, null);
-                            return console.error("Cannot write TOC.", err);
-                        }
-                        callback(null, null);
-                        this.broadcastService.broadcast("toc.json", {
-                            channelId: "toc.json",
-                            response: {
-                                type: "toc",
-                                toc,
-                            },
-                        }, (err) => {
-                            if (err) {
-                                console.error("Cannot broadcast TOC.", err);
-                            }
-                        });
-                    });
-                }).catch((err) => {
-                    console.error("Cannot broadcast TOC.", err);
-                    callback(err, null);
-                });
-            });
-        };
-        setTimeout(update, tocUpdateTimeout);
+        buildToc(this.store, this.broadcastService, callback);
     }
+
     getToc(event: any, context: any, callback: (err: any, response: any) => void) {
         this.store.get(`graphs/projections/toc.json`, (err, toc) => {
             if (err && /NoSuchKey/.test(err.toString())) {

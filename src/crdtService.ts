@@ -17,6 +17,7 @@ import {
 } from "@plastic-io/graph-crdt";
 import CrdtStore, { decodeUlidTime } from "./crdtStore";
 import BroadcastService from "./broadcastService";
+import { updateToc } from "./tocService";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -100,9 +101,28 @@ export default class CrdtService {
       }
       await this.store.writeSnapshot(graphId);
       await this.store.writeProjections(graphId);
+      await this.refreshGraphList();
     } catch (err) {
       console.error("Checkpoint failed.", graphId, err);
     }
+  }
+
+  /**
+   * Rebuild the list of graphs.
+   *
+   * Writing the projection is not enough on its own: without this a graph
+   * someone has just created has a document and a projection but never turns
+   * up on anybody's list.
+   */
+  private refreshGraphList(): Promise<void> {
+    return new Promise((resolve) => {
+      updateToc(this.store.store, this.broadcastService, (err) => {
+        if (err) {
+          console.error("Cannot refresh the graph list.", err);
+        }
+        resolve();
+      });
+    });
   }
 
   /** Force the JSON projection up to date, for publishing and reads. */
@@ -111,7 +131,9 @@ export default class CrdtService {
       return null;
     }
     await this.store.writeSnapshot(graphId);
-    return await this.store.writeProjections(graphId);
+    const graph = await this.store.writeProjections(graphId);
+    await this.refreshGraphList();
+    return graph;
   }
 
   /* ------------------------------------------------------ websocket */
