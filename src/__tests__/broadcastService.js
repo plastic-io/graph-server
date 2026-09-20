@@ -144,6 +144,49 @@ describe("Broadcast service", () => {
         expect(AWS.mocks.ApiGatewayManagementApi.postToConnection).toHaveBeenCalled();
         done();
     });
+    it("Should answer a broadcast that reaches nobody.", (done) => {
+        // A graph only one person has open has no other subscribers.  The
+        // callback still has to come back, or whatever is awaiting the
+        // broadcast hangs until its Lambda is cut off, which took the HTTP
+        // update route down with it.
+        const broadcastService = new BroadcastService();
+        let calls = 0;
+        broadcastService.broadcast("empty-channel", {}, (err) => {
+            calls += 1;
+            expect(err).toBeFalsy();
+            expect(calls).toBe(1);
+            expect(AWS.mocks.ApiGatewayManagementApi.postToConnection).not.toHaveBeenCalled();
+            done();
+        });
+        AWS.mocks.S3.listObjects.mock.calls[0][1](null, { Contents: [] });
+    });
+    it("Should answer a broadcast whose only subscriber is the sender.", (done) => {
+        const broadcastService = new BroadcastService();
+        broadcastService.broadcast("channel", {}, (err) => {
+            expect(err).toBeFalsy();
+            expect(AWS.mocks.ApiGatewayManagementApi.postToConnection).not.toHaveBeenCalled();
+            done();
+        }, "sender-connection");
+        AWS.mocks.S3.listObjects.mock.calls[0][1](null, {
+            Contents: [{ Key: "subscriptions/channel/sender-connection/example.com" }],
+        });
+    });
+    it("Should answer once when a broadcast reaches several subscribers.", (done) => {
+        const broadcastService = new BroadcastService();
+        let calls = 0;
+        broadcastService.broadcast("channel", {}, () => {
+            calls += 1;
+            expect(calls).toBe(1);
+            done();
+        });
+        AWS.mocks.S3.listObjects.mock.calls[0][1](null, {
+            Contents: [
+                { Key: "subscriptions/channel/conn-1/example.com" },
+                { Key: "subscriptions/channel/conn-2/example.com" },
+            ],
+        });
+        AWS.mocks.ApiGatewayManagementApi.postToConnection.mock.calls.forEach((call) => call[1](null));
+    });
     it("Should call postToConnection when sendToConnection is called.", (done) => {
         const broadcastService = new BroadcastService();
         const req = require("./__data__/event_http_request.json");

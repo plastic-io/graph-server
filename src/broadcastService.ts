@@ -173,23 +173,52 @@ export default class BroadcastService {
         });
         callback(null, this.okResponse);
     }
+    /**
+     * Send `value` to everyone subscribed to `channelId`.
+     *
+     * The callback fires exactly once, when every recipient has been attempted
+     * or the subscriber list could not be read.  That includes the case where
+     * there are no subscribers at all, which is the common one for a graph
+     * only one person has open: the previous version returned only from inside
+     * the delivery loop, so a broadcast to nobody simply never came back, and
+     * a caller awaiting it hung until its Lambda was cut off.
+     */
     broadcast(channelId: string, value: any, callback: (err: any, response: any) => void,
               excludeConnectionId?: string) {
         this._listSubscribers(channelId, (err: any, subscribers: any) => {
-            subscribers.forEach((subscriber) => {
+            if (err) {
+                return callback(err, null);
+            }
+            const targets = (subscribers || []).map((subscriber) => {
                 const path = subscriber.Key.split("/");
-                const domainName = path[3];
-                const connectionId = path[2];
+                return { connectionId: path[2], domainName: path[3] };
+            }).filter((target) => {
                 // The sender already has the change it just made.  Echoing it
                 // back would double every edit on the wire and force the client
                 // to guess which messages were its own.
-                if (excludeConnectionId && connectionId === excludeConnectionId) {
-                    return;
-                }
-                this.postToClient(domainName, connectionId, value, (err) => {
-                    if (err) {
-                        console.error("Error transmitting to a connection", err);
-                        return callback(err, null);
+                return !(excludeConnectionId && target.connectionId === excludeConnectionId);
+            });
+            if (targets.length === 0) {
+                return callback(null, null);
+            }
+            let remaining = targets.length;
+            let firstError: any = null;
+            const settled = new Set<string>();
+            targets.forEach((target) => {
+                this.postToClient(target.domainName, target.connectionId, value, (postErr) => {
+                    // A chunked message calls back once per chunk, so only the
+                    // first answer for a recipient counts towards being done.
+                    if (settled.has(target.connectionId)) {
+                        return;
+                    }
+                    settled.add(target.connectionId);
+                    if (postErr) {
+                        console.error("Error transmitting to a connection", postErr);
+                        firstError = firstError || postErr;
+                    }
+                    remaining -= 1;
+                    if (remaining === 0) {
+                        callback(firstError, null);
                     }
                 });
             });
