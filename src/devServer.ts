@@ -12,6 +12,10 @@
  *   npm run dev-server
  */
 import * as http from "http";
+// Imported rather than taken from the global scope: the Lambda tsconfig
+// targets the Node libraries only, without the DOM, so these are not global
+// there even though the runtime provides them.
+import { URL, URLSearchParams } from "url";
 import { WebSocketServer, WebSocket } from "ws";
 import CrdtService from "./crdtService";
 import CrdtStore from "./crdtStore";
