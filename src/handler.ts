@@ -42,6 +42,15 @@ function deleteGraph(event: any, context: any, callback: (err: any, response: an
 function deleteGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.deleteGraphWs(event, context, callback);
 }
+function undeleteGraph(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.undeleteGraph(event, context, callback);
+}
+function undeleteGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.undeleteGraphWs(event, context, callback);
+}
+function listDeletedGraphs(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.listDeletedGraphs(event, context, callback);
+}
 function listSubscribers(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.listSubscribers(event, context, callback);
 }
@@ -116,6 +125,9 @@ export {
     getEvents,
     deleteGraph,
     deleteGraphWs,
+    undeleteGraph,
+    undeleteGraphWs,
+    listDeletedGraphs,
     defaultRoute,
     panic,
 };

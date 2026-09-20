@@ -6,6 +6,16 @@ import BroadcastService from "./broadcastService";
 import CrdtService from "./crdtService";
 import CrdtStore from "./crdtStore";
 const tocUpdateTimeout = 250;
+
+/**
+ * Graphs that have been deleted but not destroyed.
+ *
+ * Deleting a graph hides it rather than removing it. The index is a single
+ * small object so that building the table of contents costs one extra read
+ * rather than a lookup per graph, and so that putting a graph back is a matter
+ * of taking one entry out of it.
+ */
+const deletedIndexKey = "graphs/projections/deleted.json";
 export interface EventSourceEvent {
     id: string;
     graphId: string;
@@ -51,6 +61,58 @@ export default class EventSourceService {
             });
         });
     }
+    /** Graph ids that are hidden, keyed by id. */
+    getDeletedIndex(callback: (err: any, index: any) => void) {
+        this.store.get(deletedIndexKey, (err, index) => {
+            if (err && /NoSuchKey/.test(err.toString())) {
+                return callback(null, {});
+            }
+            if (err) {
+                return callback(err, null);
+            }
+            callback(null, index || {});
+        });
+    }
+
+    setDeletedIndex(index: any, callback: (err: any, response: any) => void) {
+        this.store.set(deletedIndexKey, index, {}, callback);
+    }
+
+    /** Hide a graph, keeping everything it is made of. */
+    softDeleteGraph(id: string, userId: string, callback: (err: any, response: any) => void) {
+        this.getDeletedIndex((err, index) => {
+            if (err) {
+                return callback(err, null);
+            }
+            index[id] = { id, deletedOn: Date.now(), deletedBy: userId || "Unknown" };
+            this.setDeletedIndex(index, (setErr) => {
+                if (setErr) {
+                    return callback(setErr, null);
+                }
+                this.updateToc(callback);
+            });
+        });
+    }
+
+    /** Put a hidden graph back. */
+    restoreGraph(id: string, callback: (err: any, response: any) => void) {
+        this.getDeletedIndex((err, index) => {
+            if (err) {
+                return callback(err, null);
+            }
+            if (!index[id]) {
+                return callback(null, null);
+            }
+            delete index[id];
+            this.setDeletedIndex(index, (setErr) => {
+                if (setErr) {
+                    return callback(setErr, null);
+                }
+                this.updateToc(callback);
+            });
+        });
+    }
+
     // TODO something less expensive
     updateToc(callback: (err: any, response: any) => void) {
         const update = () => {
@@ -84,6 +146,23 @@ export default class EventSourceService {
                         });
                     });
                 })).then(() => {
+                    return new Promise<void>((done) => {
+                        this.getDeletedIndex((err, deleted) => {
+                            if (err) {
+                                console.error("Cannot read the deleted index; listing everything.", err);
+                                return done();
+                            }
+                            // A hidden graph keeps its projection and its
+                            // endpoint, so both have to be left out here.
+                            Object.keys(toc).forEach((key) => {
+                                if (toc[key] && deleted[toc[key].id]) {
+                                    delete toc[key];
+                                }
+                            });
+                            done();
+                        });
+                    });
+                }).then(() => {
                     this.store.set(`graphs/projections/toc.json`, toc, {}, (err) => {
                         if (err) {
                             callback(err, null);
@@ -592,7 +671,12 @@ export default class EventSourceService {
             if (err) {
                 return console.error("Delete graph all failure: ", err);
             }
-            const url = data.Metadata["x-amz-meta-url"];
+            // S3 returns user metadata with the x-amz-meta- prefix already
+            // stripped.  Reading the prefixed name gave undefined, so the
+            // endpoint file was left behind by every permanent delete.  Both
+            // spellings are accepted so the behaviour does not depend on which
+            // client wrote the object.
+            const url = data.Metadata.url || data.Metadata["x-amz-meta-url"];
             Promise.all([
                 new Promise((success, failure) => {
                     this.store.removePath(`graphs/${id}/projections`, (err) => {
@@ -635,11 +719,13 @@ export default class EventSourceService {
                     });
                 }),
             ]).then(() => {
-                this.updateToc((err) => {
-                    if (err) {
-                        return callback(err, null);
+                // Nothing is left to hide, so the marker goes too.
+                this.getDeletedIndex((indexErr, index) => {
+                    if (indexErr || !index[id]) {
+                        return this.updateToc(callback);
                     }
-                    callback(null, null);
+                    delete index[id];
+                    this.setDeletedIndex(index, () => this.updateToc(callback));
                 });
             }).catch((err) => {
                 console.error("Delete graph all failure: ", err);
@@ -647,19 +733,99 @@ export default class EventSourceService {
             });
         });
     }
+    /**
+     * Delete a graph.
+     *
+     * Deleting hides the graph and keeps everything it is made of, so an
+     * accidental delete costs nothing. `?permanent=true` destroys it instead,
+     * which is a debugging tool: it removes the events, the projections, the
+     * endpoint and the collaborative document, and none of that comes back.
+     */
     deleteGraph(event: any, context: any, callback: (err: any, response: any) => void) {
-        this._deleteGraph(event.path.id, (err) => {
+        const id = (event.pathParameters || {}).id;
+        if (!id) {
+            return callback(null, {
+                statusCode: 400,
+                body: JSON.stringify({ error: "No graph id was given." }),
+                headers: corsHeaders,
+            });
+        }
+        const query = event.queryStringParameters || {};
+        const permanent = String(query.permanent) === "true";
+        const userId = ((event.requestContext || {}).identity || {}).userArn;
+        const done = (err: any) => {
             if (err) {
-                return callback(err, null);
+                console.error("Cannot delete graph.", id, err);
+                return callback(null, { statusCode: 500, headers: corsHeaders });
             }
-            callback(null, this.okResponse);
+            callback(null, {
+                statusCode: 200,
+                body: JSON.stringify({ id, permanent }),
+                headers: corsHeaders,
+            });
+        };
+        if (permanent) {
+            return this._deleteGraph(id, done);
+        }
+        this.softDeleteGraph(id, userId, done);
+    }
+
+    /** Put a hidden graph back in the list. */
+    undeleteGraph(event: any, context: any, callback: (err: any, response: any) => void) {
+        const id = (event.pathParameters || {}).id;
+        if (!id) {
+            return callback(null, {
+                statusCode: 400,
+                body: JSON.stringify({ error: "No graph id was given." }),
+                headers: corsHeaders,
+            });
+        }
+        this.restoreGraph(id, (err) => {
+            if (err) {
+                console.error("Cannot restore graph.", id, err);
+                return callback(null, { statusCode: 500, headers: corsHeaders });
+            }
+            callback(null, {
+                statusCode: 200,
+                body: JSON.stringify({ id, restored: true }),
+                headers: corsHeaders,
+            });
+        });
+    }
+
+    /** Everything currently hidden. */
+    listDeletedGraphs(event: any, context: any, callback: (err: any, response: any) => void) {
+        this.getDeletedIndex((err, index) => {
+            if (err) {
+                return callback(null, { statusCode: 500, headers: corsHeaders });
+            }
+            callback(null, {
+                statusCode: 200,
+                body: JSON.stringify(Object.keys(index).map((key) => index[key])),
+                headers: corsHeaders,
+            });
         });
     }
     deleteGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
         const body = JSON.parse(event.body);
-        this._deleteGraph(body.id, (err) => {
+        const done = (err: any) => {
             if (err) {
-                return callback(err, null);
+                console.error("Cannot delete graph.", body.id, err);
+            }
+            callback(null, this.okResponse);
+        };
+        if (body.permanent === true) {
+            return this._deleteGraph(body.id, done);
+        }
+        const userId = ((event.requestContext || {}).identity || {}).userArn;
+        this.softDeleteGraph(body.id, userId, done);
+    }
+
+    undeleteGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+        const body = JSON.parse(event.body);
+        this.restoreGraph(body.id, (err) => {
+            if (err) {
+                console.error("Cannot restore graph.", body.id, err);
             }
             callback(null, this.okResponse);
         });

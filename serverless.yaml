@@ -203,6 +203,10 @@ functions:
           cors:
             origin: '*'
 
+  # Deleting hides a graph and keeps everything it is made of.  Passing
+  # ?permanent=true destroys it instead, which is a debugging tool: the events,
+  # the projections, the endpoint and the collaborative document all go, and
+  # none of it comes back.
   deleteGraph:
     handler: src/handler.deleteGraph
     timeout: 30
@@ -214,9 +218,42 @@ functions:
             parameters:
                paths:
                  id: true
-                 version: true
+               querystrings:
+                 permanent: false
           cors:
             origin: '*'
+
+  undeleteGraph:
+    handler: src/handler.undeleteGraph
+    timeout: 30
+    events:
+      - http:
+          method: POST
+          path: /graph/{id}/restore
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  deletedGraphs:
+    handler: src/handler.listDeletedGraphs
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /deleted.json
+          cors:
+            origin: '*'
+
+  undeleteGraphWs:
+    handler: src/handler.undeleteGraphWs
+    timeout: 30
+    events:
+      - websocket:
+          route: undeleteGraph
+
   # ---- collaborative editing (Yjs) ----
   # The write path never reads the graph: an update is appended to its own S3
   # object and fanned out, so concurrent edits cannot overwrite each other.

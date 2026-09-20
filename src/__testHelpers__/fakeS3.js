@@ -32,6 +32,15 @@ class FakeS3Service {
         }
         callback(null, { Metadata: this.meta.get(key) || {} });
     }
+    removePath(prefix, callback) {
+        [...this.objects.keys()]
+            .filter((key) => key.indexOf(prefix) === 0)
+            .forEach((key) => {
+                this.objects.delete(key);
+                this.meta.delete(key);
+            });
+        callback(null, null);
+    }
     remove(key, callback) {
         this.objects.delete(key);
         this.meta.delete(key);

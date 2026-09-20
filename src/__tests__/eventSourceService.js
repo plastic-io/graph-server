@@ -46,6 +46,11 @@ describe("Event Source Service", () => {
                 },
             });
             setTimeout(() => {
+                // The table of contents leaves out anything that has been
+                // deleted, so it reads that index before writing.
+                expect(AWS.mocks.S3.getObject).toHaveBeenCalled();
+                AWS.mocks.S3.getObject.mock.calls[0][1](new Error("NoSuchKey"), null);
+                setTimeout(() => {
                 expect(AWS.mocks.S3.putObject).toHaveBeenCalled();
                 AWS.mocks.S3.putObject.mock.calls[0][1](null);
                 expect(AWS.mocks.S3.listObjects).toHaveBeenCalled();
@@ -59,6 +64,7 @@ describe("Event Source Service", () => {
                 });
                 expect(AWS.mocks.ApiGatewayManagementApi.postToConnection).toHaveBeenCalled();
                 done();
+                }, 1);
             }, 1);
         }, 250);
     });
