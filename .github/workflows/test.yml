@@ -1,0 +1,23 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The CRDT package is linked from the sibling editor checkout (file:../graph-editor/packages/GraphCrdt)
+      # until it is published to npm (plan item PB-120), so the editor is checked out next to the server.
+      - uses: actions/checkout@v4
+        with:
+          repository: plastic-io/graph-editor
+          path: ../graph-editor
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: npx jest --ci
