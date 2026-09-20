@@ -1,4 +1,5 @@
 import EventSourceService from "../eventSourceService";
+import TocStore from "../tocStore";
 import FakeS3Service from "../__testHelpers__/fakeS3";
 
 function sampleGraph(id, url) {
@@ -49,6 +50,7 @@ describe("deleting a graph", () => {
         service = new EventSourceService();
         service.store = store;
         service.crdtStore.store = store;
+        service.tocStore = new TocStore(store);
         service.broadcastService = {
             broadcast: (channelId, value, callback) => callback(null, null),
             postToClient: (d, c, m, callback) => callback(null, null),
@@ -79,8 +81,6 @@ describe("deleting a graph", () => {
     });
 
     it("lists both graphs before anything is deleted", async () => {
-        service.updateToc(() => undefined);
-        await settle();
         const toc = await readToc(service);
         expect(Object.keys(toc).sort()).toEqual(
             expect.arrayContaining(["keep-me", "hide-me", "endpoint/keep-me", "endpoint/hide-me"]),

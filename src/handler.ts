@@ -51,6 +51,12 @@ function undeleteGraphWs(event: any, context: any, callback: (err: any, response
 function listDeletedGraphs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.listDeletedGraphs(event, context, callback);
 }
+function getTocState(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.getTocState(event, context, callback);
+}
+function rebuildToc(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.rebuildToc(event, context, callback);
+}
 function listSubscribers(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.listSubscribers(event, context, callback);
 }
@@ -128,6 +134,8 @@ export {
     undeleteGraph,
     undeleteGraphWs,
     listDeletedGraphs,
+    getTocState,
+    rebuildToc,
     defaultRoute,
     panic,
 };

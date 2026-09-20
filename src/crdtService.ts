@@ -17,7 +17,8 @@ import {
 } from "@plastic-io/graph-crdt";
 import CrdtStore, { decodeUlidTime } from "./crdtStore";
 import BroadcastService from "./broadcastService";
-import { updateToc } from "./tocService";
+import TocStore from "./tocStore";
+import { ensureBuilt, listGraph } from "./tocService";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -46,12 +47,14 @@ function userIdOf(event: any): string {
  */
 export default class CrdtService {
   store: CrdtStore;
+  tocStore: TocStore;
   broadcastService: BroadcastService;
   okResponse: { statusCode: number };
 
-  constructor(store?: CrdtStore, broadcastService?: BroadcastService) {
+  constructor(store?: CrdtStore, broadcastService?: BroadcastService, tocStore?: TocStore) {
     this.store = store || new CrdtStore();
     this.broadcastService = broadcastService || new BroadcastService();
+    this.tocStore = tocStore || new TocStore(this.store.store);
     this.okResponse = { statusCode: 200 };
   }
 
@@ -100,29 +103,36 @@ export default class CrdtService {
         return;
       }
       await this.store.writeSnapshot(graphId);
-      await this.store.writeProjections(graphId);
-      await this.refreshGraphList();
+      const graph = await this.store.writeProjections(graphId);
+      await this.listGraph(graph);
     } catch (err) {
       console.error("Checkpoint failed.", graphId, err);
     }
   }
 
   /**
-   * Rebuild the list of graphs.
+   * Put this graph's entry in the list.
    *
    * Writing the projection is not enough on its own: without this a graph
    * someone has just created has a document and a projection but never turns
-   * up on anybody's list.
+   * up on anybody's list.  Only this graph's entry is written, so the cost
+   * does not grow with how many graphs there are.
    */
-  private refreshGraphList(): Promise<void> {
-    return new Promise((resolve) => {
-      updateToc(this.store.store, this.broadcastService, (err) => {
-        if (err) {
-          console.error("Cannot refresh the graph list.", err);
-        }
-        resolve();
-      });
-    });
+  private async listGraph(graph: any): Promise<void> {
+    if (!graph || !graph.id) {
+      return;
+    }
+    try {
+      await ensureBuilt(this.tocStore);
+      await listGraph(
+        this.tocStore,
+        this.broadcastService,
+        graph,
+        (graph.properties && graph.properties.lastUpdatedBy) || "Unknown",
+      );
+    } catch (err) {
+      console.error("Cannot list the graph.", graph.id, err);
+    }
   }
 
   /** Force the JSON projection up to date, for publishing and reads. */
@@ -132,7 +142,7 @@ export default class CrdtService {
     }
     await this.store.writeSnapshot(graphId);
     const graph = await this.store.writeProjections(graphId);
-    await this.refreshGraphList();
+    await this.listGraph(graph);
     return graph;
   }
 

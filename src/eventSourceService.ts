@@ -1,15 +1,19 @@
 import {Context, S3CreateEvent, APIGatewayEvent} from "aws-lambda";
 import {diff, applyChange} from "deep-diff";
 import {CRC32} from "jshashes";
+import {UPDATE_FORMAT, toBase64, fromBase64} from "@plastic-io/graph-crdt";
 import S3Service from "./s3Service";
 import BroadcastService from "./broadcastService";
 import CrdtService from "./crdtService";
 import CrdtStore from "./crdtStore";
+import TocStore from "./tocStore";
 import {
-    updateToc as buildToc,
-    getDeletedIndex as readDeletedIndex,
-    setDeletedIndex as writeDeletedIndex,
-    deletedIndexKey,
+    ensureBuilt,
+    listGraph,
+    listArtifact,
+    hideGraph,
+    showGraph,
+    unlistGraph,
 } from "./tocService";
 
 export interface EventSourceEvent {
@@ -35,11 +39,13 @@ export default class EventSourceService {
     broadcastService: BroadcastService;
     crdtService: CrdtService;
     crdtStore: CrdtStore;
+    tocStore: TocStore;
     okResponse: {statusCode: number};
     constructor() {
         this.broadcastService = new BroadcastService();
         this.crdtService = new CrdtService();
         this.crdtStore = new CrdtStore();
+        this.tocStore = new TocStore();
         this.okResponse = {
             statusCode: 200
         };
@@ -57,69 +63,103 @@ export default class EventSourceService {
             });
         });
     }
-    /** Graph ids that are hidden, keyed by id. */
-    getDeletedIndex(callback: (err: any, index: any) => void) {
-        readDeletedIndex(this.store, callback);
-    }
-
-    setDeletedIndex(index: any, callback: (err: any, response: any) => void) {
-        writeDeletedIndex(this.store, index, callback);
-    }
-
     /** Hide a graph, keeping everything it is made of. */
     softDeleteGraph(id: string, userId: string, callback: (err: any, response: any) => void) {
-        this.getDeletedIndex((err, index) => {
-            if (err) {
-                return callback(err, null);
-            }
-            index[id] = { id, deletedOn: Date.now(), deletedBy: userId || "Unknown" };
-            this.setDeletedIndex(index, (setErr) => {
-                if (setErr) {
-                    return callback(setErr, null);
-                }
-                this.updateToc(callback);
-            });
-        });
+        ensureBuilt(this.tocStore)
+            .then(() => hideGraph(this.tocStore, this.broadcastService, id, userId))
+            .then(() => callback(null, null))
+            .catch((err) => callback(err, null));
     }
 
     /** Put a hidden graph back. */
     restoreGraph(id: string, callback: (err: any, response: any) => void) {
-        this.getDeletedIndex((err, index) => {
-            if (err) {
-                return callback(err, null);
-            }
-            if (!index[id]) {
-                return callback(null, null);
-            }
-            delete index[id];
-            this.setDeletedIndex(index, (setErr) => {
-                if (setErr) {
-                    return callback(setErr, null);
-                }
-                this.updateToc(callback);
-            });
-        });
+        ensureBuilt(this.tocStore)
+            .then(() => showGraph(this.tocStore, this.broadcastService, id))
+            .then(() => callback(null, null))
+            .catch((err) => callback(err, null));
     }
 
-    /** Rebuild the list of graphs.  See tocService. */
+    /**
+     * Make sure the list exists.
+     *
+     * This used to rebuild the whole thing, walking every projection, and it
+     * was called on every write.  Entries are now written where they change,
+     * so this only has to build the list the first time.
+     */
     updateToc(callback: (err: any, response: any) => void) {
-        buildToc(this.store, this.broadcastService, callback);
+        ensureBuilt(this.tocStore)
+            .then(() => callback(null, null))
+            .catch((err) => callback(err, null));
     }
 
-    getToc(event: any, context: any, callback: (err: any, response: any) => void) {
-        this.store.get(`graphs/projections/toc.json`, (err, toc) => {
-            if (err && /NoSuchKey/.test(err.toString())) {
-                toc = {};
-                console.log("No TOC found.  Using empty object.");
-            } else if (err) {
-                return callback(err, null);
-            }
-            callback(null, {
-                statusCode: 200,
-                body: JSON.stringify(toc),
-                headers: corsHeaders,
+    /** Add or update the entry for one graph. */
+    listGraph(graph: any, userId?: string): Promise<void> {
+        return ensureBuilt(this.tocStore)
+            .then(() => listGraph(this.tocStore, this.broadcastService, graph, userId))
+            .catch((err) => {
+                console.error("Cannot list the graph.", err);
             });
-        });
+    }
+
+    /**
+     * The list of graphs, in the shape callers have always received.
+     *
+     * It is projected from the collaborative document rather than read from a
+     * file that something had to rebuild in full beforehand.
+     */
+    getToc(event: any, context: any, callback: (err: any, response: any) => void) {
+        ensureBuilt(this.tocStore)
+            .then(() => this.tocStore.project())
+            .then((toc) => {
+                callback(null, {
+                    statusCode: 200,
+                    body: JSON.stringify(toc),
+                    headers: corsHeaders,
+                });
+            })
+            .catch((err) => {
+                console.error("Cannot read the graph list.", err);
+                callback(err, null);
+            });
+    }
+
+    /** The list as a document update, so a caller can sync only what changed. */
+    getTocState(event: any, context: any, callback: (err: any, response: any) => void) {
+        const query = event.queryStringParameters || {};
+        ensureBuilt(this.tocStore)
+            .then(() => this.tocStore.encodeFor(query.sv ? fromBase64(query.sv) : undefined))
+            .then(({ payload, stateVector }) => {
+                callback(null, {
+                    statusCode: 200,
+                    body: JSON.stringify({
+                        format: UPDATE_FORMAT,
+                        exists: !!payload,
+                        payload: payload ? toBase64(payload) : null,
+                        stateVector: stateVector ? toBase64(stateVector) : null,
+                    }),
+                    headers: corsHeaders,
+                });
+            })
+            .catch((err) => {
+                console.error("Cannot read the graph list state.", err);
+                callback(null, { statusCode: 500, headers: corsHeaders });
+            });
+    }
+
+    /** Rebuild the list from the projections.  A repair tool. */
+    rebuildToc(event: any, context: any, callback: (err: any, response: any) => void) {
+        this.tocStore.rebuild()
+            .then((result) => {
+                callback(null, {
+                    statusCode: 200,
+                    body: JSON.stringify(result),
+                    headers: corsHeaders,
+                });
+            })
+            .catch((err) => {
+                console.error("Cannot rebuild the graph list.", err);
+                callback(null, { statusCode: 500, headers: corsHeaders });
+            });
     }
     /**
      * DEPRECATED.  The pre-CRDT write path: read the projection, apply a diff,
@@ -191,8 +231,9 @@ export default class EventSourceService {
                             console.error("Error storing latest version.", graphMeta);
                             return failure(err);
                         }
-                        // TODO maybe don't do this every time, check the event.changes for triggers
-                        this.updateToc(success);
+                        // The graph is right here, so its entry is written
+                        // directly.  Nothing walks the store.
+                        this.listGraph(graph, event.userId).then(() => success(null));
                     });
                 }),
                 new Promise((success, failure) => {
@@ -403,9 +444,25 @@ export default class EventSourceService {
                     }
                 });
             });
-            this.updateToc(() => {
+            ensureBuilt(this.tocStore).then(() => listArtifact(
+                this.tocStore,
+                this.broadcastService,
+                `artifacts/${node.id}.${node.version}`,
+                {
+                    id: `artifacts/${node.id}`,
+                    name: nodeMeta.name,
+                    description: nodeMeta.description,
+                    icon: nodeMeta.icon,
+                    type: "publishedNode",
+                    url: nodeMeta.url,
+                    version: nodeMeta.version,
+                    "artifact-url": nodeMeta["artifact-url"],
+                    "graph-id": nodeMeta["graph-id"],
+                },
+                node.userId,
+            )).then(() => {
                 callback(null, this.okResponse);
-            });
+            }).catch(() => callback(null, this.okResponse));
         });
     }
     publishGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
@@ -459,9 +516,24 @@ export default class EventSourceService {
             };
             this.store.set(`graphs/projections/published/artifacts/${graph.id}.${graph.version}.json`, graph, graphMeta, sendResponse);
             this.store.set(`graphs/projections/published/endpoints/${graph.url}.json`, graph, graphMeta, sendResponse);
-            this.updateToc(() => {
+            ensureBuilt(this.tocStore).then(() => listArtifact(
+                this.tocStore,
+                this.broadcastService,
+                `artifacts/${graph.id}.${graph.version}`,
+                {
+                    id: `artifacts/${graph.id}`,
+                    name: graphMeta.name,
+                    description: graphMeta.description,
+                    icon: graphMeta.icon,
+                    type: "publishedGraph",
+                    url: graphMeta.url,
+                    version: graphMeta.version,
+                    "artifact-url": graphMeta["artifact-url"],
+                },
+                graph.publishedBy,
+            )).then(() => {
                 callback(null, this.okResponse);
-            });
+            }).catch(() => callback(null, this.okResponse));
         });
     }
     getArtifact(event: any, context: any, callback: (err: any, response: any) => void) {
@@ -636,14 +708,10 @@ export default class EventSourceService {
                     });
                 }),
             ]).then(() => {
-                // Nothing is left to hide, so the marker goes too.
-                this.getDeletedIndex((indexErr, index) => {
-                    if (indexErr || !index[id]) {
-                        return this.updateToc(callback);
-                    }
-                    delete index[id];
-                    this.setDeletedIndex(index, () => this.updateToc(callback));
-                });
+                // Nothing is left to list.
+                return ensureBuilt(this.tocStore)
+                    .then(() => unlistGraph(this.tocStore, this.broadcastService, id))
+                    .then(() => callback(null, null));
             }).catch((err) => {
                 console.error("Delete graph all failure: ", err);
                 callback(err, null);
@@ -712,16 +780,19 @@ export default class EventSourceService {
 
     /** Everything currently hidden. */
     listDeletedGraphs(event: any, context: any, callback: (err: any, response: any) => void) {
-        this.getDeletedIndex((err, index) => {
-            if (err) {
-                return callback(null, { statusCode: 500, headers: corsHeaders });
-            }
-            callback(null, {
-                statusCode: 200,
-                body: JSON.stringify(Object.keys(index).map((key) => index[key])),
-                headers: corsHeaders,
+        ensureBuilt(this.tocStore)
+            .then(() => this.tocStore.listDeleted())
+            .then((deleted) => {
+                callback(null, {
+                    statusCode: 200,
+                    body: JSON.stringify(deleted),
+                    headers: corsHeaders,
+                });
+            })
+            .catch((err) => {
+                console.error("Cannot read the hidden graphs.", err);
+                callback(null, { statusCode: 500, headers: corsHeaders });
             });
-        });
     }
     deleteGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
         const body = JSON.parse(event.body);

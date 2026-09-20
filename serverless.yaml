@@ -237,6 +237,34 @@ functions:
           cors:
             origin: '*'
 
+  # The list of graphs as a document update, so a caller can fetch only what
+  # changed since it last looked rather than the whole list.
+  tocState:
+    handler: src/handler.getTocState
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /toc/state
+          request:
+            parameters:
+               querystrings:
+                 sv: false
+          cors:
+            origin: '*'
+
+  # Rebuild the list from the stored projections.  A repair tool: it is the
+  # expensive walk that the list exists to avoid doing on every write.
+  tocRebuild:
+    handler: src/handler.rebuildToc
+    timeout: 300
+    events:
+      - http:
+          method: POST
+          path: /toc/rebuild
+          cors:
+            origin: '*'
+
   deletedGraphs:
     handler: src/handler.listDeletedGraphs
     timeout: 30

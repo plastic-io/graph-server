@@ -3,6 +3,9 @@ class FakeS3Service {
     constructor() {
         this.objects = new Map();
         this.meta = new Map();
+        // Counted so tests can assert that a write does not fan out into a
+        // read of every other object.
+        this.calls = { list: 0, head: 0 };
     }
     getRaw(key, callback) {
         if (!this.objects.has(key)) {
@@ -27,6 +30,7 @@ class FakeS3Service {
         callback(null, null);
     }
     head(key, callback) {
+        this.calls.head += 1;
         if (!this.objects.has(key)) {
             return callback(new Error("NotFound"), null);
         }
@@ -47,6 +51,7 @@ class FakeS3Service {
         callback(null, null);
     }
     list(prefix, callback) {
+        this.calls.list += 1;
         const keys = [...this.objects.keys()]
             .filter((key) => key.indexOf(prefix) === 0)
             .sort();

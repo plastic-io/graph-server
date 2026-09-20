@@ -61,17 +61,21 @@ export interface HistoryEntry {
  * Putting the format in the prefix makes that structurally impossible and
  * leaves room to migrate by writing a new prefix rather than rewriting one.
  */
-function snapshotPrefix(graphId: string): string {
-  return `graphs/${graphId}/crdt/v${UPDATE_FORMAT}/snapshots/`;
+/** Where a document's objects live.  Graphs sit under `graphs`; the index of
+ * graphs sits under `index`, so the two never appear in one listing. */
+const DEFAULT_ROOT = "graphs";
+
+function snapshotPrefix(root: string, id: string): string {
+  return `${root}/${id}/crdt/v${UPDATE_FORMAT}/snapshots/`;
 }
 
-function updatePrefix(graphId: string): string {
-  return `graphs/${graphId}/crdt/v${UPDATE_FORMAT}/updates/`;
+function updatePrefix(root: string, id: string): string {
+  return `${root}/${id}/crdt/v${UPDATE_FORMAT}/updates/`;
 }
 
-/** Every prefix a graph's collaborative state has ever used, for deletion. */
-function allCrdtPrefixes(graphId: string): string[] {
-  return [`graphs/${graphId}/crdt/`];
+/** Every prefix a document's collaborative state has ever used, for deletion. */
+function allCrdtPrefixes(root: string, id: string): string[] {
+  return [`${root}/${id}/crdt/`];
 }
 
 /** Descriptions travel in the object key so that listing a log is one call. */
@@ -113,9 +117,19 @@ function parseSnapshotKey(key: string): string | null {
 
 export default class CrdtStore {
   store: S3Service;
+  readonly root: string;
 
-  constructor(store?: S3Service) {
+  constructor(store?: S3Service, options: { root?: string } = {}) {
     this.store = store || new S3Service(process.env.S3_BUCKET);
+    this.root = options.root || DEFAULT_ROOT;
+  }
+
+  private snapshots(id: string): string {
+    return snapshotPrefix(this.root, id);
+  }
+
+  private updates(id: string): string {
+    return updatePrefix(this.root, id);
   }
 
   /* ---------------------------------------------------------- promises */
@@ -161,7 +175,7 @@ export default class CrdtStore {
 
   /** The newest snapshot for a graph, or null when there is none yet. */
   async latestSnapshot(graphId: string): Promise<{ id: string; body: Buffer } | null> {
-    const items = await this.list(snapshotPrefix(graphId));
+    const items = await this.list(this.snapshots(graphId));
     const ids = items
       .map((item) => ({ key: item.Key, id: parseSnapshotKey(item.Key) }))
       .filter((item) => item.id)
@@ -181,7 +195,7 @@ export default class CrdtStore {
   async listUpdates(graphId: string, afterId?: string): Promise<
     { key: string; id: string; description: string; userId: string }[]
   > {
-    const items = await this.list(updatePrefix(graphId));
+    const items = await this.list(this.updates(graphId));
     return items
       .map((item) => {
         const parsed = parseUpdateKey(item.Key);
@@ -279,7 +293,7 @@ export default class CrdtStore {
     userId: string,
   ): Promise<string> {
     const id = ulid();
-    const key = `${updatePrefix(graphId)}${id}~${encodeLabel(description, userId)}.bin`;
+    const key = `${this.updates(graphId)}${id}~${encodeLabel(description, userId)}.bin`;
     await this.setRaw(key, Buffer.from(update), {
       "graph-id": graphId,
       "user-id": userId || "Unknown",
@@ -294,7 +308,7 @@ export default class CrdtStore {
     if (!update || !headId) {
       return null;
     }
-    await this.setRaw(`${snapshotPrefix(graphId)}${headId}.bin`, Buffer.from(update), {
+    await this.setRaw(`${this.snapshots(graphId)}${headId}.bin`, Buffer.from(update), {
       "graph-id": graphId,
       "update-format": String(UPDATE_FORMAT),
     });
@@ -333,11 +347,11 @@ export default class CrdtStore {
 
   /** True when the graph has collaborative state stored. */
   async exists(graphId: string): Promise<boolean> {
-    const snapshot = await this.list(snapshotPrefix(graphId));
+    const snapshot = await this.list(this.snapshots(graphId));
     if (snapshot.length > 0) {
       return true;
     }
-    const updates = await this.list(updatePrefix(graphId));
+    const updates = await this.list(this.updates(graphId));
     return updates.length > 0;
   }
 
@@ -352,7 +366,7 @@ export default class CrdtStore {
   }
 
   async removeAll(graphId: string): Promise<void> {
-    const listings = await Promise.all(allCrdtPrefixes(graphId).map((p) => this.list(p)));
+    const listings = await Promise.all(allCrdtPrefixes(this.root, graphId).map((p) => this.list(p)));
     const keys = listings.reduce((all, items) => all.concat(items), []).map((item) => item.Key);
     await Promise.all(
       keys.map(

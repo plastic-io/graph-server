@@ -340,12 +340,25 @@ describe("CRDT sync service", () => {
     });
 
     it("a checkpoint puts a new graph on the list", async () => {
-        // Writing the projection is not enough on its own.  Without the list
-        // being rebuilt, a graph somebody just made never shows up for them.
+        // Writing the projection is not enough on its own.  Without the entry
+        // being written, a graph somebody just made never shows up for them.
         await store.seedFromJson("g1", sampleGraph(), "tester");
         await invoke(service, "checkpoint", httpEvent({ id: "g1" }));
-        const listed = JSON.parse(s3.objects.get("graphs/projections/toc.json").toString());
+        const listed = await service.tocStore.project();
         expect(Object.keys(listed)).toContain("g1");
+        expect(listed["g1"].name).toBe("Sample");
+    });
+
+    it("listing a graph does not read every other graph", async () => {
+        // The point of the design: saving one graph costs one write, whatever
+        // else is stored.  The old version listed the projections and read the
+        // metadata of every object on each save.
+        await store.seedFromJson("g1", sampleGraph(), "tester");
+        await invoke(service, "checkpoint", httpEvent({ id: "g1" }));
+        s3.calls = { list: 0, head: 0 };
+        await store.seedFromJson("g2", { ...sampleGraph(), id: "g2", url: "Second" }, "tester");
+        await invoke(service, "checkpoint", httpEvent({ id: "g2" }));
+        expect(s3.calls.head).toBe(0);
     });
 
     it("a checkpoint on an unknown graph reports that there was nothing to do", async () => {
