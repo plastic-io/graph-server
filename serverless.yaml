@@ -565,6 +565,72 @@ functions:
           cors:
             origin: '*'
 
+  tests:
+    handler: src/handler.tests
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/tests
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+      - http:
+          method: POST
+          path: /crdt/{id}/tests
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  test:
+    handler: src/handler.test
+    # a test runs the graph, so it may need the isolate layer
+    layers:
+      - !Ref IsolatedVmLambdaLayer
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/tests/{testId}/run
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 testId: true
+          cors:
+            origin: '*'
+      - http:
+          method: GET
+          path: /crdt/{id}/tests/{testId}/runs
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 testId: true
+          cors:
+            origin: '*'
+      - http:
+          method: DELETE
+          path: /crdt/{id}/tests/{testId}
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 testId: true
+          cors:
+            origin: '*'
+
   journeys:
     handler: src/handler.journeys
     timeout: 30

@@ -75,6 +75,7 @@ const mcp = makeMcpHandler({
     tocStore: eventSourceService.tocStore,
     admission: eventSourceService.crdtService.admission,
     journeys: eventSourceService.journeys,
+    tests: eventSourceService.tests,
     invoke: invokeForAgent,
     cancel: cancelExecution,
     revisions: eventSourceService.revisions,
@@ -108,6 +109,13 @@ function _proposalValidate(event: any, context: any, callback: (err: any, respon
 /** Bringing graphs written before this server into it (plan §9.5, PB-122). */
 function _migrations(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.migrations.route(event, context, callback);
+}
+/** Component tests: whether each part still keeps its word (plan §8.1.2). */
+function _tests(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.tests.listRoute(event, context, callback);
+}
+function _test(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.tests.testRoute(event, context, callback);
 }
 /** Journeys: what this graph is for, and whether it still does it (plan §8.1.7). */
 function _journeys(event: any, context: any, callback: (err: any, response: any) => void) {
@@ -310,6 +318,8 @@ const publishNodeWs = withPrincipal(broadcastService.store, _publishNodeWs);
 const executionIngest = withPrincipal(broadcastService.store, _executionIngest);
 const executionsList = withPrincipal(broadcastService.store, _executionsList);
 const migrations = withPrincipal(broadcastService.store, _migrations);
+const tests = withPrincipal(broadcastService.store, _tests);
+const test = withPrincipal(broadcastService.store, _test);
 const journeys = withPrincipal(broadcastService.store, _journeys);
 const journey = withPrincipal(broadcastService.store, _journey);
 const edgeDeliver = withPrincipal(broadcastService.store, _edgeDeliver);
@@ -399,6 +409,8 @@ export {
     executionIngest,
     executionsList,
     migrations,
+    tests,
+    test,
     journeys,
     journey,
     journeyTick,

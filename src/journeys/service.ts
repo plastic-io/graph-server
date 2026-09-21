@@ -241,7 +241,7 @@ export class JourneyService {
      * graph as it is, invokes it as the synthetic principal, and checks what
      * the journey said to expect.
      */
-    async run(graphId: string, journeyId: string, by: "schedule" | "request", principal?: Principal): Promise<JourneyRun | { error: string; code: string }> {
+    async run(graphId: string, journeyId: string, by: "schedule" | "request", principal?: Principal, against?: { revisionId: string; projection: any }): Promise<JourneyRun | { error: string; code: string }> {
         if (principal) {
             const allowed = decide(principal, ["graph:read"]);
             if (!allowed.allow) {
@@ -255,8 +255,8 @@ export class JourneyService {
         const startedAt = Date.now();
         const runId = ulid();
         const correlationId = runId;
-        const graph: any = await this.crdtStore.projectGraph(graphId).catch(() => null);
-        const active = await this.crdtStore.activeRevision(graphId).catch(() => null);
+        const graph: any = (against && against.projection) || await this.crdtStore.projectGraph(graphId).catch(() => null);
+        const active = against ? { revisionId: against.revisionId } : await this.crdtStore.activeRevision(graphId).catch(() => null);
         const run: JourneyRun = {
             runId, journeyId, graphId,
             revisionId: active && active.revisionId ? active.revisionId : "live",
@@ -392,6 +392,25 @@ export class JourneyService {
 
     /* -------------------------------------------------------- the schedule */
 
+    /**
+     * Run every journey of a graph against a particular version of it, which
+     * is what a gate needs before that version becomes the one that runs.
+     */
+    async runAgainst(graphId: string, principal: Principal | undefined, options: { revisionId: string; projection: any }): Promise<{ runs: JourneyRun[]; failed: JourneyRun[] }> {
+        const listed = await this.list(graphId, principal);
+        const runs: JourneyRun[] = [];
+        for (const journey of (listed.journeys || [])) {
+            if (journey.enabled === false) {
+                continue;
+            }
+            const r = await this.run(graphId, journey.id, "request", principal, options);
+            if (!("error" in r)) {
+                runs.push(r);
+            }
+        }
+        return { runs, failed: runs.filter((r) => r.state !== "passed") };
+    }
+
     /* ----------------------------------------------------------- the routes */
 
     private reply(callback: (err: any, r: any) => void, body: any) {
@@ -449,8 +468,43 @@ export class JourneyService {
             .catch((err) => { console.error("The journey tick failed.", err); callback(null, { ran: 0, error: String(err && err.message) }); });
     }
 
+    /**
+     * A journey that fails soon after an activation is probably about that
+     * activation (plan §8.1.8, the post-activation window).  The tick joins
+     * the two so the alert names the version that changed, instead of leaving
+     * someone to notice the coincidence.
+     */
+    private async watchActivations(ran: JourneyRun[]): Promise<string[]> {
+        const alerts: string[] = [];
+        const failures = ran.filter((r) => r.state !== "passed");
+        if (!failures.length) {
+            return alerts;
+        }
+        const now = this.now().getTime();
+        for (const run of failures) {
+            const keys = await this.listKeys(`activations/${run.graphId}/`);
+            for (const key of keys) {
+                const window = await this.getJson(key);
+                if (!window || !window.until || Date.parse(window.until) < now) {
+                    continue;
+                }
+                const alert = `${run.intent} failed within ${Math.round((now - Date.parse(window.at)) / 60000)} minute(s) of version ${window.seq} being activated: ${run.reason || run.state}`;
+                window.alerts = (window.alerts || []).concat({ at: new Date().toISOString(), journeyId: run.journeyId, runId: run.runId, says: alert });
+                await this.putJson(key, window);
+                alerts.push(alert);
+                if (this.deps.notify) {
+                    await this.deps.notify(run.graphId, {
+                        eventType: "activation", action: "suspect", revisionId: window.revisionId, seq: window.seq,
+                        journeyId: run.journeyId, says: alert, since: window.at,
+                    });
+                }
+            }
+        }
+        return alerts;
+    }
+
     /** Every journey that is due now, across every graph. */
-    async tick(windowMinutes = 5): Promise<{ ran: JourneyRun[]; considered: number }> {
+    async tick(windowMinutes = 5): Promise<{ ran: JourneyRun[]; considered: number; alerts?: string[] }> {
         const now = this.now();
         const keys = (await this.listKeys("journeys/")).filter((k) => k.endsWith(".json") && !k.includes("/runs/"));
         const ran: JourneyRun[] = [];
@@ -467,6 +521,7 @@ export class JourneyService {
                 ran.push(result);
             }
         }
-        return { ran, considered: keys.length };
+        const alerts = await this.watchActivations(ran);
+        return { ran, considered: keys.length, alerts };
     }
 }

@@ -44,11 +44,14 @@ async function setup() {
     const { JourneyService } = require("../journeys/service");
     const { ExecutionRunner } = require("../runtime/executor");
     const journeys = new JourneyService(s3, store, { runner: (live) => new ExecutionRunner(s3, { live }) });
+    const { TestService } = require("../tests/runner");
+    const { validatorFor_ } = require("../runtime/contracts");
+    const tests = new TestService(s3, store, { runner: (live) => new ExecutionRunner(s3, { live }), validator: validatorFor_ });
     const invoked = [];
     const cancelled = [];
     const { RateLimiter } = require("../admission/limits");
     const mcp = makeMcpHandler({
-        crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys,
+        crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys, tests,
         // the brake is tested in its own suite; here it would only stop the test
         rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: 1000 }) },
         invoke: async (graphId, principal, request) => {
@@ -87,7 +90,7 @@ describe("MCP over the Lambda handler", () => {
         expect(tools).toEqual([
             "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
             "journey.run", "observations.query", "proposal.commit", "proposal.create", "proposal.decide", "proposal.validate",
-            "revision.activate", "revision.cut", "revision.rollback",
+            "revision.activate", "revision.cut", "revision.rollback", "tests.run",
         ]);
         const r = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
         expect(r.envelope).toMatchObject({ schemaVersion: "1", principal: { sub: "auth0|u1", kind: "human" }, graphId: "g1", policyVersion: "m1-diff", truncated: false });

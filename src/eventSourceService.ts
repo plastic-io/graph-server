@@ -16,6 +16,10 @@ import { ExecutionIngest } from "./runtime/ingest";
 import { DeliveryService } from "./runtime/deliveries";
 import { JourneyService } from "./journeys/service";
 import { MigrationService } from "./migrations/backfill";
+import { TestService } from "./tests/runner";
+import { fromRuns } from "./gates/gates";
+import { SYSTEM_PRINCIPAL } from "./revisions/service";
+import { validatorFor_ } from "./runtime/contracts";
 import { ExecutionRunner } from "./runtime/executor";
 import { DelegationStore } from "./policy/delegation";
 import {
@@ -54,6 +58,7 @@ export default class EventSourceService {
     deliveries: DeliveryService;
     journeys: JourneyService;
     migrations: MigrationService;
+    tests: TestService;
     delegations: DelegationStore;
     store: S3Service;
     broadcastService: BroadcastService;
@@ -75,6 +80,20 @@ export default class EventSourceService {
             notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
         });
         this.crdtService.admission.integrity = (after, diff) => this.components.integrityCheck(after, diff);
+        /**
+         * What the gates ask of a version before it may be published or run
+         * (plan §8.1.8): every test of this graph, against that version rather
+         * than against the live graph, and every journey it has.  A graph with
+         * neither has nothing to fail, which is honest: the gate reports what
+         * exists, and the absence of tests is visible elsewhere.
+         */
+        const gate = async (graphId: string, revisionId: string, projection: any) => {
+            const tests = await this.tests.runAll(graphId, SYSTEM_PRINCIPAL, { revisionId, projection, by: "gate" });
+            const journeys = await this.journeys.runAgainst(graphId, SYSTEM_PRINCIPAL, { revisionId, projection });
+            return fromRuns("tests", tests.failed).concat(fromRuns("journeys", journeys.failed));
+        };
+        this.components.gate = gate;
+        this.revisions.gate = gate;
         // crdtStore already holds the S3 service; this.store is assigned further down the constructor
         this.delegations = new DelegationStore(this.crdtStore.store as any);
         this.crdtService.admission.resolvePrincipal = (principal, graphId) => this.delegations.resolve(principal, graphId);
@@ -87,6 +106,11 @@ export default class EventSourceService {
         this.migrations = new MigrationService(this.crdtStore.store as any, this.crdtStore, this.tocStore, {
             revisions: this.revisions, components: this.components, admission: this.crdtService.admission,
             fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
+        });
+        // Whether each component still keeps its word (plan §8.1.2).
+        this.tests = new TestService(this.crdtStore.store as any, this.crdtStore, {
+            runner: (live) => new ExecutionRunner(this.crdtStore.store as any, { live }),
+            validator: validatorFor_,
         });
         // What the application is for, proved on a schedule (plan §8.1.7).
         this.journeys = new JourneyService(this.crdtStore.store as any, this.crdtStore, {

@@ -25,6 +25,18 @@ function portOf(node: any, direction: "inputs" | "outputs", field: string): any 
     return ((node && node.properties && node.properties[direction]) || []).find((p: any) => p && p.name === field);
 }
 
+/** A validator for one schema, for anything that needs to check a value against it. */
+export function validatorFor_(schema: any): (value: any) => { ok: boolean; message?: string } {
+    const validate = validatorFor(schema);
+    return (value: any) => {
+        if (validate(value)) {
+            return { ok: true };
+        }
+        const first = (validate.errors || [])[0];
+        return { ok: false, message: first ? `${first.instancePath || "value"} ${first.message}` : "does not match" };
+    };
+}
+
 export function makeContractHooks() {
     const check = (direction: "inputs" | "outputs") => ({ node, field, value }: any) => {
         const port = portOf(node, direction, field);

@@ -56,6 +56,9 @@ export interface ActivePointer {
 
 export const SYSTEM_PRINCIPAL: Principal = { sub: "system:revisions", kind: "system", tenant: "system", scopes: [] };
 
+/** How long after an activation a failure is still counted against it. */
+const WINDOW_MINUTES = 15;
+
 export let SCHEDULER_VERSION = "unknown";
 try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -85,21 +88,26 @@ export class RevisionService {
     private store: Store;
     private notify: (graphId: string, event: any) => Promise<void>;
     private fanOut: (graphId: string, update: Uint8Array) => Promise<void>;
+    /** What must hold before a version may be the one that runs (plan §8.1.8). */
+    gate: ((graphId: string, revisionId: string, projection: any) => Promise<{ gate: string; says: string }[]>) | null = null;
 
     constructor(crdtStore: CrdtStore, admission: AdmissionService, hooks: {
         notify?: (graphId: string, event: any) => Promise<void>;
         fanOut?: (graphId: string, update: Uint8Array) => Promise<void>;
+        gate?: (graphId: string, revisionId: string, projection: any) => Promise<{ gate: string; says: string }[]>;
     } = {}) {
         this.crdtStore = crdtStore;
         this.admission = admission;
         this.store = crdtStore.store as any;
         this.notify = hooks.notify || (async () => undefined);
         this.fanOut = hooks.fanOut || (async () => undefined);
+        this.gate = hooks.gate || null;
     }
 
     static manifestKey(graphId: string, revisionId: string) { return `revisions/${graphId}/${revisionId}.json`; }
     static projectionKey(graphId: string, revisionId: string) { return `revisions/${graphId}/${revisionId}.projection.json`; }
     static headKey(graphId: string) { return `revisions/${graphId}/HEAD.json`; }
+    static windowKey(graphId: string, revisionId: string) { return `activations/${graphId}/${revisionId}.json`; }
     static activeKey(graphId: string) { return CrdtStore.activeKey(graphId); }
     static seqKey(graphId: string, seq: number) { return `revisions/${graphId}/seq/${seq}.json`; }
 
@@ -311,7 +319,7 @@ export class RevisionService {
     /* ------------------------------------------------------------ activation */
 
     /** Make a revision the one execution loads (plan §4.7.4).  Idempotent. */
-    async activate(graphId: string, revisionId: string, principal: Principal | undefined): Promise<{ active: ActivePointer } | { error: string; code: string }> {
+    async activate(graphId: string, revisionId: string, principal: Principal | undefined, force = false): Promise<{ active: ActivePointer } | { error: string; code: string }> {
         const allowed = decide(principal, ["graph:activate"]);
         if (!allowed.allow) {
             return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
@@ -321,10 +329,34 @@ export class RevisionService {
         if (!revision || !projection) {
             return { error: "no such revision", code: "NOT_FOUND" };
         }
+        /**
+         * The pre-activation gate (plan §8.1.8): activation is the moment a
+         * change reaches the people using the application, so what is about to
+         * run is checked first — against this revision, not against the live
+         * graph.  `force` is for the person who has read the findings and
+         * wants it anyway; it is recorded in the audit with their name on it.
+         */
+        if (!force && this.gate) {
+            const findings = await this.gate(graphId, revisionId, projection);
+            if (findings.length) {
+                return {
+                    error: `this version is not ready to run: ${findings.map((f) => f.says).join("; ")}`,
+                    code: "GATE_FAILED",
+                    details: { findings },
+                } as any;
+            }
+        }
         const active: ActivePointer = { revisionId, seq: revision.seq, label: revision.label, at: new Date().toISOString(), by: principal ? principal.sub : null, digest: revision.digest.full };
         await this.crdtStore.writeExecutionProjection(projection, { revisionId, seq: revision.seq });
         await this.putJson(RevisionService.activeKey(graphId), active);
-        await this.admission.chain.append(graphId, { kind: "revision.activated", at: active.at, graphId, revisionId, seq: revision.seq, principal: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant } : null, digest: revision.digest.full });
+        await this.admission.chain.append(graphId, { kind: "revision.activated", at: active.at, graphId, revisionId, seq: revision.seq, principal: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant } : null, digest: revision.digest.full, ...(force ? { forced: true } : {}) });
+        // What runs was just changed; anything that fails in the next while is
+        // worth connecting to this (plan §8.1.8, the post-activation window).
+        await this.putJson(RevisionService.windowKey(graphId, revisionId), {
+            graphId, revisionId, seq: revision.seq, at: active.at,
+            until: new Date(Date.now() + WINDOW_MINUTES * 60000).toISOString(),
+            by: active.by, forced: !!force, alerts: [],
+        });
         await this.notify(graphId, { eventType: "revision", action: "activated", revisionId, seq: revision.seq, label: revision.label, by: active.by });
         return { active };
     }

@@ -38,6 +38,12 @@ export interface RunRequest {
     resolve?: (path: string) => Promise<any | null>;
     /** Extra members for the set function's `this` (the 2.0 setContext). */
     setContext?: (event: any) => any;
+    /**
+     * What the node believes the time is.  A test that says "five within a
+     * window, then refused" cannot wait out a real window, so it runs against
+     * a clock it holds still; everything else gets the real one.
+     */
+    now?: () => number;
     /** Manifest capabilities per pinned component, when known. */
     manifestCapabilities?: (node: any) => any[] | null;
     /** Capabilities of the executing principal; null = unrestricted (owner). */
@@ -138,6 +144,7 @@ export class ExecutionRunner {
                 del: (key) => new Promise((resolve) => this.store.remove(kvKey(key), () => resolve())),
             },
             audit: (record) => this.chain.append(graph.id, record).then(() => undefined),
+            now: req.now,
         };
         const hooks = makeContractHooks();
         const onOutput = (info: any) => {

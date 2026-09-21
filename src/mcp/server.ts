@@ -32,6 +32,7 @@ export interface McpDeps {
     summaries: SummaryService;
     delegations: DelegationStore;
     journeys?: { run(graphId: string, journeyId: string, by: "schedule" | "request", principal?: Principal): Promise<any> };
+    tests?: { run(graphId: string, testId: string, principal: Principal | undefined, options?: any): Promise<any>; runAll(graphId: string, principal: Principal | undefined, options?: any): Promise<any> };
     /** Run a graph for an agent (the server wires this to the execution runner). */
     invoke?: (graphId: string, principal: Principal | undefined, request: { nodeUrl: string; field?: string; value?: any; budget?: any }) => Promise<any>;
     /** Ask a running execution to stop. */
@@ -354,11 +355,11 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
 
     server.registerTool("revision.activate", {
         title: "Run this revision",
-        description: "Point execution at a revision. New work runs it; work already in flight finishes on the revision it started with.",
-        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, revisionId: REV }).strict(),
+        description: "Point execution at a revision. New work runs it; work already in flight finishes on the revision it started with. Refused when that version fails a test or a journey of this graph; `force` activates anyway and is recorded in the audit.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, revisionId: REV, force: z.boolean().optional() }).strict(),
         annotations: { readOnlyHint: false, idempotentHint: true },
     }, guarded("revision.activate", "write", (a) => a.graphId, ["graph:activate"], async (args, principal) => {
-        const r: any = await deps.revisions.activate(args.graphId, revId(args.revisionId), principal);
+        const r: any = await deps.revisions.activate(args.graphId, revId(args.revisionId), principal, !!args.force);
         if (r.error) return fail(r.code, r.error, retryFor(r.code));
         return ok(principal, { active: { revision: revRef(r.active.revisionId), seq: r.active.seq, label: r.active.label, at: r.active.at } }, { graphId: args.graphId, resultRevision: revRef(r.active.revisionId) });
     }));
@@ -376,11 +377,11 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
 
     server.registerTool("component.publish", {
         title: "Publish a component",
-        description: "Publish the graph, or one node of it, as an immutable version other graphs can import. The version is the revision's sequence number; publishing an unchanged graph returns the version that already exists.",
-        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, nodeId: ID.optional(), label: z.string().max(200).optional(), revisionId: REV.optional() }).strict(),
+        description: "Publish the graph, or one node of it, as an immutable version other graphs can import. The version is the revision's sequence number; publishing an unchanged graph returns the version that already exists. Refused when a node reaches for an effect it never declared, or when a test of this graph fails; `force` publishes anyway and is recorded.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, nodeId: ID.optional(), label: z.string().max(200).optional(), revisionId: REV.optional(), force: z.boolean().optional() }).strict(),
         annotations: { readOnlyHint: false, idempotentHint: true },
     }, guarded("component.publish", "write", (a) => a.graphId, ["component:publish"], async (args, principal) => {
-        const r: any = await deps.components.publish(args.graphId, principal, { nodeId: args.nodeId, label: args.label, revisionId: args.revisionId ? revId(args.revisionId) : undefined });
+        const r: any = await deps.components.publish(args.graphId, principal, { nodeId: args.nodeId, label: args.label, revisionId: args.revisionId ? revId(args.revisionId) : undefined, force: !!args.force });
         if (r.error) return fail(r.code, r.error, retryFor(r.code));
         return ok(principal, {
             publishedId: r.manifest.publishedId, version: r.manifest.version, created: r.created,
@@ -411,6 +412,22 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
         const r: any = await deps.cancel(args.graphId, principal, args.executionId, args.reason || "");
         if (r.error) return fail(r.code, r.error, retryFor(r.code));
         return ok(principal, r, { graphId: args.graphId });
+    }));
+
+    server.registerTool("tests.run", {
+        title: "Check that a part still keeps its word",
+        description: "Run one component test, or every test of a graph, and answer with what was expected and what happened. A test names its target by node or by capability, so it survives the graph being rebuilt.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, testId: z.string().min(1).max(64).optional() }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: false },
+    }, guarded("tests.run", "write", (a) => a.graphId, ["graph:test"], async (args, principal) => {
+        if (!deps.tests) return fail("INTERNAL", "this server has no tests");
+        if (args.testId) {
+            const r: any = await deps.tests.run(args.graphId, args.testId, principal, { by: "request" });
+            if (r.error) return fail(r.code, r.error, retryFor(r.code));
+            return ok(principal, { runs: [r], failed: r.state === "passed" ? 0 : 1 }, { graphId: args.graphId });
+        }
+        const r: any = await deps.tests.runAll(args.graphId, principal, { by: "request" });
+        return ok(principal, { runs: r.runs, failed: r.failed.length }, { graphId: args.graphId });
     }));
 
     server.registerTool("journey.run", {

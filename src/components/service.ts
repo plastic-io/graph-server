@@ -7,6 +7,7 @@ import { RevisionService, Revision, SCHEDULER_VERSION } from "../revisions/servi
 import CrdtStore from "../crdtStore";
 import TocStore from "../tocStore";
 import { ensureBuilt, listArtifact } from "../tocService";
+import { undeclaredEffects, GateFinding } from "../gates/gates";
 
 /**
  * Published components (plan §4.3), grown out of revisions.
@@ -88,11 +89,14 @@ export class ComponentService {
     private tocStore: TocStore | null;
     private broadcastService: any;
     private notify: (graphId: string, event: any) => Promise<void>;
+    gate: ((graphId: string, revisionId: string, projection: any) => Promise<GateFinding[]>) | null;
 
     constructor(crdtStore: CrdtStore, revisions: RevisionService, admission: AdmissionService, hooks: {
         tocStore?: TocStore | null;
         broadcastService?: any;
         notify?: (graphId: string, event: any) => Promise<void>;
+        /** What else must hold before something may be published (the tests of this graph). */
+        gate?: (graphId: string, revisionId: string, projection: any) => Promise<GateFinding[]>;
     } = {}) {
         this.crdtStore = crdtStore;
         this.revisions = revisions;
@@ -101,6 +105,7 @@ export class ComponentService {
         this.tocStore = hooks.tocStore || null;
         this.broadcastService = hooks.broadcastService || null;
         this.notify = hooks.notify || (async () => undefined);
+        this.gate = hooks.gate || null;
     }
 
     static manifestKey(id: string, version: number | string) { return `components/${id}/${version}/manifest.json`; }
@@ -217,7 +222,7 @@ export class ComponentService {
      * Publish a graph (or one of its nodes) at a revision: the head, cut now if the
      * graph changed since the last one, or an older revision by id.
      */
-    async publish(graphId: string, principal: Principal | undefined, options: { nodeId?: string; label?: string; revisionId?: string } = {}): Promise<{ manifest: ComponentManifest; created: boolean; revision: Revision } | { error: string; code: string }> {
+    async publish(graphId: string, principal: Principal | undefined, options: { nodeId?: string; label?: string; revisionId?: string; force?: boolean } = {}): Promise<{ manifest: ComponentManifest; created: boolean; revision: Revision } | { error: string; code: string }> {
         const allowed = decide(principal, ["component:publish"]);
         if (!allowed.allow) {
             return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
@@ -238,6 +243,24 @@ export class ComponentService {
         const projection = await this.revisions.projection(graphId, revision.revisionId);
         if (!projection) {
             return { error: "the revision has no projection", code: "NOT_FOUND" };
+        }
+        /**
+         * The publication gate (plan §8.1.8): what is published is what other
+         * graphs will import and run, so it has to say what it does and to
+         * still keep its word.  `force` is honoured only for a caller who
+         * could publish anyway, and is recorded on the manifest.
+         */
+        if (!options.force) {
+            const findings = undeclaredEffects(projection, options.nodeId);
+            const failures = this.gate ? await this.gate(graphId, revision.revisionId, projection) : [];
+            const all = findings.concat(failures);
+            if (all.length) {
+                return {
+                    error: `this cannot be published yet: ${all.map((f) => f.says).join("; ")}`,
+                    code: "GATE_FAILED",
+                    details: { findings: all },
+                } as any;
+            }
         }
         const kind: "graph" | "node" = options.nodeId ? "node" : "graph";
         const publishedId = options.nodeId || graphId;
