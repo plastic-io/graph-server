@@ -57,6 +57,18 @@ describe("capabilities", () => {
     });
 });
 
+describe("object metadata", () => {
+    const S3Service = require("../s3Service").default;
+    test("carries what people write, in any language, without breaking the write", () => {
+        expect(S3Service.safeMetadata({ description: "plain ascii", n: 5 })).toEqual({ description: "plain ascii", n: "5" });
+        expect(S3Service.safeMetadata({ description: "entry → render" })).toEqual({ description: "entry%20%E2%86%92%20render", "description-encoding": "uri" });
+        expect(S3Service.safeMetadata({ name: "café ☕" })).toMatchObject({ "name-encoding": "uri" });
+        expect(decodeURIComponent(S3Service.safeMetadata({ name: "café ☕" }).name)).toBe("café ☕");
+        expect(S3Service.safeMetadata({ skip: undefined, keep: "" })).toEqual({ keep: "" });
+        expect(S3Service.safeMetadata({ long: "x".repeat(5000) }).long).toHaveLength(1024);
+    });
+});
+
 describe("browser executions reported to the server", () => {
     const { ExecutionIngest } = require("../runtime/ingest");
     const obs = (over = {}) => ({ id: "01M32AAAAAAAAAAAAAAAAAAAAA", seq: 1, at: "2026-09-21T10:00:00.000Z", kind: "edge.input", graphId: "somebody-elses", revisionId: "whatever", executionId: "nope", correlationId: "nope", domain: "server", owner: { sub: "auth0|attacker", kind: "human", tenant: "other" }, instancePath: [], nodeId: "a", edgeField: "in", payload: { meta: { type: "string", bytes: 3 } }, ...over });

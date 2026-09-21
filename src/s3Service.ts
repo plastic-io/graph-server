@@ -70,6 +70,34 @@ export default class S3Service {
             callback(null, data.Body as Buffer);
         });
     }
+    /**
+     * S3 object metadata travels as HTTP headers, which may hold only ASCII.
+     * Graph names and descriptions are written there and people write in every
+     * language, so values are encoded rather than refused: a non-ASCII value is
+     * percent-encoded (and marked, so a reader can decode it) instead of
+     * failing the write, which is what "Invalid character in header content"
+     * meant for a description with an arrow in it.
+     */
+    static safeMetadata(meta: any): Record<string, string> {
+        const out: Record<string, string> = {};
+        Object.keys(meta || {}).forEach((key) => {
+            const value = meta[key];
+            if (value === undefined || value === null) {
+                return;
+            }
+            const text = String(value);
+            // eslint-disable-next-line no-control-regex
+            if (/^[\x20-\x7E]*$/.test(text)) {
+                out[key] = text.length > 1024 ? text.slice(0, 1024) : text;
+                return;
+            }
+            const encoded = encodeURIComponent(text);
+            out[key] = encoded.length > 1024 ? encoded.slice(0, 1024) : encoded;
+            out[`${key}-encoding`] = "uri";
+        });
+        return out;
+    }
+
     /** Write an opaque binary body, used for Yjs updates and snapshots. */
     setRaw(key: string, body: Buffer, meta: any, callback: (err: any, data: any) => void) {
         this.s3.putObject({
@@ -77,7 +105,7 @@ export default class S3Service {
             Bucket: this.bucketName,
             Key: key,
             ContentType: "application/octet-stream",
-            Metadata: meta || {},
+            Metadata: S3Service.safeMetadata(meta),
         }, (err) => {
             if (err) {
                 console.error("Error writing binary object", key, err);
@@ -91,7 +119,7 @@ export default class S3Service {
             Body: JSON.stringify(val),
             Bucket: this.bucketName,
             Key: key,
-            Metadata: meta,
+            Metadata: S3Service.safeMetadata(meta),
         }, (err) => {
             if (err) {
                 console.error("Error writing file", err);
