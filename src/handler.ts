@@ -156,7 +156,8 @@ function _publishNodeWs(event: any, context: any, callback: (err: any, response:
 function _defaultRoute(event: any, context: any, callback: (err: any, response: any) => void) {
     graphService.init(event, context).then((res) => {
         console.error("Handler: complete");
-        callback(null, { statusCode: 200, body: "ok", });
+        // the execution summary, or the node's own answer (plan §4.7.4)
+        callback(null, res && res.statusCode ? res : { statusCode: 200, body: "ok", });
     }).catch((err) => {
         console.error("Handler: Caught a top level router error", err);
         callback(null, { statusCode: 200, body: "ok", });

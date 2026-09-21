@@ -517,9 +517,15 @@ class GraphService {
                 }
                 resolve({ statusCode: 200, body: JSON.stringify(summary || { ok: true }), headers: { ...corsHeaders, "Content-Type": "application/json" } });
             }
+            // a pinned component runs under its published manifest's capabilities (plan §4.5.4)
+            const manifests: Record<string, any> = {};
+            await Promise.all((graph.nodes || []).filter((n: any) => n.properties && n.properties.component && n.properties.component.publishedId).map((n: any) => new Promise<void>((done) => {
+                this.store.get(`components/${n.properties.component.publishedId}/${n.properties.component.version}/manifest.json`, (e: any, m: any) => { if (!e && m) manifests[n.id] = m; done(); });
+            })));
             try {
                 runner.run({
                     graph, nodeUrl, field, value,
+                    manifestCapabilities: (n: any) => (manifests[n.id] ? (manifests[n.id].capabilities || []) : null),
                     context: { openai, event, context, callback: cb },
                     state: workerObjProxy,
                     logger,
