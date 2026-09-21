@@ -548,6 +548,32 @@ functions:
           cors:
             origin: '*'
 
+  executionsList:
+    handler: src/handler.executionsList
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/executions
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+      - http:
+          method: GET
+          path: /crdt/{id}/executions/{executionId}
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 executionId: true
+          cors:
+            origin: '*'
+
   executionIngest:
     handler: src/handler.executionIngest
     timeout: 60

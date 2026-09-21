@@ -1,4 +1,5 @@
 import { Observation, ExecutionRecord, ObservationRecorder, byteLength } from "./observe";
+import { readObservations } from "./executor";
 import { Principal } from "../auth/principal";
 import { decide } from "../policy/decide";
 import { ExecutionRunner } from "./executor";
@@ -180,6 +181,77 @@ export class ExecutionIngest {
         await this.putJson(ExecutionRunner.executionKey(executionId), record);
         await this.putJson(ExecutionRunner.byGraphKey(graphId, executionId), record);
         return { record, observations: cleaned.length, replayed: false };
+    }
+
+    /**
+     * What ran for this graph, newest first, and what one execution observed.
+     * Both halves of an execution that spanned domains are joined, so the
+     * editor shows one story rather than a server list and a browser list.
+     */
+    async list(graphId: string, principal: Principal | undefined, limit = 50): Promise<any> {
+        const allowed = decide(principal, ["graph:observe"]);
+        if (!allowed.allow) {
+            return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
+        }
+        const prefix = `executions/by-graph/${graphId}/`;
+        const keys = (await this.list_(prefix)).sort().reverse().slice(0, Math.min(200, limit));
+        const executions: any[] = [];
+        for (const key of keys) {
+            const record = await this.getJson(key);
+            if (record) {
+                executions.push(record);
+            }
+        }
+        return { graphId, executions };
+    }
+
+    async observations(graphId: string, executionId: string, principal: Principal | undefined): Promise<any> {
+        const allowed = decide(principal, ["graph:observe"]);
+        if (!allowed.allow) {
+            return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
+        }
+        const record = await this.getJson(ExecutionRunner.executionKey(executionId));
+        if (!record || record.graphId !== graphId) {
+            return { error: "no such execution", code: "NOT_FOUND" };
+        }
+        const payloads = decide(principal, ["graph:inspect-payloads"]).allow;
+        const observations = await this.allObservations(record);
+        return {
+            execution: record,
+            observations: payloads ? observations : observations.map((o: any) => (o.payload && o.payload.value !== undefined ? { ...o, payload: { meta: o.payload.meta, redacted: "payload" } } : o)),
+        };
+    }
+
+    /** The owner's observations plus every half another domain contributed. */
+    private async allObservations(record: any): Promise<any[]> {
+        const own = await readObservations(this.store as any, record);
+        const sideKeys = (await this.list_(`executions/${record.executionId}/deliveries/`))
+            .concat(await this.list_(`executions/${record.executionId}/reports/`));
+        const rest: any[] = [];
+        for (const key of sideKeys) {
+            const side = await this.getJson(key);
+            if (side && side.observationsKey) {
+                rest.push(...await readObservations(this.store as any, { observations: { key: side.observationsKey } } as any));
+            }
+        }
+        return own.concat(rest).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    }
+
+    private list_(prefix: string): Promise<string[]> {
+        return new Promise((resolve) => (this.store as any).list(prefix, (err: any, items: any[]) => resolve(err ? [] : (items || []).map((i: any) => i.Key))));
+    }
+
+    /** `GET /crdt/{id}/executions` and `GET /crdt/{id}/executions/{executionId}` */
+    listRoute(event: any, context: any, callback: (err: any, r: any) => void) {
+        const headers = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": true };
+        const { id: graphId, executionId } = event.pathParameters || {};
+        const limit = Number((event.queryStringParameters || {}).limit || 50);
+        const answer = executionId
+            ? this.observations(graphId, executionId, event.principal)
+            : this.list(graphId, event.principal, limit);
+        answer
+            .then((r: any) => callback(null, { statusCode: r.error ? (r.code === "ADMISSION_DENIED" ? 403 : 404) : 200, body: JSON.stringify(r), headers }))
+            .catch((err) => { console.error("Cannot list executions.", err); callback(null, { statusCode: 500, headers }); });
     }
 
     /** `POST /crdt/{id}/executions` */

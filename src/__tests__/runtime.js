@@ -124,6 +124,23 @@ describe("browser executions reported to the server", () => {
         expect(readJson(s3, "executions/01M32BBBBBBBBBBBBBBBBBBBBB.json").hops).toBe(2);
     });
 
+    test("the editor can list what ran and read one execution, both halves joined", async () => {
+        const s3 = new FakeS3Service();
+        const ingest = new ExecutionIngest(s3);
+        const runner = new ExecutionRunner(s3);
+        const g = { id: "g1", url: "g1", version: 0, properties: { name: "g1" }, nodes: [{ id: "a", url: "a", version: 0, graphId: "g1", artifact: null, data: null, edges: [{ field: "out", connectors: [] }], properties: { inputs: [port("in")], outputs: [port("out")], name: "a", presentation: {} }, template: { set: "state.ran = true;", vue: "" } }] };
+        const summary = await runner.run({ graph: g, nodeUrl: "a", value: 1, principal: owner, state: {} });
+        await ingest.ingest("g1", owner, { record: record({ executionId: summary.executionId }), observations: [obs({ kind: "custom", nodeId: "browser-node" })], sessionId: "tab-1" });
+        const listed = await ingest.list("g1", owner);
+        expect(listed.executions.map((e) => [e.executionId, e.domain])).toEqual([[summary.executionId, "server"]]);
+        const one = await ingest.observations("g1", summary.executionId, owner);
+        expect(one.execution.executionId).toBe(summary.executionId);
+        expect(one.observations.map((o) => o.domain)).toEqual(expect.arrayContaining(["server", "browser"]));
+        expect(one.observations.map((o) => o.id)).toEqual([...one.observations.map((o) => o.id)].sort());
+        expect(await ingest.list("g1", undefined)).toMatchObject({ code: "ADMISSION_DENIED" });
+        expect(await ingest.observations("g1", "01M32ZZZZZZZZZZZZZZZZZZZZZ", owner)).toMatchObject({ code: "NOT_FOUND" });
+    });
+
     test("volume, identity and shape are refused rather than trusted", async () => {
         const s3 = new FakeS3Service();
         const ingest = new ExecutionIngest(s3);
