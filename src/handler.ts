@@ -61,7 +61,7 @@ function _auditList(event: any, context: any, callback: (err: any, response: any
     const chain = eventSourceService.crdtService.admission.chain;
     const store: any = eventSourceService.crdtStore.store;
     store.list(`${chain.prefix}/${graphId}/`, async (err: any, items: any[]) => {
-        if (err) return callback(null, { statusCode: 500, headers: corsJson });
+        if (err) { console.error("Cannot list audit records.", err); return callback(null, { statusCode: 500, headers: corsJson }); }
         const keys = (items || []).map((i: any) => i.Key).filter((k: string) => !k.endsWith("HEAD.json")).sort().reverse().slice(0, limit);
         const records: any[] = [];
         for (const key of keys) {
@@ -77,7 +77,7 @@ function _delegationsList(event: any, context: any, callback: (err: any, respons
     if (!allowed.allow) return callback(null, { statusCode: 403, headers: corsJson, body: JSON.stringify({ error: allowed.reason, code: "ADMISSION_DENIED" }) });
     eventSourceService.delegations.list()
         .then((delegations) => callback(null, { statusCode: 200, headers: corsJson, body: JSON.stringify({ delegations }) }))
-        .catch(() => callback(null, { statusCode: 500, headers: corsJson }));
+        .catch((err) => { console.error("Cannot list delegations.", err); callback(null, { statusCode: 500, headers: corsJson }); });
 }
 function _delegationPut(event: any, context: any, callback: (err: any, response: any) => void) {
     const allowed = decide(event.principal, ["policy:admin"]);
@@ -91,7 +91,7 @@ function _delegationPut(event: any, context: any, callback: (err: any, response:
     const delegation = { agentSub, graphId, delegatedBy: event.principal.sub, scopes, expiresAt: body.expiresAt || null, createdAt: new Date().toISOString(), label: String(body.label || "").slice(0, 200) };
     eventSourceService.delegations.put(delegation)
         .then(() => callback(null, { statusCode: 200, headers: corsJson, body: JSON.stringify({ delegation }) }))
-        .catch(() => callback(null, { statusCode: 500, headers: corsJson }));
+        .catch((err) => { console.error("Cannot write a delegation.", err); callback(null, { statusCode: 500, headers: corsJson }); });
 }
 function _delegationDelete(event: any, context: any, callback: (err: any, response: any) => void) {
     const allowed = decide(event.principal, ["policy:admin"]);
@@ -100,7 +100,7 @@ function _delegationDelete(event: any, context: any, callback: (err: any, respon
     const graphId = event.pathParameters.graphId === "_all" ? "*" : event.pathParameters.graphId;
     eventSourceService.delegations.remove(agentSub, graphId)
         .then(() => callback(null, { statusCode: 200, headers: corsJson, body: JSON.stringify({ removed: true }) }))
-        .catch(() => callback(null, { statusCode: 500, headers: corsJson }));
+        .catch((err) => { console.error("Cannot remove a delegation.", err); callback(null, { statusCode: 500, headers: corsJson }); });
 }
 function _connect(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.connect(event, context, callback);

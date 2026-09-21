@@ -66,7 +66,8 @@ export default class EventSourceService {
             notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
         });
         this.crdtService.admission.integrity = (after, diff) => this.components.integrityCheck(after, diff);
-        this.delegations = new DelegationStore(this.store as any);
+        // crdtStore already holds the S3 service; this.store is assigned further down the constructor
+        this.delegations = new DelegationStore(this.crdtStore.store as any);
         this.crdtService.admission.resolvePrincipal = (principal, graphId) => this.delegations.resolve(principal, graphId);
         this.summaries = new SummaryService(this.revisions, this.components);
         this.proposals = new ProposalService(this.crdtStore, this.crdtService.admission, this.revisions, this.summaries, {
