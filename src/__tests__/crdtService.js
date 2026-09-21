@@ -55,6 +55,8 @@ function wsEvent(body, connectionId = "conn-1") {
             connectionId,
             domainName: "example.execute-api",
             identity: { userArn: "arn:aws:iam::1:user/tester" },
+            // every request now carries the server-derived principal (auth/principal.ts)
+            authorizer: { sub: "arn:aws:iam::1:user/tester", kind: "human", tenant: "personal:tester", scopes: "[]" },
         },
     };
 }
@@ -63,7 +65,7 @@ function httpEvent(pathParameters, body) {
     return {
         pathParameters,
         body: body ? JSON.stringify(body) : undefined,
-        requestContext: { identity: { userArn: "arn:aws:iam::1:user/tester" } },
+        requestContext: { identity: { userArn: "arn:aws:iam::1:user/tester" }, authorizer: { sub: "arn:aws:iam::1:user/tester", kind: "human", tenant: "personal:tester", scopes: "[]" } },
     };
 }
 

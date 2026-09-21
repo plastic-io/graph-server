@@ -16,7 +16,9 @@ import {
   encodeStateVector,
 } from "@plastic-io/graph-crdt";
 import CrdtStore, { decodeUlidTime } from "./crdtStore";
-import { subjectOf } from "./auth/principal";
+import { subjectOf, principalFromAuthorizerContext } from "./auth/principal";
+import { parseEnvelope, isEnvelopeError } from "./admission/envelope";
+import { AdmissionService, AdmissionResult } from "./admission/admit";
 import BroadcastService from "./broadcastService";
 import TocStore from "./tocStore";
 import { ensureBuilt, listGraph } from "./tocService";
@@ -43,6 +45,7 @@ function userIdOf(event: any): string {
  * overwrite one another the way the previous read-modify-write projection did.
  */
 export default class CrdtService {
+  admission: AdmissionService;
   store: CrdtStore;
   tocStore: TocStore;
   broadcastService: BroadcastService;
@@ -52,6 +55,7 @@ export default class CrdtService {
     this.store = store || new CrdtStore();
     this.broadcastService = broadcastService || new BroadcastService();
     this.tocStore = tocStore || new TocStore(this.store.store);
+    this.admission = new AdmissionService(this.store);
     this.okResponse = { statusCode: 200 };
   }
 
@@ -200,15 +204,33 @@ export default class CrdtService {
       return;
     }
 
-    // A step 2 reply or a live update: record it and pass it on.
-    await this.store.appendUpdate(
-      graphId,
-      message.content,
-      body.description || "Change",
-      userIdOf(event),
-    );
+    // A step 2 reply or a live update: admit it, then pass on exactly what was admitted.
+    const result = await this.admitEnvelope(event, body, message.content);
+    await this.post(event, { channelId: channelIdFor(graphId), response: { kind: result.decision === "accepted" ? "ack" : "reject", graphId, ...result } });
+    if (result.decision !== "accepted") {
+      return;
+    }
     await this.fanOut(graphId, "sync", writeUpdate(message.content), ctx.connectionId);
     await this.maybeCheckpoint(graphId);
+  }
+
+  /** Run the envelope through admission with the server-derived principal. */
+  private async admitEnvelope(event: any, body: any, content: Uint8Array): Promise<AdmissionResult> {
+    const parsed = parseEnvelope(body);
+    if (isEnvelopeError(parsed)) {
+      return { mutationId: typeof body.mutationId === "string" ? body.mutationId : "", decision: "rejected", code: parsed.code, reason: parsed.reason, policyVersion: "m1-owner" };
+    }
+    const principal = event.principal || principalFromAuthorizerContext(event);
+    return this.admission.admit({
+      graphId: parsed.graphId,
+      mutationId: parsed.mutationId,
+      legacy: parsed.legacy,
+      content,
+      description: parsed.description,
+      intent: parsed.intent,
+      clientInfo: parsed.clientInfo,
+      principal,
+    });
   }
 
   sync(event: any, context: any, callback: (err: any, response: any) => void) {
@@ -336,17 +358,20 @@ export default class CrdtService {
         headers: corsHeaders,
       });
     }
-    const message = readSyncMessage(fromBase64(body.payload));
-    this.store
-      .appendUpdate(graphId, message.content, body.description || "Change", userIdOf(event))
-      .then(() => this.fanOut(graphId, "sync", writeUpdate(message.content), body.origin))
-      .then(() => this.maybeCheckpoint(graphId))
-      .then(() => {
-        callback(null, {
-          statusCode: 200,
-          body: JSON.stringify({ ok: true }),
-          headers: corsHeaders,
-        });
+    let message;
+    try {
+      message = readSyncMessage(fromBase64(body.payload));
+    } catch (err) {
+      return callback(null, { statusCode: 400, body: JSON.stringify({ decision: "rejected", code: "SCHEMA_INVALID", reason: "payload is not a sync message" }), headers: corsHeaders });
+    }
+    this.admitEnvelope(event, { ...body, graphId }, message.content)
+      .then(async (result) => {
+        if (result.decision === "accepted") {
+          await this.fanOut(graphId, "sync", writeUpdate(message.content), body.origin);
+          await this.maybeCheckpoint(graphId);
+        }
+        const statusCode = result.decision === "accepted" ? 200 : result.code === "ADMISSION_DENIED" ? 403 : 400;
+        callback(null, { statusCode, body: JSON.stringify({ ok: result.decision === "accepted", ...result }), headers: corsHeaders });
       })
       .catch((err) => {
         console.error("Cannot store an update posted over HTTP.", err);
