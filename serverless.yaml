@@ -81,9 +81,9 @@ layers:
   isolatedVm:
     path: layers/isolated-vm
     name: ${self:custom.prefix}-${self:provider.stage}-isolated-vm
+    # compatibleRuntimes is left out on purpose: this serverless version's schema
+    # predates nodejs22.x and refuses it, and the field is only metadata.
     description: isolated-vm 6.2.0 built against the Lambda Node 22 image (webpack cannot bundle a .node binary)
-    compatibleRuntimes:
-      - nodejs22.x
     package:
       patterns:
         - '!Dockerfile'
