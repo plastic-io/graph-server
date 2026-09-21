@@ -45,7 +45,7 @@ describe("revisions grown from the document's history", () => {
         const r = await revisions.cut("g1", owner, "first");
         expect(r.created).toBe(true);
         const rev = r.revision;
-        expect(rev).toMatchObject({ graphId: "g1", seq: 1, parent: null, label: "first", schemaVersion: 1, createdBy: { sub: "auth0|u1" }, counts: { nodes: 2, connectors: 0 } });
+        expect(rev).toMatchObject({ graphId: "g1", seq: 1, parent: null, label: "first", schemaVersion: 2, createdBy: { sub: "auth0|u1" }, counts: { nodes: 2, connectors: 0 } });
         expect(rev.revisionId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
         expect(rev.digest.full).toMatch(/^[0-9a-f]{64}$/);
         expect(typeof rev.snapshot).toBe("string");

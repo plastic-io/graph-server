@@ -548,6 +548,23 @@ functions:
           cors:
             origin: '*'
 
+  migrations:
+    handler: src/handler.migrations
+    timeout: 300
+    events:
+      - http:
+          method: GET
+          path: /migrations
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors:
+            origin: '*'
+      - http:
+          method: POST
+          path: /migrations/run
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors:
+            origin: '*'
+
   journeys:
     handler: src/handler.journeys
     timeout: 30

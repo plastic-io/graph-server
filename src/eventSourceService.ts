@@ -15,6 +15,7 @@ import { ProposalService } from "./proposals/service";
 import { ExecutionIngest } from "./runtime/ingest";
 import { DeliveryService } from "./runtime/deliveries";
 import { JourneyService } from "./journeys/service";
+import { MigrationService } from "./migrations/backfill";
 import { ExecutionRunner } from "./runtime/executor";
 import { DelegationStore } from "./policy/delegation";
 import {
@@ -52,6 +53,7 @@ export default class EventSourceService {
     executions: ExecutionIngest;
     deliveries: DeliveryService;
     journeys: JourneyService;
+    migrations: MigrationService;
     delegations: DelegationStore;
     store: S3Service;
     broadcastService: BroadcastService;
@@ -80,6 +82,11 @@ export default class EventSourceService {
         // A browser running a graph reaches a server-placed node through here.
         this.deliveries = new DeliveryService(this.crdtStore.store as any, this.crdtStore, {
             runner: (live) => new ExecutionRunner(this.crdtStore.store as any, { live }),
+        });
+        // Bringing the graphs that already exist into this world (plan §9.5).
+        this.migrations = new MigrationService(this.crdtStore.store as any, this.crdtStore, this.tocStore, {
+            revisions: this.revisions, components: this.components, admission: this.crdtService.admission,
+            fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
         });
         // What the application is for, proved on a schedule (plan §8.1.7).
         this.journeys = new JourneyService(this.crdtStore.store as any, this.crdtStore, {
