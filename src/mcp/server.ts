@@ -217,12 +217,13 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
      */
     const observationsForExecution = async (record: any): Promise<any[]> => {
         const own = await readObservations(deps.crdtStore.store as any, record);
-        const deliveryKeys = await storeList(`executions/${record.executionId}/deliveries/`);
+        const sideKeys = (await storeList(`executions/${record.executionId}/deliveries/`))
+            .concat(await storeList(`executions/${record.executionId}/reports/`));
         const fromOtherDomains: any[] = [];
-        for (const key of deliveryKeys) {
-            const delivery = await storeGet(key);
-            if (delivery && delivery.observationsKey) {
-                fromOtherDomains.push(...await readObservations(deps.crdtStore.store as any, { observations: { key: delivery.observationsKey } } as any));
+        for (const key of sideKeys) {
+            const side = await storeGet(key);
+            if (side && side.observationsKey) {
+                fromOtherDomains.push(...await readObservations(deps.crdtStore.store as any, { observations: { key: side.observationsKey } } as any));
             }
         }
         return own.concat(fromOtherDomains);

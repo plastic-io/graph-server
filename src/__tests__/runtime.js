@@ -76,6 +76,28 @@ describe("browser executions reported to the server", () => {
         expect(stored[0].payload).toEqual({ meta: { type: "string", bytes: 3 } });
     });
 
+    test("a report for an execution the server owns is kept beside it, one per session", async () => {
+        const s3 = new FakeS3Service();
+        const ingest = new ExecutionIngest(s3);
+        // the server ran this execution and wrote its record
+        const runner = new ExecutionRunner(s3);
+        const g = { id: "g1", url: "g1", version: 0, properties: { name: "g1" }, nodes: [{ id: "a", url: "a", version: 0, graphId: "g1", artifact: null, data: null, edges: [{ field: "out", connectors: [] }], properties: { inputs: [port("in")], outputs: [port("out")], name: "a", presentation: {} }, template: { set: "state.ran = true;", vue: "" } }] };
+        const summary = await runner.run({ graph: g, nodeUrl: "a", value: 1, principal: owner, state: {} });
+        const report = { record: record({ executionId: summary.executionId }), observations: [obs({ kind: "edge.input", nodeId: "browser-node" })], sessionId: "tab-1" };
+        const first = await ingest.ingest("g1", owner, report);
+        expect(first).toMatchObject({ replayed: true, observations: 1 });
+        expect(first.record.domain).toBe("server");   // the owner's record is untouched
+        const stored = readJson(s3, `executions/${summary.executionId}/reports/browser-tab-1.json`);
+        expect(stored).toMatchObject({ domain: "browser", sessionId: "tab-1", count: 1, observationsKey: expect.stringContaining("-browser-tab-1.ndjson") });
+        const browserHalf = await readObservations(s3, { observations: { key: stored.observationsKey } });
+        expect(browserHalf.map((o) => [o.nodeId, o.domain])).toEqual([["browser-node", "browser"]]);
+        // the same session reporting again changes nothing; another session is its own report
+        await ingest.ingest("g1", owner, report);
+        expect(readJson(s3, `executions/${summary.executionId}/reports/browser-tab-1.json`).count).toBe(1);
+        await ingest.ingest("g1", owner, { ...report, sessionId: "tab-2", observations: [obs({ kind: "route" }), obs({ kind: "exec.end" })] });
+        expect(readJson(s3, `executions/${summary.executionId}/reports/browser-tab-2.json`).count).toBe(2);
+    });
+
     test("unknown kinds and stray fields are dropped; the first report of an execution wins", async () => {
         const s3 = new FakeS3Service();
         const ingest = new ExecutionIngest(s3);

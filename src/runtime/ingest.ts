@@ -48,6 +48,11 @@ export class ExecutionIngest {
     private putJson(key: string, value: any): Promise<void> {
         return new Promise((resolve, reject) => this.store.set(key, value, {}, (err: any) => (err ? reject(err) : resolve())));
     }
+    private putRaw(key: string, observations: Observation[], graphId: string, executionId: string): Promise<void> {
+        return new Promise((resolve, reject) => this.store.setRaw(key, Buffer.from(observations.map((o) => JSON.stringify(o)).join("\n") + "\n"), {
+            "graph-id": graphId, "execution-id": executionId, domain: "browser",
+        }, (err: any) => (err ? reject(err) : resolve())));
+    }
     private getJson(key: string): Promise<any | null> {
         return new Promise((resolve) => this.store.get(key, (err: any, data: any) => resolve(err ? null : data)));
     }
@@ -107,9 +112,6 @@ export class ExecutionIngest {
             return { error: `at most ${MAX_OBSERVATIONS} observations per execution`, code: "LIMIT_EXCEEDED", details: { count: observations.length, limit: MAX_OBSERVATIONS } };
         }
         const existing = await this.getJson(ExecutionRunner.executionKey(executionId));
-        if (existing) {
-            return { record: existing, observations: existing.observations ? existing.observations.count : 0, replayed: true };
-        }
         const owner = { sub: principal.sub, kind: principal.kind, tenant: principal.tenant };
         const revisionId = ULID.test(String(incoming.revisionId)) ? String(incoming.revisionId) : "live";
         const correlationId = ULID.test(String(incoming.correlationId)) ? String(incoming.correlationId) : executionId;
@@ -149,10 +151,31 @@ export class ExecutionIngest {
             correlationId,
             receivedAt: new Date().toISOString(),
         };
+        /**
+         * An execution can span both domains (plan §4.8.2), and then the server
+         * already wrote its record.  The browser's half is not a duplicate of
+         * it and must not be dropped: it is stored beside the record as that
+         * session's report, and anyone asking what the execution did is given
+         * both halves.  One report per session, first one wins.
+         */
+        if (existing) {
+            const session = String(raw.sessionId || "session").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32) || "session";
+            const reportKey = `executions/${executionId}/reports/browser-${session}.json`;
+            const already = await this.getJson(reportKey);
+            if (already || !cleaned.length) {
+                return { record: existing, observations: already ? already.count : 0, replayed: true };
+            }
+            const observationsKey = key.replace(/\.ndjson$/, `-browser-${session}.ndjson`);
+            await this.putRaw(observationsKey, cleaned, graphId, executionId);
+            await this.putJson(reportKey, {
+                at: new Date().toISOString(), by: principal.sub, graphId, domain: "browser",
+                sessionId: session, count: cleaned.length, observationsKey,
+                hops: record.hops, errors: record.errors, effects: record.effects, state: record.state,
+            });
+            return { record: existing, observations: cleaned.length, replayed: true };
+        }
         if (cleaned.length) {
-            await new Promise<void>((resolve, reject) => this.store.setRaw(key, Buffer.from(cleaned.map((o) => JSON.stringify(o)).join("\n") + "\n"), {
-                "graph-id": graphId, "execution-id": executionId, domain: "browser",
-            }, (err: any) => (err ? reject(err) : resolve())));
+            await this.putRaw(key, cleaned, graphId, executionId);
         }
         await this.putJson(ExecutionRunner.executionKey(executionId), record);
         await this.putJson(ExecutionRunner.byGraphKey(graphId, executionId), record);
