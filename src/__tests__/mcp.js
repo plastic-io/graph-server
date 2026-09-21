@@ -1,0 +1,229 @@
+const { fromJSON, toJSON, reconcile, encodeState, applyUpdate } = require("@plastic-io/graph-crdt");
+const Y = require("yjs");
+const CrdtStore = require("../crdtStore").default;
+const CrdtService = require("../crdtService").default;
+const TocStore = require("../tocStore").default;
+const { RevisionService } = require("../revisions/service");
+const { ComponentService } = require("../components/service");
+const { SummaryService } = require("../summary/service");
+const { ProposalService } = require("../proposals/service");
+const { DelegationStore } = require("../policy/delegation");
+const { makeMcpHandler } = require("../mcp/handler");
+const { Client } = require("@modelcontextprotocol/client");
+const { StreamableHTTPClientTransport } = require("@modelcontextprotocol/client");
+const { listGraph } = require("../tocService");
+const fakeS3 = require("../__testHelpers__/fakeS3");
+const FakeS3Service = fakeS3.FakeS3Service || fakeS3;
+
+const port = (name, external = false) => ({ name, type: "Object", external, visible: true });
+const node = (id, over = {}) => ({ id, url: id, edges: [{ field: "out", connectors: [] }], version: 0, graphId: "g1", artifact: null, data: null, properties: { inputs: [port("in")], outputs: [port("out")], groups: [], name: id, description: "does " + id, tags: [], icon: "", x: 0, y: 0, z: 0, createdOn: 1, presentation: { x: 0, y: 0, z: 0 } }, template: { set: "edges.out = value;", vue: "" }, ...over });
+function graphJson() {
+    const a = node("form"), b = node("normalize"), c = node("validate");
+    a.edges[0].connectors.push({ id: "c-ab", nodeId: "normalize", field: "in", graphId: "g1", version: 0 });
+    b.edges[0].connectors.push({ id: "c-bc", nodeId: "validate", field: "in", graphId: "g1", version: 0 });
+    return { id: "g1", url: "g1", version: 0, nodes: [a, b, c], properties: { name: "Account settings", description: "a journey", exportable: true, icon: "mdi-graph", createdBy: "", createdOn: 0, lastUpdate: 0, height: 1, width: 1 } };
+}
+const owner = { sub: "auth0|u1", kind: "human", tenant: "personal:auth0|u1", scopes: [] };
+const agent = { sub: "agent|a1", kind: "agent", tenant: "personal:auth0|u1", scopes: [] };
+const ULID = "01J8ZK5K0B1C2D3E4F5G6H7J8A";
+function fakeBroadcast() { const b = { channel: [] }; b.postToClient = (d, c, p, cb) => cb(); b._sendToChannel = (ch, v, cb) => { b.channel.push([ch, v]); cb(); }; b.broadcast = b._sendToChannel; return b; }
+
+async function setup() {
+    const s3 = new FakeS3Service(); const store = new CrdtStore(s3); const broadcast = fakeBroadcast();
+    const crdt = new CrdtService(store, broadcast); const tocStore = new TocStore(s3);
+    const revisions = new RevisionService(store, crdt.admission, { fanOut: (g, u) => crdt.fanOutUpdate(g, u) });
+    const components = new ComponentService(store, revisions, crdt.admission, { tocStore, broadcastService: broadcast });
+    const summaries = new SummaryService(revisions, components);
+    const delegations = new DelegationStore(s3);
+    crdt.admission.resolvePrincipal = (p, g) => delegations.resolve(p, g);
+    const notified = [];
+    const proposals = new ProposalService(store, crdt.admission, revisions, summaries, { fanOut: (g, u) => crdt.fanOutUpdate(g, u), notify: async (g, e) => notified.push(e) });
+    const doc = fromJSON(graphJson());
+    await store.appendUpdate("g1", encodeState(doc), "seed", "system");
+    await listGraph(tocStore, broadcast, graphJson(), "system");
+    const mcp = makeMcpHandler({ crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations });
+    return { s3, store, crdt, revisions, components, summaries, proposals, delegations, doc, mcp, notified, broadcast };
+}
+
+/** a real MCP client whose fetch goes straight into the handler, as the Lambda would */
+async function connect(mcp, principal) {
+    const transport = new StreamableHTTPClientTransport(new URL("https://api.test/dev/mcp"), {
+        fetch: (url, init) => mcp.serve(new Request(url, init), principal),
+    });
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await client.connect(transport);
+    return client;
+}
+const parse = (r) => r.structuredContent || JSON.parse(r.content[0].text);
+
+describe("MCP over the Lambda handler", () => {
+    test("tools and resources are listed; graph.summary returns the envelope, a named revision and a bounded summary", async () => {
+        const { mcp } = await setup();
+        const client = await connect(mcp, owner);
+        const tools = (await client.listTools()).tools.map((t) => t.name).sort();
+        expect(tools).toEqual(["component.search", "graph.expand", "graph.summary", "observations.query", "proposal.create", "proposal.validate"]);
+        const r = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
+        expect(r.envelope).toMatchObject({ schemaVersion: "1", principal: { sub: "auth0|u1", kind: "human" }, graphId: "g1", policyVersion: "m1-diff", truncated: false });
+        expect(r.envelope.resultRevision).toMatch(/^rev_[0-9A-HJKMNP-TV-Z]{26}$/);
+        expect(r.result).toMatchObject({ id: "g1", kind: "graph", name: "Account settings", purpose: "a journey", placement: "portable", degree: { in: 0, out: 0, nestedNodes: 3 }, untrusted: ["purpose"] });
+        const n = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1", nodeId: "normalize", include: ["deps"] } }));
+        expect(n.result).toMatchObject({ id: "normalize", kind: "node", degree: { in: 1, out: 1 }, inputs: [{ name: "in", schema: {}, required: false }], dependencies: [] });
+        expect(n.result.pointers.node).toBe(`plastic://graph/g1/rev/${r.envelope.resultRevision}/node/normalize`);
+        const missing = await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1", nodeId: "nope" } });
+        expect(missing.isError).toBe(true); expect(parse(missing).error.code).toBe("NOT_FOUND");
+        const unknownField = await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1", extra: true } });
+        expect(unknownField.isError).toBe(true);
+        await client.close();
+    });
+
+    test("graph.expand walks a bounded neighbourhood with cursors bound to the revision; code needs inspect-internals", async () => {
+        const { mcp } = await setup();
+        const client = await connect(mcp, owner);
+        const rev = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } })).envelope.resultRevision;
+        const args = { schemaVersion: 1, graphId: "g1", revisionId: rev, root: { nodeId: "validate" }, direction: "in", depth: 1, maxNodes: 20, maxBytes: 65536 };
+        const r = parse(await client.callTool({ name: "graph.expand", arguments: args }));
+        expect(r.result.nodes.map((n) => n.id)).toEqual(["validate", "normalize"]);
+        expect(r.result.edges).toEqual([{ from: { nodeId: "normalize", field: "out" }, to: { nodeId: "validate", field: "in" }, connectorId: "c-bc" }]);
+        expect(r.result.truncated).toEqual({ byDepth: true, byCount: false, byBytes: false });
+        const one = parse(await client.callTool({ name: "graph.expand", arguments: { ...args, depth: 4, maxNodes: 1 } }));
+        expect(one.result.nodes.map((n) => n.id)).toEqual(["validate"]); expect(one.result.truncated.byCount).toBe(true); expect(one.envelope.truncated).toBe(true);
+        const rest = parse(await client.callTool({ name: "graph.expand", arguments: { ...args, depth: 4, maxNodes: 10, cursor: one.result.nextCursor } }));
+        expect(rest.result.nodes.map((n) => n.id)).toEqual(["normalize", "form"]);
+        const withCode = parse(await client.callTool({ name: "graph.expand", arguments: { ...args, includeCode: true } }));
+        expect(withCode.result.nodes[0].code.set).toBe("edges.out = value;");
+        const stale = await client.callTool({ name: "graph.expand", arguments: { ...args, revisionId: "rev_01J8ZK5K0B1C2D3E4F5G6H7J8A" } });
+        expect(parse(stale).error.code).toBe("NOT_FOUND");
+        await client.close();
+    });
+
+    test("resources: graphs, graph, revision, node (code only with expand), history, diff", async () => {
+        const { mcp, store, doc, revisions } = await setup();
+        const client = await connect(mcp, owner);
+        const graphs = JSON.parse((await client.readResource({ uri: "plastic://graphs" })).contents[0].text);
+        expect(graphs.graphs).toEqual([{ graphId: "g1", name: "Account settings", description: "a journey", url: "g1", version: "0" }]);
+        const summary = JSON.parse((await client.readResource({ uri: "plastic://graph/g1" })).contents[0].text);
+        const rev1 = summary.revisionId;
+        const manifest = JSON.parse((await client.readResource({ uri: `plastic://graph/g1/rev/${rev1}` })).contents[0].text);
+        expect(manifest).toMatchObject({ revisionId: rev1, seq: 1, label: "auto", createdBy: { sub: "system:revisions" } }); expect(manifest.snapshot).toBeUndefined();
+        const n = JSON.parse((await client.readResource({ uri: `plastic://graph/g1/rev/${rev1}/node/normalize` })).contents[0].text);
+        expect(n.code).toBeUndefined(); expect(n.edges[0].connectors[0].id).toBe("c-bc");
+        const withCode = JSON.parse((await client.readResource({ uri: `plastic://graph/g1/rev/${rev1}/node/normalize?expand=code` })).contents[0].text);
+        expect(withCode.code.set).toBe("edges.out = value;");
+        // an edit, then the live alias moves to a new auto revision and the diff between them is readable
+        const snapshot = JSON.parse(JSON.stringify(toJSON(doc))); snapshot.nodes[1].template.set = "edges.out = value.trim();";
+        let out; const h = (u) => (out = u); doc.on("updateV2", h); reconcile(doc, snapshot, { source: "t" }); doc.off("updateV2", h);
+        await store.appendUpdate("g1", out, "Edit", "auth0|u1");
+        const summary2 = JSON.parse((await client.readResource({ uri: "plastic://graph/g1" })).contents[0].text);
+        expect(summary2.revisionId).not.toBe(rev1);
+        const diff = JSON.parse((await client.readResource({ uri: `plastic://graph/g1/diff/${rev1}/${summary2.revisionId}` })).contents[0].text);
+        expect(diff.namespaces).toEqual(["code"]); expect(diff.changes).toEqual([{ op: "set-node-code", namespace: "code", nodeId: "normalize", field: "template.set" }]); expect(diff.layoutOnly).toBe(false);
+        const history = JSON.parse((await client.readResource({ uri: "plastic://graph/g1/history?limit=5" })).contents[0].text);
+        expect(history.entries[0].description).toBe("Version 2");
+        await expect(client.readResource({ uri: "plastic://graph/g1/rev/rev_01J8ZK5K0B1C2D3E4F5G6H7J8A" })).rejects.toBeTruthy();
+        await client.close();
+    });
+
+    test("an agent without a delegation can do nothing; with one it can read and propose but not more; proposals are validated, stored, audited and committed by a human", async () => {
+        const { mcp, delegations, proposals, notified, store, broadcast } = await setup();
+        let client = await connect(mcp, agent);
+        const denied = await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } });
+        expect(denied.isError).toBe(true); expect(parse(denied).error).toMatchObject({ code: "ADMISSION_DENIED", message: expect.stringMatching(/no delegation/) });
+        await delegations.put({ agentSub: "agent|a1", graphId: "g1", delegatedBy: "auth0|u1", scopes: ["graph:read", "graph:propose", "graph:observe"], expiresAt: null, createdAt: new Date().toISOString() });
+        const summary = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
+        expect(summary.envelope.principal).toEqual({ sub: "agent|a1", kind: "agent", tenant: "personal:auth0|u1", delegatedBy: "auth0|u1" });
+        const rev = summary.envelope.resultRevision;
+        const noCode = await client.callTool({ name: "graph.expand", arguments: { schemaVersion: 1, graphId: "g1", revisionId: rev, root: { nodeId: "validate" }, direction: "in", depth: 1, maxNodes: 5, maxBytes: 65536, includeCode: true } });
+        expect(parse(noCode).error.code).toBe("ADMISSION_DENIED");
+        // stale base
+        const stale = await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: "rev_01J8ZK5K0B1C2D3E4F5G6H7J8A", ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.trim();" }], description: "Trim only whitespace", idempotencyKey: ULID } });
+        expect(parse(stale).error).toMatchObject({ code: "STALE_BASE", retry: { retryable: true, rebaseTo: rev } });
+        // a good proposal
+        const created = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.trim();" }], description: "Trim only whitespace", rationale: "the old code stripped a trailing dot", idempotencyKey: ULID } }));
+        expect(created.result).toMatchObject({ state: "awaiting-review", validation: { ok: true }, requiredDecisions: ["approve"], impact: { downstream: ["validate"], consumers: [], privilegeDelta: [] }, created: true });
+        expect(created.result.proposalDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+        expect(created.result.diffSummary.namespaces).toEqual(["code"]);
+        expect(created.envelope.baseRevision).toBe(rev);
+        // idempotent
+        const again = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.trim();" }], description: "Trim only whitespace", idempotencyKey: ULID } }));
+        expect(again.result.proposalId).toBe(created.result.proposalId); expect(again.result.created).toBe(false);
+        // privilege needs a decision the agent cannot give
+        const priv = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "set-placement", nodeId: "validate", placement: "server" }], description: "Run validate on the server", idempotencyKey: "01J8ZK5K0B1C2D3E4F5G6H7J8B" } }));
+        expect(priv.result.requiredDecisions).toEqual(["approve", "privileged-connect"]);   // the agent holds neither; the committing owner supplies both
+        expect(priv.result.impact.privilegeDelta).toEqual([{ kind: "graph:invoke", scope: ["placement:server:validate"] }]);
+        // the proposal resource and the observations
+        const p = JSON.parse((await client.readResource({ uri: `plastic://graph/g1/proposal/${created.result.proposalId}` })).contents[0].text);
+        expect(p.principal).toMatchObject({ sub: "agent|a1", delegatedBy: "auth0|u1" }); expect(p.update).toBeUndefined();
+        const obs = parse(await client.callTool({ name: "observations.query", arguments: { schemaVersion: 1, graphId: "g1", filter: { kind: "proposal" }, limit: 10 } }));
+        expect(obs.result.observations.map((o) => o.kind)).toEqual(["proposal.created", "proposal.created"]);
+        expect(notified.map((e) => e.action)).toEqual(["created", "created"]);
+        await client.close();
+        // the human commits it through admission: the graph changes, replicas hear it, a revision is cut
+        const committed = await proposals.commit("g1", created.result.proposalId, owner);
+        expect(committed.proposal.state).toBe("committed"); expect(committed.result.decision).toBe("accepted");
+        expect(committed.proposal.resultRevision).toMatch(/^rev_/);
+        expect((await store.projectGraph("g1")).nodes[1].template.set).toBe("edges.out = value.trim();");
+        expect(broadcast.channel.some(([ch, v]) => ch === "graph-crdt-g1" && v.kind === "sync")).toBe(true);
+        expect(await proposals.commit("g1", created.result.proposalId, owner)).toMatchObject({ result: { replayed: true } });
+        // a stale proposal is refused until validated with rebase
+        const stale2 = await proposals.commit("g1", priv.result.proposalId, owner);
+        expect(stale2.code).toBe("STALE_BASE");
+        const revalidated = await proposals.validate("g1", priv.result.proposalId, owner, true);
+        expect(revalidated.proposal.state).toBe("awaiting-review");
+        // the owner cannot approve their own... it is not theirs: approving as a different human clears the decision
+        const approved = await proposals.decideProposal("g1", priv.result.proposalId, owner, "approve", revalidated.proposal.proposalDigest, "fine");
+        expect(approved.proposal.state).toBe("validated"); expect(approved.proposal.requiredDecisions).toEqual([]);
+        const committed2 = await proposals.commit("g1", priv.result.proposalId, owner);
+        expect(committed2.proposal.state).toBe("committed");
+        expect((await store.projectGraph("g1")).nodes[2].properties.placement).toBe("server");
+        client = await connect(mcp, agent);
+        const audit = parse(await client.callTool({ name: "observations.query", arguments: { schemaVersion: 1, graphId: "g1", limit: 50 } }));
+        expect(audit.result.observations.map((o) => o.kind)).toEqual(expect.arrayContaining(["mcp.tool.proposal.create", "proposal.created", "proposal.committed", "mutation.accepted", "revision.cut", "proposal.decided"]));
+        await client.close();
+    });
+
+    test("a rejected proposal, a conflicting rebase, and component.search", async () => {
+        const { mcp, delegations, proposals, components, store, doc } = await setup();
+        await delegations.put({ agentSub: "agent|a1", graphId: "*", delegatedBy: "auth0|u1", scopes: ["graph:read", "graph:propose", "registry:read"], expiresAt: null, createdAt: new Date().toISOString() });
+        const client = await connect(mcp, agent);
+        const rev = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } })).envelope.resultRevision;
+        const bad = await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "connect", from: { nodeId: "form", field: "out" }, to: { nodeId: "ghost", field: "in" } }], description: "Wire to a ghost", idempotencyKey: ULID } });
+        expect(parse(bad).error).toMatchObject({ code: "NOT_FOUND", message: expect.stringMatching(/no node ghost/) });
+        const created = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.trim();" }], description: "Trim", idempotencyKey: "01J8ZK5K0B1C2D3E4F5G6H7J8C" } }));
+        const rejected = await proposals.decideProposal("g1", created.result.proposalId, owner, "reject", created.result.proposalDigest, "no");
+        expect(rejected.proposal.state).toBe("rejected");
+        expect((await proposals.commit("g1", created.result.proposalId, owner)).code).toBe("CONFLICT");
+        // someone edits the same node's code underneath another proposal: rebase reports a conflict
+        const second = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.toLowerCase();" }], description: "Lowercase", idempotencyKey: "01J8ZK5K0B1C2D3E4F5G6H7J8D" } }));
+        const snapshot = JSON.parse(JSON.stringify(toJSON(doc))); snapshot.nodes[1].template.set = "edges.out = value.toUpperCase();";
+        let out; const h = (u) => (out = u); doc.on("updateV2", h); reconcile(doc, snapshot, { source: "t" }); doc.off("updateV2", h);
+        await store.appendUpdate("g1", out, "Human edit", "auth0|u1");
+        const v = await client.callTool({ name: "proposal.validate", arguments: { schemaVersion: 1, graphId: "g1", proposalId: second.result.proposalId } });
+        expect(parse(v).error.code).toBe("STALE_BASE");
+        const conflict = await client.callTool({ name: "proposal.validate", arguments: { schemaVersion: 1, graphId: "g1", proposalId: second.result.proposalId, rebase: true } });
+        expect(parse(conflict).error.code).toBe("CONFLICT");
+        // search
+        const published = await components.publish("g1", owner, { label: "v1" });
+        const found = parse(await client.callTool({ name: "component.search", arguments: { schemaVersion: 1, query: "account" } }));
+        expect(found.result.components).toEqual([expect.objectContaining({ publishedId: "g1", version: published.manifest.version, kind: "graph", name: "Account settings", revisionId: expect.stringMatching(/^rev_/) })]);
+        const c = JSON.parse((await client.readResource({ uri: `plastic://component/g1/${published.manifest.version}` })).contents[0].text);
+        expect(c.manifest.version).toBe(published.manifest.version);
+        const versions = JSON.parse((await client.readResource({ uri: "plastic://component/g1" })).contents[0].text);
+        expect(versions.head.version).toBe(published.manifest.version);
+        await client.close();
+    });
+
+    test("the Lambda face: an API Gateway event becomes a request; no principal is 401; a foreign Origin is refused", async () => {
+        const { mcp } = await setup();
+        const call = (event) => new Promise((res) => mcp.lambda(event, {}, (e, r) => res(r)));
+        const unauth = await call({ httpMethod: "POST", path: "/dev/mcp", headers: {}, body: "{}" });
+        expect(unauth.statusCode).toBe(401); expect(unauth.headers["WWW-Authenticate"]).toMatch(/resource_metadata/);
+        const foreign = await call({ httpMethod: "POST", path: "/dev/mcp", headers: { Origin: "https://evil.example" }, body: "{}", principal: owner });
+        expect(foreign.statusCode).toBe(403);
+        const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+        const r = await call({ httpMethod: "POST", path: "/dev/mcp", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Host: "api.test" }, body, principal: owner, requestContext: { domainName: "api.test" } });
+        expect(r.statusCode).toBe(200);
+        expect(r.headers["Access-Control-Allow-Origin"]).toBe("*");
+        const parsed = JSON.parse(r.body);
+        expect(parsed.result.tools.map((t) => t.name)).toContain("graph.summary");
+    });
+});

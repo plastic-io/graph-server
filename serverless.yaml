@@ -3,7 +3,8 @@ plugins:
   - serverless-webpack
 provider:
   name: aws
-  runtime: nodejs18.x
+  # nodejs22.x: the MCP SDK v2 needs Node 20+ and isolated-vm (M3) needs 22+ (plan Q-5)
+  runtime: nodejs22.x
   versionFunctions: false
   stackName: ${self:service}
   stage: ${opt:stage, 'dev'}
@@ -59,6 +60,8 @@ provider:
     RATE_MAX_REJECTIONS: ${opt:rateMaxRejections, '30'}
     # warn (default) records drifted embedded component copies; reject refuses them
     COMPONENT_INTEGRITY: ${opt:componentIntegrity, 'warn'}
+    # browsers that may call /mcp directly (non-browser MCP clients send no Origin)
+    MCP_ALLOWED_ORIGINS: ${opt:mcpAllowedOrigins, 'http://localhost:8080,http://localhost:5173,https://plastic-io.github.io'}
     NODE_OPTIONS: "--enable-source-maps --unhandled-rejections=warn"
 
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"
@@ -480,6 +483,179 @@ functions:
                paths:
                  id: true
                  version: true
+          cors:
+            origin: '*'
+
+  # MCP (plan §5, D-3): one POST per request on the REST API; the authorizer establishes the
+  # principal, the SDK's per-request handler serves tools and resources through the same
+  # services the editor uses.  Preflight is answered by API Gateway's CORS config.
+  mcpRoute:
+    handler: src/handler.mcpRoute
+    timeout: 29
+    events:
+      - http:
+          method: POST
+          path: /mcp
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - Authorization
+              - MCP-Protocol-Version
+              - Mcp-Method
+              - Mcp-Name
+              - Mcp-Session-Id
+
+  proposalsList:
+    handler: src/handler.proposalsList
+    timeout: 60
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/proposals
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  proposalCreate:
+    handler: src/handler.proposalCreate
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/proposals
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  proposalGet:
+    handler: src/handler.proposalGet
+    timeout: 60
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/proposals/{proposalId}
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 proposalId: true
+          cors:
+            origin: '*'
+
+  proposalValidate:
+    handler: src/handler.proposalValidate
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/proposals/{proposalId}/validate
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 proposalId: true
+          cors:
+            origin: '*'
+
+  proposalDecide:
+    handler: src/handler.proposalDecide
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/proposals/{proposalId}/decide
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 proposalId: true
+          cors:
+            origin: '*'
+
+  proposalCommit:
+    handler: src/handler.proposalCommit
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/proposals/{proposalId}/commit
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 proposalId: true
+          cors:
+            origin: '*'
+
+  auditList:
+    handler: src/handler.auditList
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/audit
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  delegationsList:
+    handler: src/handler.delegationsList
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /policy/agents
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors:
+            origin: '*'
+
+  delegationPut:
+    handler: src/handler.delegationPut
+    timeout: 30
+    events:
+      - http:
+          method: PUT
+          path: /policy/agents/{sub}/{graphId}
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 sub: true
+                 graphId: true
+          cors:
+            origin: '*'
+
+  delegationDelete:
+    handler: src/handler.delegationDelete
+    timeout: 30
+    events:
+      - http:
+          method: DELETE
+          path: /policy/agents/{sub}/{graphId}
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 sub: true
+                 graphId: true
           cors:
             origin: '*'
 

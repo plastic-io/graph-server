@@ -77,10 +77,15 @@ export function decide(principal: Principal | undefined, required: Authority[]):
     if (owners.length && !owners.includes(principal.sub)) {
         return { allow: false, reason: `${principal.sub} is not an owner of this instance`, policyVersion: POLICY_VERSION };
     }
-    if (principal.kind === "agent" && principal.scopes.length) {
-        const missing = required.filter((a) => !principal.scopes.includes(a));
+    if (principal.kind === "agent") {
+        // an agent holds only what a human delegated to it (policy/delegation.ts resolves that into scopes)
+        const scopes = principal.scopes || [];
+        if (!scopes.length) {
+            return { allow: false, reason: `agent ${principal.sub} has no delegation for this graph`, policyVersion: POLICY_VERSION };
+        }
+        const missing = required.filter((a) => !scopes.includes(a));
         if (missing.length) {
-            return { allow: false, reason: `agent token lacks ${missing.join(", ")}`, policyVersion: POLICY_VERSION };
+            return { allow: false, reason: `agent ${principal.sub} lacks ${missing.join(", ")}`, policyVersion: POLICY_VERSION };
         }
     }
     return { allow: true, policyVersion: POLICY_VERSION };

@@ -10,6 +10,9 @@ import CrdtStore from "./crdtStore";
 import TocStore from "./tocStore";
 import { RevisionService } from "./revisions/service";
 import { ComponentService } from "./components/service";
+import { SummaryService } from "./summary/service";
+import { ProposalService } from "./proposals/service";
+import { DelegationStore } from "./policy/delegation";
 import {
     ensureBuilt,
     listGraph,
@@ -40,6 +43,9 @@ const corsHeaders = {
 export default class EventSourceService {
     revisions: RevisionService;
     components: ComponentService;
+    summaries: SummaryService;
+    proposals: ProposalService;
+    delegations: DelegationStore;
     store: S3Service;
     broadcastService: BroadcastService;
     crdtService: CrdtService;
@@ -60,6 +66,13 @@ export default class EventSourceService {
             notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
         });
         this.crdtService.admission.integrity = (after, diff) => this.components.integrityCheck(after, diff);
+        this.delegations = new DelegationStore(this.store as any);
+        this.crdtService.admission.resolvePrincipal = (principal, graphId) => this.delegations.resolve(principal, graphId);
+        this.summaries = new SummaryService(this.revisions, this.components);
+        this.proposals = new ProposalService(this.crdtStore, this.crdtService.admission, this.revisions, this.summaries, {
+            fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
+            notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
+        });
         this.okResponse = {
             statusCode: 200
         };

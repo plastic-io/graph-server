@@ -12,6 +12,8 @@ export interface Principal {
     email?: string;
     name?: string;
     scopes: string[];
+    /** For agents: the human whose delegation the scopes come from (policy/delegation.ts). */
+    delegatedBy?: string;
 }
 
 export const TENANT_CLAIM = "https://plastic-io/tenant";

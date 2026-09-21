@@ -6,6 +6,8 @@ import EventSourceService from './eventSourceService';
 import BroadcastService from './broadcastService';
 import CrdtService from './crdtService';
 import { RevisionService } from './revisions/service';
+import { makeMcpHandler } from './mcp/handler';
+import { decide } from './policy/decide';
 import GraphService, {panic as _panic} from './graphService';
 import { withPrincipal } from './auth/principal';
 import { authorize as _authorize } from './auth/authorizer';
@@ -20,6 +22,86 @@ const revisionService = new RevisionService(crdtService.store, crdtService.admis
     notify: (graphId, event) => crdtService.notifyGraph(graphId, event),
 });
 const graphService = new GraphService();
+const mcp = makeMcpHandler({
+    crdtStore: eventSourceService.crdtStore,
+    tocStore: eventSourceService.tocStore,
+    admission: eventSourceService.crdtService.admission,
+    revisions: eventSourceService.revisions,
+    components: eventSourceService.components,
+    proposals: eventSourceService.proposals,
+    summaries: eventSourceService.summaries,
+    delegations: eventSourceService.delegations,
+});
+const corsJson = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": true };
+function _mcp(event: any, context: any, callback: (err: any, response: any) => void) {
+    mcp.lambda(event, context, callback);
+}
+function _proposalsList(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.proposals.listRoute(event, context, callback);
+}
+function _proposalGet(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.proposals.getRoute(event, context, callback);
+}
+function _proposalCreate(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.proposals.createRoute(event, context, callback);
+}
+function _proposalDecide(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.proposals.decideRoute(event, context, callback);
+}
+function _proposalCommit(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.proposals.commitRoute(event, context, callback);
+}
+function _proposalValidate(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.proposals.validateRoute(event, context, callback);
+}
+/** The newest audit records of a graph (the editor's agent activity view). */
+function _auditList(event: any, context: any, callback: (err: any, response: any) => void) {
+    const graphId = event.pathParameters.id;
+    const limit = Math.min(200, Number((event.queryStringParameters || {}).limit || 50));
+    const chain = eventSourceService.crdtService.admission.chain;
+    const store: any = eventSourceService.crdtStore.store;
+    store.list(`${chain.prefix}/${graphId}/`, async (err: any, items: any[]) => {
+        if (err) return callback(null, { statusCode: 500, headers: corsJson });
+        const keys = (items || []).map((i: any) => i.Key).filter((k: string) => !k.endsWith("HEAD.json")).sort().reverse().slice(0, limit);
+        const records: any[] = [];
+        for (const key of keys) {
+            const r: any = await new Promise((resolve) => store.get(key, (e: any, d: any) => resolve(e ? null : d)));
+            if (r) records.push({ id: r.id, seq: r.seq, kind: r.kind, at: r.at, principal: r.principal, description: r.description || r.label, decision: r.decision, code: r.code, reason: r.reason, mutationId: r.mutationId, proposalId: r.proposalId, revisionId: r.revisionId, namespaces: r.diff && r.diff.namespaces, warnings: r.warnings });
+        }
+        callback(null, { statusCode: 200, headers: corsJson, body: JSON.stringify({ graphId, records }) });
+    });
+}
+/** Delegations: who may act as an agent, on what, until when.  Managed by policy:admin. */
+function _delegationsList(event: any, context: any, callback: (err: any, response: any) => void) {
+    const allowed = decide(event.principal, ["policy:admin"]);
+    if (!allowed.allow) return callback(null, { statusCode: 403, headers: corsJson, body: JSON.stringify({ error: allowed.reason, code: "ADMISSION_DENIED" }) });
+    eventSourceService.delegations.list()
+        .then((delegations) => callback(null, { statusCode: 200, headers: corsJson, body: JSON.stringify({ delegations }) }))
+        .catch(() => callback(null, { statusCode: 500, headers: corsJson }));
+}
+function _delegationPut(event: any, context: any, callback: (err: any, response: any) => void) {
+    const allowed = decide(event.principal, ["policy:admin"]);
+    if (!allowed.allow) return callback(null, { statusCode: 403, headers: corsJson, body: JSON.stringify({ error: allowed.reason, code: "ADMISSION_DENIED" }) });
+    let body: any = {};
+    try { body = event.body ? JSON.parse(event.body) : {}; } catch (err) { body = {}; }
+    const agentSub = decodeURIComponent(event.pathParameters.sub);
+    const graphId = event.pathParameters.graphId === "_all" ? "*" : event.pathParameters.graphId;
+    const scopes = Array.isArray(body.scopes) ? body.scopes.filter((s: any) => typeof s === "string" && decide(event.principal, [s]).allow) : [];
+    if (!scopes.length) return callback(null, { statusCode: 400, headers: corsJson, body: JSON.stringify({ error: "no scopes the delegator holds", code: "SCHEMA_INVALID" }) });
+    const delegation = { agentSub, graphId, delegatedBy: event.principal.sub, scopes, expiresAt: body.expiresAt || null, createdAt: new Date().toISOString(), label: String(body.label || "").slice(0, 200) };
+    eventSourceService.delegations.put(delegation)
+        .then(() => callback(null, { statusCode: 200, headers: corsJson, body: JSON.stringify({ delegation }) }))
+        .catch(() => callback(null, { statusCode: 500, headers: corsJson }));
+}
+function _delegationDelete(event: any, context: any, callback: (err: any, response: any) => void) {
+    const allowed = decide(event.principal, ["policy:admin"]);
+    if (!allowed.allow) return callback(null, { statusCode: 403, headers: corsJson, body: JSON.stringify({ error: allowed.reason, code: "ADMISSION_DENIED" }) });
+    const agentSub = decodeURIComponent(event.pathParameters.sub);
+    const graphId = event.pathParameters.graphId === "_all" ? "*" : event.pathParameters.graphId;
+    eventSourceService.delegations.remove(agentSub, graphId)
+        .then(() => callback(null, { statusCode: 200, headers: corsJson, body: JSON.stringify({ removed: true }) }))
+        .catch(() => callback(null, { statusCode: 500, headers: corsJson }));
+}
 function _connect(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.connect(event, context, callback);
 }
@@ -149,6 +231,17 @@ const publishNodeWs = withPrincipal(broadcastService.store, _publishNodeWs);
 const defaultRoute = withPrincipal(broadcastService.store, _defaultRoute);
 const getArtifact = withPrincipal(broadcastService.store, _getArtifact);
 const publish = withPrincipal(broadcastService.store, _publish);
+const mcpRoute = withPrincipal(broadcastService.store, _mcp, { required: false });
+const proposalsList = withPrincipal(broadcastService.store, _proposalsList);
+const proposalGet = withPrincipal(broadcastService.store, _proposalGet);
+const proposalCreate = withPrincipal(broadcastService.store, _proposalCreate);
+const proposalDecide = withPrincipal(broadcastService.store, _proposalDecide);
+const proposalCommit = withPrincipal(broadcastService.store, _proposalCommit);
+const proposalValidate = withPrincipal(broadcastService.store, _proposalValidate);
+const auditList = withPrincipal(broadcastService.store, _auditList);
+const delegationsList = withPrincipal(broadcastService.store, _delegationsList);
+const delegationPut = withPrincipal(broadcastService.store, _delegationPut);
+const delegationDelete = withPrincipal(broadcastService.store, _delegationDelete);
 const componentsList = withPrincipal(broadcastService.store, _componentsList);
 const componentGet = withPrincipal(broadcastService.store, _componentGet);
 const crdtSync = withPrincipal(broadcastService.store, _crdtSync);
@@ -188,6 +281,17 @@ export {
     crdtCheckpoint,
     getArtifact,
     publish,
+    mcpRoute,
+    proposalsList,
+    proposalGet,
+    proposalCreate,
+    proposalDecide,
+    proposalCommit,
+    proposalValidate,
+    auditList,
+    delegationsList,
+    delegationPut,
+    delegationDelete,
     componentsList,
     componentGet,
     publishGraphWs,

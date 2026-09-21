@@ -1,6 +1,24 @@
 // For a detailed explanation regarding each configuration property, visit:
 // https://jestjs.io/docs/en/configuration.html
 
+
+// The MCP SDK v2 packages are addressed through package.json "exports" subpaths, which jest 26
+// cannot read; each subpath is mapped to its CommonJS file here.
+const mcpSubpaths = {
+        "^@modelcontextprotocol\\/core$": "<rootDir>/node_modules/@modelcontextprotocol/core/dist/index.cjs",
+        "^@modelcontextprotocol\\/core\\/internal$": "<rootDir>/node_modules/@modelcontextprotocol/core/dist/internal.cjs",
+        "^@modelcontextprotocol\\/server$": "<rootDir>/node_modules/@modelcontextprotocol/server/dist/index.cjs",
+        "^@modelcontextprotocol\\/server\\/stdio$": "<rootDir>/node_modules/@modelcontextprotocol/server/dist/stdio.cjs",
+        "^@modelcontextprotocol\\/server\\/validators\\/ajv$": "<rootDir>/node_modules/@modelcontextprotocol/server/dist/validators/ajv.cjs",
+        "^@modelcontextprotocol\\/server\\/validators\\/cf-worker$": "<rootDir>/node_modules/@modelcontextprotocol/server/dist/validators/cfWorker.cjs",
+        "^@modelcontextprotocol\\/server\\/_shims$": "<rootDir>/node_modules/@modelcontextprotocol/server/dist/shimsNode.cjs",
+        "^@modelcontextprotocol\\/client$": "<rootDir>/node_modules/@modelcontextprotocol/client/dist/index.cjs",
+        "^@modelcontextprotocol\\/client\\/stdio$": "<rootDir>/node_modules/@modelcontextprotocol/client/dist/stdio.cjs",
+        "^@modelcontextprotocol\\/client\\/validators\\/ajv$": "<rootDir>/node_modules/@modelcontextprotocol/client/dist/validators/ajv.cjs",
+        "^@modelcontextprotocol\\/client\\/validators\\/cf-worker$": "<rootDir>/node_modules/@modelcontextprotocol/client/dist/validators/cfWorker.cjs",
+        "^@modelcontextprotocol\\/client\\/_shims$": "<rootDir>/node_modules/@modelcontextprotocol/client/dist/shimsNode.cjs"
+};
+
 module.exports = {
   // yjs and lib0 ship as ES modules, and the shared CRDT package is linked in
   // as TypeScript source, so all three have to go through babel rather than
@@ -14,13 +32,9 @@ module.exports = {
   // check the codec relies on.  The deployment bundle avoids this with
   // `resolve.symlinks: false` in webpack.config.js; this is the same fix.
   moduleNameMapper: {
-    // jest 26 cannot resolve the node: scheme that jose uses for core modules
-    "^node:buffer$": "<rootDir>/src/__testHelpers__/nodeCore/buffer.js",
-    "^node:crypto$": "<rootDir>/src/__testHelpers__/nodeCore/crypto.js",
-    "^node:events$": "<rootDir>/src/__testHelpers__/nodeCore/events.js",
-    "^node:http$": "<rootDir>/src/__testHelpers__/nodeCore/http.js",
-    "^node:https$": "<rootDir>/src/__testHelpers__/nodeCore/https.js",
-    "^node:util$": "<rootDir>/src/__testHelpers__/nodeCore/util.js",
+        ...mcpSubpaths,
+    // jest 26 cannot resolve the node: scheme; every core module has a re-exporting shim under nodeCore/
+    "^node:(.*)$": "<rootDir>/src/__testHelpers__/nodeCore/$1.js",
     "^yjs$": "<rootDir>/node_modules/yjs",
     "^lib0/(.*)$": "<rootDir>/node_modules/lib0/$1",
   },
@@ -125,7 +139,7 @@ module.exports = {
   // resetModules: false,
 
   // A path to a custom resolver
-  // resolver: undefined,
+  resolver: "<rootDir>/src/__testHelpers__/resolver.js",
 
   // Automatically restore mock state between every test
   // restoreMocks: false,
@@ -151,7 +165,7 @@ module.exports = {
   // snapshotSerializers: [],
 
   // The test environment that will be used for testing
-  testEnvironment: "node",
+  testEnvironment: "<rootDir>/src/__testHelpers__/webEnvironment.js",
 
   // Options that will be passed to the testEnvironment
   // testEnvironmentOptions: {},

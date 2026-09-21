@@ -99,12 +99,38 @@ export class AdmissionService {
     readonly rate: RateLimiter;
     /** Set by the component service once it exists; absent in stand-alone use. */
     integrity: IntegrityCheck | null;
+    /** Resolves an agent's delegated scopes for a graph before policy runs (policy/delegation.ts). */
+    resolvePrincipal: ((principal: Principal | undefined, graphId: string) => Promise<Principal | undefined>) | null;
     constructor(crdtStore: any, store?: Store, options: { rate?: RateLimiter; integrity?: IntegrityCheck } = {}) {
         this.crdtStore = crdtStore;
         this.store = store || crdtStore.store;
         this.chain = new AuditChain(this.store);
         this.rate = options.rate || new RateLimiter();
         this.integrity = options.integrity || null;
+        this.resolvePrincipal = null;
+    }
+
+    /**
+     * Steps 3 and 4 alone: is this a Yjs update that applies to the graph, and
+     * what does it change?  Proposals use it to validate what they would
+     * commit; nothing is stored.
+     */
+    async stageOnly(graphId: string, content: Uint8Array): Promise<
+        | { ok: true; diff: DiffSummary; after: any; before: any; headStateVector: string; structs: number }
+        | { ok: false; code: "SCHEMA_INVALID" | "STALE_BASE"; reason: string }> {
+        const check = AdmissionService.structuralCheck(content);
+        if (check.ok === false) {
+            return { ok: false, code: "SCHEMA_INVALID", reason: check.reason };
+        }
+        const { update: head } = await this.crdtStore.loadMerged(graphId);
+        const staged = stage(head, content);
+        if (staged.ok === false) {
+            return { ok: false, code: staged.code, reason: staged.reason };
+        }
+        if (staged.cleared) {
+            return { ok: false, code: "SCHEMA_INVALID", reason: "the update would empty the graph" };
+        }
+        return { ok: true, diff: staged.diff, after: staged.after, before: staged.before, headStateVector: toBase64(staged.headStateVector), structs: check.structs };
     }
 
     private getJson(key: string): Promise<any | null> {
@@ -141,6 +167,9 @@ export class AdmissionService {
     }
 
     async admit(req: AdmissionRequest): Promise<AdmissionResult> {
+        if (this.resolvePrincipal && req.principal && req.principal.kind === "agent") {
+            req = { ...req, principal: await this.resolvePrincipal(req.principal, req.graphId) };
+        }
         const at = new Date().toISOString();
         const sha256 = createHash("sha256").update(req.content).digest("hex");
         const base = { mutationId: req.mutationId, legacy: req.legacy };
