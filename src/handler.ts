@@ -7,7 +7,7 @@ import BroadcastService from './broadcastService';
 import CrdtService from './crdtService';
 import { RevisionService } from './revisions/service';
 import { makeMcpHandler } from './mcp/handler';
-import { decide } from './policy/decide';
+import { decide, Authority } from './policy/decide';
 import GraphService, {panic as _panic} from './graphService';
 import { withPrincipal } from './auth/principal';
 import { authorize as _authorize } from './auth/authorizer';
@@ -86,7 +86,7 @@ function _delegationPut(event: any, context: any, callback: (err: any, response:
     try { body = event.body ? JSON.parse(event.body) : {}; } catch (err) { body = {}; }
     const agentSub = decodeURIComponent(event.pathParameters.sub);
     const graphId = event.pathParameters.graphId === "_all" ? "*" : event.pathParameters.graphId;
-    const scopes = Array.isArray(body.scopes) ? body.scopes.filter((s: any) => typeof s === "string" && decide(event.principal, [s]).allow) : [];
+    const scopes = Array.isArray(body.scopes) ? body.scopes.filter((s: any) => typeof s === "string" && decide(event.principal, [s as Authority]).allow) : [];
     if (!scopes.length) return callback(null, { statusCode: 400, headers: corsJson, body: JSON.stringify({ error: "no scopes the delegator holds", code: "SCHEMA_INVALID" }) });
     const delegation = { agentSub, graphId, delegatedBy: event.principal.sub, scopes, expiresAt: body.expiresAt || null, createdAt: new Date().toISOString(), label: String(body.label || "").slice(0, 200) };
     eventSourceService.delegations.put(delegation)
