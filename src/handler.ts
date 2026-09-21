@@ -13,6 +13,8 @@ import { protectedResourceMetadataHandler } from './auth/metadata';
 const broadcastService = new BroadcastService();
 const eventSourceService = new EventSourceService();
 const crdtService = new CrdtService();
+// the CRDT service the revision routes use shares its admission gate with the event source service's integrity hook
+crdtService.admission.integrity = (after, diff) => eventSourceService.components.integrityCheck(after, diff);
 const revisionService = new RevisionService(crdtService.store, crdtService.admission, {
     fanOut: (graphId, update) => crdtService.fanOutUpdate(graphId, update),
     notify: (graphId, event) => crdtService.notifyGraph(graphId, event),
@@ -84,6 +86,15 @@ function _panicRoute(event: any, context: any, callback: (err: any, response: an
 function _getArtifact(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getArtifact(event, context, callback);
 }
+function _publish(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.components.publishRoute(event, context, callback);
+}
+function _componentsList(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.components.listRoute(event, context, callback);
+}
+function _componentGet(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.components.getRoute(event, context, callback);
+}
 /* ---- collaborative editing ---- */
 function _crdtSync(event: any, context: any, callback: (err: any, response: any) => void) {
     crdtService.sync(event, context, callback);
@@ -137,6 +148,9 @@ const publishGraphWs = withPrincipal(broadcastService.store, _publishGraphWs);
 const publishNodeWs = withPrincipal(broadcastService.store, _publishNodeWs);
 const defaultRoute = withPrincipal(broadcastService.store, _defaultRoute);
 const getArtifact = withPrincipal(broadcastService.store, _getArtifact);
+const publish = withPrincipal(broadcastService.store, _publish);
+const componentsList = withPrincipal(broadcastService.store, _componentsList);
+const componentGet = withPrincipal(broadcastService.store, _componentGet);
 const crdtSync = withPrincipal(broadcastService.store, _crdtSync);
 const crdtState = withPrincipal(broadcastService.store, _crdtState);
 const crdtStateAt = withPrincipal(broadcastService.store, _crdtStateAt);
@@ -173,6 +187,9 @@ export {
     crdtUpdate,
     crdtCheckpoint,
     getArtifact,
+    publish,
+    componentsList,
+    componentGet,
     publishGraphWs,
     publishNodeWs,
     connect,

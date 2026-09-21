@@ -57,6 +57,8 @@ provider:
     MAX_STRUCTS: ${opt:maxStructs, '200000'}
     RATE_MAX_MUTATIONS: ${opt:rateMaxMutations, '600'}
     RATE_MAX_REJECTIONS: ${opt:rateMaxRejections, '30'}
+    # warn (default) records drifted embedded component copies; reject refuses them
+    COMPONENT_INTEGRITY: ${opt:componentIntegrity, 'warn'}
     NODE_OPTIONS: "--enable-source-maps --unhandled-rejections=warn"
 
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"
@@ -432,6 +434,52 @@ functions:
                paths:
                  id: true
                  revisionId: true
+          cors:
+            origin: '*'
+
+  publish:
+    handler: src/handler.publish
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/publish
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  componentsList:
+    handler: src/handler.componentsList
+    timeout: 60
+    events:
+      - http:
+          method: GET
+          path: /components/{id}
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  componentGet:
+    handler: src/handler.componentGet
+    timeout: 60
+    events:
+      - http:
+          method: GET
+          path: /components/{id}/{version}
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 version: true
           cors:
             origin: '*'
 

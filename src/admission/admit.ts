@@ -23,7 +23,9 @@ import { MAX_STRUCTS, RateLimiter } from "./limits";
 export interface AdmissionResult {
     mutationId: string;
     decision: "accepted" | "rejected";
-    code?: "SCHEMA_INVALID" | "ADMISSION_DENIED" | "RATE_LIMITED" | "STALE_BASE" | "INTERNAL";
+    code?: "SCHEMA_INVALID" | "ADMISSION_DENIED" | "RATE_LIMITED" | "STALE_BASE" | "INTEGRITY_FAILURE" | "INTERNAL";
+    /** Accepted, but something is worth the sender's attention (an embedded component copy that drifted). */
+    warnings?: string[];
     reason?: string;
     updateId?: string;
     policyVersion: string;
@@ -64,6 +66,9 @@ export interface AdmissionRequest {
 export { MAX_STRUCTS };
 const MAX_OPS_IN_SUMMARY = 50;
 
+/** Checks the graph after the change for embedded component copies that no longer match their manifests. */
+export type IntegrityCheck = (after: any, diff: DiffSummary) => Promise<{ problems: { nodeId: string; publishedId: string; version: number; reason: string }[] }>;
+
 /** Store surface needed here (S3Service / MemoryStore / FakeS3Service all provide it). */
 interface Store {
     get(key: string, cb: (err: any, data: any) => void): void;
@@ -92,11 +97,14 @@ export class AdmissionService {
     private store: Store;
     readonly chain: AuditChain;
     readonly rate: RateLimiter;
-    constructor(crdtStore: any, store?: Store, options: { rate?: RateLimiter } = {}) {
+    /** Set by the component service once it exists; absent in stand-alone use. */
+    integrity: IntegrityCheck | null;
+    constructor(crdtStore: any, store?: Store, options: { rate?: RateLimiter; integrity?: IntegrityCheck } = {}) {
         this.crdtStore = crdtStore;
         this.store = store || crdtStore.store;
         this.chain = new AuditChain(this.store);
         this.rate = options.rate || new RateLimiter();
+        this.integrity = options.integrity || null;
     }
 
     private getJson(key: string): Promise<any | null> {
@@ -202,9 +210,22 @@ export class AdmissionService {
             return reject("ADMISSION_DENIED", decision.reason || "denied", { diffSummary, headStateVector, policyVersion: decision.policyVersion }, { required });
         }
 
+        // 5b. embedded component copies must still match what was published
+        let warnings: string[] | undefined;
+        if (this.integrity && !staged.diff.empty) {
+            const { problems } = await this.integrity(staged.after, staged.diff);
+            if (problems.length) {
+                const text = problems.map((p) => `${p.nodeId}: ${p.reason}`);
+                if (process.env.COMPONENT_INTEGRITY === "reject") {
+                    return reject("INTEGRITY_FAILURE", text.join("; "), { diffSummary, headStateVector }, { problems });
+                }
+                warnings = text;
+            }
+        }
+
         // 6. append the exact bytes that were staged
         const updateId = await this.crdtStore.appendUpdate(req.graphId, req.content, req.description, req.principal ? req.principal.sub : "Unknown");
-        const result: AdmissionResult = { ...base, decision: "accepted", updateId, policyVersion: decision.policyVersion, diffSummary, headStateVector };
+        const result: AdmissionResult = { ...base, decision: "accepted", updateId, policyVersion: decision.policyVersion, diffSummary, headStateVector, ...(warnings ? { warnings } : {}) };
 
         // 7. record + audit
         try {
@@ -212,7 +233,7 @@ export class AdmissionService {
         } catch (err) {
             console.error("Cannot write the mutation record", err);
         }
-        await audit(result, { structs: check.structs, required });
+        await audit(result, { structs: check.structs, required, ...(warnings ? { warnings } : {}) });
         return result;
     }
 }

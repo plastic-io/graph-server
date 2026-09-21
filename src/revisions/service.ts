@@ -56,7 +56,7 @@ export interface ActivePointer {
 
 export const SYSTEM_PRINCIPAL: Principal = { sub: "system:revisions", kind: "system", tenant: "system", scopes: [] };
 
-let SCHEDULER_VERSION = "unknown";
+export let SCHEDULER_VERSION = "unknown";
 try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     SCHEDULER_VERSION = require("@plastic-io/plastic-io/package.json").version || SCHEDULER_VERSION;
@@ -101,6 +101,7 @@ export class RevisionService {
     static projectionKey(graphId: string, revisionId: string) { return `revisions/${graphId}/${revisionId}.projection.json`; }
     static headKey(graphId: string) { return `revisions/${graphId}/HEAD.json`; }
     static activeKey(graphId: string) { return CrdtStore.activeKey(graphId); }
+    static seqKey(graphId: string, seq: number) { return `revisions/${graphId}/seq/${seq}.json`; }
 
     private getJson(key: string): Promise<any | null> {
         return new Promise((resolve) => this.store.get(key, (err: any, data: any) => resolve(err ? null : data)));
@@ -126,10 +127,25 @@ export class RevisionService {
     async projection(graphId: string, revisionId: string): Promise<any | null> {
         return this.getJson(RevisionService.projectionKey(graphId, revisionId));
     }
+    /** The revision with this sequence number, via the index written at cut time. */
+    async bySeq(graphId: string, seq: number): Promise<Revision | null> {
+        const pointer = await this.getJson(RevisionService.seqKey(graphId, seq));
+        return pointer && pointer.revisionId ? this.get(graphId, pointer.revisionId) : null;
+    }
+    /** Versions of this graph that were published as components, by seq. */
+    async publishedVersions(graphId: string): Promise<Record<number, { at: string }>> {
+        const keys = (await this.listKeys(`components/${graphId}/`)).filter((k) => k.endsWith("/manifest.json"));
+        const out: Record<number, { at: string }> = {};
+        for (const key of keys) {
+            const m = await this.getJson(key);
+            if (m && typeof m.version === "number") out[m.version] = { at: m.provenance && m.provenance.at };
+        }
+        return out;
+    }
     /** Manifests oldest first, without the snapshot bytes. */
     async list(graphId: string): Promise<Omit<Revision, "snapshot" | "stateVector">[]> {
         const prefix = `revisions/${graphId}/`;
-        const keys = (await this.listKeys(prefix)).filter((k) => k.endsWith(".json") && !k.endsWith(".projection.json") && !k.endsWith("HEAD.json"));
+        const keys = (await this.listKeys(prefix)).filter((k) => k.endsWith(".json") && !k.endsWith(".projection.json") && !k.endsWith("HEAD.json") && !k.includes("/seq/"));
         const out: any[] = [];
         for (const key of keys) {
             const m = await this.getJson(key);
@@ -201,6 +217,7 @@ export class RevisionService {
             await this.putJson(RevisionService.manifestKey(graphId, revision.revisionId), revision);
             await this.putJson(RevisionService.projectionKey(graphId, revision.revisionId), projection);
             await this.putJson(RevisionService.headKey(graphId), { revisionId: revision.revisionId, seq: revision.seq });
+            await this.putJson(RevisionService.seqKey(graphId, revision.seq), { revisionId: revision.revisionId });
             await this.admission.chain.append(graphId, {
                 kind: "revision.cut", at: revision.at, graphId, revisionId: revision.revisionId, seq: revision.seq, label: revision.label,
                 principal: revision.createdBy, digest, headUpdateId: revision.headUpdateId, mutations: revision.mutationIds.length,
@@ -364,8 +381,8 @@ export class RevisionService {
 
     listRoute(event: any, context: any, callback: (err: any, r: any) => void) {
         const graphId = event.pathParameters.id;
-        Promise.all([this.list(graphId), this.head(graphId), this.active(graphId)])
-            .then(([revisions, head, active]) => this.reply(callback, 200, { graphId, head, active, revisions }))
+        Promise.all([this.list(graphId), this.head(graphId), this.active(graphId), this.publishedVersions(graphId)])
+            .then(([revisions, head, active, published]) => this.reply(callback, 200, { graphId, head, active, published, revisions }))
             .catch((err) => { console.error("Cannot list revisions.", err); callback(null, { statusCode: 500, headers: corsHeaders }); });
     }
 

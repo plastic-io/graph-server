@@ -8,6 +8,8 @@ import BroadcastService from "./broadcastService";
 import CrdtService from "./crdtService";
 import CrdtStore from "./crdtStore";
 import TocStore from "./tocStore";
+import { RevisionService } from "./revisions/service";
+import { ComponentService } from "./components/service";
 import {
     ensureBuilt,
     listGraph,
@@ -36,6 +38,8 @@ const corsHeaders = {
     "Access-Control-Allow-Credentials": true,
 };
 export default class EventSourceService {
+    revisions: RevisionService;
+    components: ComponentService;
     store: S3Service;
     broadcastService: BroadcastService;
     crdtService: CrdtService;
@@ -47,6 +51,15 @@ export default class EventSourceService {
         this.crdtService = new CrdtService();
         this.crdtStore = new CrdtStore();
         this.tocStore = new TocStore();
+        this.revisions = new RevisionService(this.crdtStore, this.crdtService.admission, {
+            fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
+            notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
+        });
+        this.components = new ComponentService(this.crdtStore, this.revisions, this.crdtService.admission, {
+            tocStore: this.tocStore, broadcastService: this.broadcastService,
+            notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
+        });
+        this.crdtService.admission.integrity = (after, diff) => this.components.integrityCheck(after, diff);
         this.okResponse = {
             statusCode: 200
         };
@@ -374,9 +387,31 @@ export default class EventSourceService {
             });
         });
     }
+    /** WS publishNode/publishGraph: publishing now names a revision of the graph (components/service.ts). */
+    private publishOverWs(event: any, graphId: string, nodeId: string | undefined, callback: (err: any, response: any) => void) {
+        const ctx = event.requestContext;
+        const body = JSON.parse(event.body);
+        this.components.publish(graphId, event.principal, { nodeId, label: body.label })
+            .then((r: any) => {
+                const payload = r.error
+                    ? { messageId: body.messageId, error: true, response: { err: r.error, code: r.code } }
+                    : { messageId: body.messageId, error: false, response: {
+                        type: r.manifest.kind, url: r.manifest.url, publishedBy: r.manifest.provenance.publishedBy && r.manifest.provenance.publishedBy.sub,
+                        publishedOn: Date.parse(r.manifest.provenance.at), version: r.manifest.version, revisionId: r.revision.revisionId, digest: r.manifest.digest, created: r.created,
+                    } };
+                this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, payload, (err) => {
+                    if (err) console.error("Error sending publish result to client", err);
+                    callback(null, this.okResponse);
+                });
+            })
+            .catch((err) => { console.error("Cannot publish.", err); callback(null, this.okResponse); });
+    }
     publishNodeWs(event: any, context: any, callback: (err: any, response: any) => void) {
-        // Publishing reads a versioned projection file, and under the CRDT
-        // pipeline those are only written at checkpoints, so force one first.
+        const body = JSON.parse(event.body);
+        this.publishOverWs(event, body.graphId, body.nodeId, callback);
+    }
+    /** @deprecated 2.0 path, kept for reference until the projections layout is retired. */
+    _publishNodeWsLegacy(event: any, context: any, callback: (err: any, response: any) => void) {
         this.crdtService.ensureProjection(JSON.parse(event.body).graphId)
             .catch((err) => console.error("Cannot refresh projection before publishing a node.", err))
             .then(() => this._publishNodeWs(event, context, callback));
@@ -467,6 +502,11 @@ export default class EventSourceService {
         });
     }
     publishGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+        const body = JSON.parse(event.body);
+        this.publishOverWs(event, body.id, undefined, callback);
+    }
+    /** @deprecated 2.0 path, kept for reference until the projections layout is retired. */
+    _publishGraphWsLegacy(event: any, context: any, callback: (err: any, response: any) => void) {
         this.crdtService.ensureProjection(JSON.parse(event.body).id)
             .catch((err) => console.error("Cannot refresh projection before publishing a graph.", err))
             .then(() => this._publishGraphWs(event, context, callback));
@@ -538,6 +578,11 @@ export default class EventSourceService {
         });
     }
     getArtifact(event: any, context: any, callback: (err: any, response: any) => void) {
+        // components first (revision-backed), then the 2.0 layout
+        this.components.artifactRoute(event, context, callback);
+    }
+    /** @deprecated 2.0 read of the projections layout. */
+    getArtifactLegacy(event: any, context: any, callback: (err: any, response: any) => void) {
         this.store.get(`graphs/projections/published/artifacts/${event.pathParameters.id}.${event.pathParameters.version}.json`, (err, artifact) => {
             if (err) {
                 if (/NoSuchKey/.test(err.toString())) {
@@ -624,6 +669,17 @@ export default class EventSourceService {
             ? `graphs/projections/latest/${event.pathParameters.id}.json`
             : `graphs/${event.pathParameters.id}/projections/${event.pathParameters.id}.${event.pathParameters.version}.json`;
         console.log('getGraph: Getting path:', path);
+        if (!wantsLatest && /^\d+$/.test(String(event.pathParameters.version))) {
+            // a version number names a revision first; the 2.0 projection file is the fallback
+            this.revisions.bySeq(event.pathParameters.id, Number(event.pathParameters.version))
+                .then((revision) => revision ? this.revisions.projection(event.pathParameters.id, revision.revisionId) : null)
+                .then((graph) => {
+                    if (!graph) return this.getStoredGraph(path, callback);
+                    callback(null, { statusCode: 200, body: JSON.stringify(graph), headers: corsHeaders });
+                })
+                .catch(() => this.getStoredGraph(path, callback));
+            return;
+        }
         if (wantsLatest) {
             this.crdtStore.projectGraph(event.pathParameters.id).then((graph) => {
                 if (!graph) {

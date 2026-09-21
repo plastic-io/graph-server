@@ -233,6 +233,17 @@ const server = http.createServer(async (request, response) => {
     if (parts[0] === "crdt" && parts[2] === "checkpoint") {
       return crdtService.checkpoint({ pathParameters: { id: parts[1] } }, {}, send);
     }
+    if (parts[0] === "crdt" && parts[2] === "publish" && request.method === "POST") {
+      const body = await readBody(request);
+      return eventSourceService.components.publishRoute(
+        { pathParameters: { id: parts[1] }, body, principal: { sub: "dev:http", kind: "human", tenant: "personal:dev", scopes: [] } }, {}, send);
+    }
+    if (parts[0] === "components" && parts.length === 2) {
+      return eventSourceService.components.listRoute({ pathParameters: { id: parts[1] } }, {}, send);
+    }
+    if (parts[0] === "components" && parts.length === 3) {
+      return eventSourceService.components.getRoute({ pathParameters: { id: parts[1], version: parts[2] } }, {}, send);
+    }
     if (parts[0] === "artifacts" && parts.length === 3) {
       return eventSourceService.getArtifact(
         { pathParameters: { id: parts[1], version: parts[2] } }, {}, send);
