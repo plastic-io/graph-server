@@ -5,6 +5,7 @@
 import EventSourceService from './eventSourceService';
 import BroadcastService from './broadcastService';
 import CrdtService from './crdtService';
+import { RevisionService } from './revisions/service';
 import GraphService, {panic as _panic} from './graphService';
 import { withPrincipal } from './auth/principal';
 import { authorize as _authorize } from './auth/authorizer';
@@ -12,6 +13,10 @@ import { protectedResourceMetadataHandler } from './auth/metadata';
 const broadcastService = new BroadcastService();
 const eventSourceService = new EventSourceService();
 const crdtService = new CrdtService();
+const revisionService = new RevisionService(crdtService.store, crdtService.admission, {
+    fanOut: (graphId, update) => crdtService.fanOutUpdate(graphId, update),
+    notify: (graphId, event) => crdtService.notifyGraph(graphId, event),
+});
 const graphService = new GraphService();
 function _connect(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.connect(event, context, callback);
@@ -98,6 +103,21 @@ function _crdtUpdate(event: any, context: any, callback: (err: any, response: an
 function _crdtCheckpoint(event: any, context: any, callback: (err: any, response: any) => void) {
     crdtService.checkpoint(event, context, callback);
 }
+function _revisionsList(event: any, context: any, callback: (err: any, response: any) => void) {
+    revisionService.listRoute(event, context, callback);
+}
+function _revisionsCut(event: any, context: any, callback: (err: any, response: any) => void) {
+    revisionService.cutRoute(event, context, callback);
+}
+function _revisionGet(event: any, context: any, callback: (err: any, response: any) => void) {
+    revisionService.getRoute(event, context, callback);
+}
+function _revisionActivate(event: any, context: any, callback: (err: any, response: any) => void) {
+    revisionService.activateRoute(event, context, callback);
+}
+function _revisionRestore(event: any, context: any, callback: (err: any, response: any) => void) {
+    revisionService.restoreRoute(event, context, callback);
+}
 // Every route runs with `event.principal` established on the server side (auth/principal.ts).
 const connect = withPrincipal(broadcastService.store, _connect);
 const subscribe = withPrincipal(broadcastService.store, _subscribe);
@@ -123,6 +143,11 @@ const crdtStateAt = withPrincipal(broadcastService.store, _crdtStateAt);
 const crdtHistory = withPrincipal(broadcastService.store, _crdtHistory);
 const crdtUpdate = withPrincipal(broadcastService.store, _crdtUpdate);
 const crdtCheckpoint = withPrincipal(broadcastService.store, _crdtCheckpoint);
+const revisionsList = withPrincipal(broadcastService.store, _revisionsList);
+const revisionsCut = withPrincipal(broadcastService.store, _revisionsCut);
+const revisionGet = withPrincipal(broadcastService.store, _revisionGet);
+const revisionActivate = withPrincipal(broadcastService.store, _revisionActivate);
+const revisionRestore = withPrincipal(broadcastService.store, _revisionRestore);
 const panic = withPrincipal(broadcastService.store, _panicRoute);
 // $disconnect must clean up even when the connection record is already gone.
 const disconnect = withPrincipal(broadcastService.store, _disconnect, { required: false });
@@ -136,6 +161,11 @@ function authorize(event: any) {
 export {
     authorize,
     protectedResourceMetadata,
+    revisionsList,
+    revisionsCut,
+    revisionGet,
+    revisionActivate,
+    revisionRestore,
     crdtSync,
     crdtState,
     crdtStateAt,

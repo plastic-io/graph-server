@@ -315,15 +315,39 @@ export default class CrdtStore {
     return headId;
   }
 
+  /** Where the pointer to the activated revision lives (revisions/service.ts writes it). */
+  static activeKey(graphId: string): string {
+    return `active/${graphId}.json`;
+  }
+
+  /** The activated revision pointer, or null when execution still follows live edits. */
+  async activeRevision(graphId: string): Promise<any | null> {
+    return new Promise((resolve) => this.store.get(CrdtStore.activeKey(graphId), (err, data) => resolve(err ? null : data)));
+  }
+
+  /** The file graph execution loads for a URL (graphService reads it). */
+  async writeExecutionProjection(graph: any, revision: { revisionId: string; seq: number } | null): Promise<void> {
+    await this.setJson(`graphs/projections/endpoints/${graph.url}.json`, graph, {
+      id: graph.id,
+      type: "endpoint",
+      url: graph.url || graph.id,
+      version: String(graph.version),
+      "revision-id": revision ? revision.revisionId : "live",
+      "revision-seq": revision ? String(revision.seq) : "0",
+    });
+  }
+
   /**
    * Refresh the plain JSON files that graph execution, publishing and the
-   * table of contents all still read.
+   * table of contents all still read.  Once a revision has been activated the
+   * execution projection follows activation, not live edits (plan §4.7.4).
    */
   async writeProjections(graphId: string): Promise<any | null> {
     const graph = await this.projectGraph(graphId);
     if (!graph || !graph.id) {
       return null;
     }
+    const active = await this.activeRevision(graphId);
     const meta = {
       id: graph.id,
       name: (graph.properties && graph.properties.name) || "Unnamed",
@@ -337,10 +361,7 @@ export default class CrdtStore {
     await Promise.all([
       this.setJson(`graphs/projections/latest/${graphId}.json`, graph, meta),
       this.setJson(`graphs/${graphId}/projections/${graphId}.${graph.version}.json`, graph, meta),
-      this.setJson(`graphs/projections/endpoints/${graph.url}.json`, graph, {
-        ...meta,
-        type: "endpoint",
-      }),
+      active ? Promise.resolve() : this.writeExecutionProjection(graph, null),
     ]);
     return graph;
   }

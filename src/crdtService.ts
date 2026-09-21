@@ -91,6 +91,23 @@ export default class CrdtService {
     });
   }
 
+  /** Send an admitted update to every replica of a graph (used by the revision service). */
+  fanOutUpdate(graphId: string, content: Uint8Array): Promise<void> {
+    return this.fanOut(graphId, "sync", writeUpdate(content));
+  }
+
+  /** A message on the graph's notification channel (activation, revision cuts). */
+  notifyGraph(graphId: string, event: any): Promise<void> {
+    return new Promise((resolve) => {
+      this.broadcastService._sendToChannel(`graph-notify-${graphId}`, event, (err: any) => {
+        if (err) {
+          console.error("Cannot notify a graph channel.", err);
+        }
+        resolve();
+      });
+    });
+  }
+
   /**
    * Refresh the JSON projection when it has gone stale.  Graph execution,
    * publishing and the table of contents all still read those files, so they

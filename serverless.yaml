@@ -357,6 +357,84 @@ functions:
           cors:
             origin: '*'
 
+  revisionsList:
+    handler: src/handler.revisionsList
+    timeout: 60
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/revisions
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  revisionsCut:
+    handler: src/handler.revisionsCut
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/revisions
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  revisionGet:
+    handler: src/handler.revisionGet
+    timeout: 60
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/revisions/{revisionId}
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 revisionId: true
+          cors:
+            origin: '*'
+
+  revisionActivate:
+    handler: src/handler.revisionActivate
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/revisions/{revisionId}/activate
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 revisionId: true
+          cors:
+            origin: '*'
+
+  revisionRestore:
+    handler: src/handler.revisionRestore
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/revisions/{revisionId}/restore
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 revisionId: true
+          cors:
+            origin: '*'
+
   crdtCheckpoint:
     handler: src/handler.crdtCheckpoint
     timeout: 60

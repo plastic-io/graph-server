@@ -69,6 +69,10 @@ export function decide(principal: Principal | undefined, required: Authority[]):
     if (!principal) {
         return { allow: false, reason: "unauthenticated", policyVersion: POLICY_VERSION };
     }
+    if (principal.kind === "system") {
+        // the server acting on its own behalf (revision stamps, observed-state mirrors)
+        return { allow: true, policyVersion: POLICY_VERSION };
+    }
     const owners = (process.env.OWNER_SUBS || "").split(",").map((s) => s.trim()).filter(Boolean);
     if (owners.length && !owners.includes(principal.sub)) {
         return { allow: false, reason: `${principal.sub} is not an owner of this instance`, policyVersion: POLICY_VERSION };

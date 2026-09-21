@@ -20,6 +20,12 @@ export type StagingResult =
     }
     | { ok: false; code: "SCHEMA_INVALID" | "STALE_BASE"; reason: string };
 
+/** The meta map as JSON; it is not part of the projection, so the diff cannot see it. */
+function metaOf(doc: Y.Doc): Record<string, any> {
+    const meta = doc.getMap("graph").get("meta");
+    return meta instanceof Y.Map ? meta.toJSON() : {};
+}
+
 /** A fingerprint of what the document is still waiting for (structs it cannot integrate yet). */
 function pendingSignature(doc: Y.Doc): string {
     const store: any = doc.store;
@@ -41,6 +47,7 @@ export function stage(head: Uint8Array | null, content: Uint8Array): StagingResu
         }
         const before = toJSON(doc);
         const versionBefore = schemaVersionOf(doc);
+        const metaBefore = metaOf(doc);
         const pendingBefore = pendingSignature(doc);
         try {
             applyUpdate(doc, content);
@@ -59,10 +66,13 @@ export function stage(head: Uint8Array | null, content: Uint8Array): StagingResu
             return { ok: false, code: "SCHEMA_INVALID", reason: `document schema version ${versionAfter} is newer than this server supports (${SCHEMA_VERSION})` };
         }
         const diff = semanticDiff(before, after);
-        if (before !== null && versionBefore !== versionAfter) {
+        const metaAfter = metaOf(doc);
+        const metaKeys = Array.from(new Set(Object.keys(metaBefore).concat(Object.keys(metaAfter))))
+            .filter((k) => JSON.stringify(metaBefore[k]) !== JSON.stringify(metaAfter[k])).sort();
+        if (before !== null && metaKeys.length) {
             // `meta` is not part of the projection, so the diff cannot see it.
             diff.namespaces = Array.from(new Set(diff.namespaces.concat("meta"))).sort();
-            diff.ops.push({ op: "set-meta", namespace: "meta", keys: ["schemaVersion"] });
+            diff.ops.push({ op: "set-meta", namespace: "meta", keys: metaKeys });
             diff.empty = false;
         }
         return {
