@@ -322,6 +322,32 @@ describe("MCP over the Lambda handler", () => {
         await client.close();
     });
 
+    test("a proposal whose operations no longer apply is stale, and says why", async () => {
+        const { mcp, proposals, store, broadcast } = await setup();
+        const client = await connect(mcp, owner);
+        const rev = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } })).envelope.resultRevision;
+        const created = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "add-node", node: { id: "brand-new", url: "brand-new", name: "New", inputs: [{ name: "in" }], outputs: [{ name: "out" }], template: { set: "edges.out = value;" } } }], description: "Add a node", idempotencyKey: ULID } }));
+        expect(created.result.state).toBe("validated");
+        // someone else adds that node first, so the graph moves and the operation no longer applies
+        const graph = await store.projectGraph("g1");
+        const { applyOps } = require("@plastic-io/graph-crdt");
+        const applied = applyOps(graph, [{ op: "add-node", node: { id: "brand-new", url: "brand-new", name: "New", inputs: [{ name: "in" }], outputs: [{ name: "out" }], template: { set: "edges.out = value;" } } }]);
+        const doc = new Y.Doc();
+        applyUpdate(doc, (await store.loadMerged("g1")).update);
+        reconcile(doc, applied.projection);
+        await store.appendUpdate("g1", encodeState(doc), "someone else", "system");
+        const refused = await client.callTool({ name: "proposal.commit", arguments: { schemaVersion: 1, graphId: "g1", proposalId: created.result.proposalId } });
+        expect(refused.isError).toBe(true);
+        expect(parse(refused).error).toMatchObject({ code: "STALE_BASE", message: expect.stringMatching(/moved to rev_/) });
+        // re-applying where the graph is now says what stands in the way, and the proposal stops looking ready
+        const rebased = parse(await client.callTool({ name: "proposal.validate", arguments: { schemaVersion: 1, graphId: "g1", proposalId: created.result.proposalId, rebase: true } }));
+        expect(rebased.result).toMatchObject({ state: "stale", validation: { ok: false, errors: [{ code: "CONFLICT", message: expect.stringMatching(/brand-new already exists/) }] } });
+        const stored = await proposals.get("g1", created.result.proposalId);
+        expect(stored.state).toBe("stale");
+        void broadcast;
+        await client.close();
+    });
+
     test("a journey is runnable through the protocol, and says what it found", async () => {
         const { mcp, journeys, store } = await setup();
         await journeys.put("g1", owner, {

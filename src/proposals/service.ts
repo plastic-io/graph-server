@@ -256,7 +256,11 @@ export class ProposalService {
         }
         const m = await this.materialise(graphId, proposal.ops, principal || (proposal.principal as any));
         if ("error" in m) {
+            // Its operations no longer apply to the graph as it is, so it is
+            // stale, not merely invalid: nothing here can be committed, and the
+            // state says so rather than leaving it looking ready.
             proposal.validation = { ok: false, errors: [{ code: m.code, message: m.error }] };
+            proposal.state = "stale";
             proposal.updatedAt = new Date().toISOString();
             await this.putJson(ProposalService.key(graphId, proposalId), proposal);
             return { proposal };
