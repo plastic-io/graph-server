@@ -65,6 +65,11 @@ typings/
 
 # Output of 'npm pack'
 *.tgz
+# ...except a dependency vendored on purpose: the scheduler's 2.2.0 release is
+# staged on npm and not yet public, and package.json resolves it from this file,
+# so a clone that does not carry it cannot install.  Remove both when 2.2.0 is
+# published and the dependency moves back to a version range.
+!vendor-plastic-io-*.tgz
 
 # Yarn Integrity file
 .yarn-integrity
