@@ -291,26 +291,58 @@ export class ExecutionRunner {
          * and every linked graph a node carries.
          */
         const prime = async () => {
-            const seed = async (id: any, version: any, value?: any) => {
+            const seen = new Set<string>();
+            const seed = async (id: any, version: any, value?: any): Promise<any | null> => {
                 if (!id || version === undefined || version === null) {
-                    return;
+                    return null;
                 }
                 const path = scheduler.getGraphPath(String(id), Number(version));
                 if ((scheduler.graphLoader as any).cache[path]) {
-                    return;
+                    return (scheduler.graphLoader as any).cache[path];
                 }
                 const resolved = value || (req.resolve ? await req.resolve(path) : null);
                 if (resolved) {
                     (scheduler.graphLoader as any).cache[path] = resolved;
                 }
+                return resolved;
             };
-            await seed(graph.id, graph.version, graph);
-            for (const node of (graph.nodes || [])) {
-                const linked = node && node.linkedGraph;
-                if (linked && linked.id) {
-                    await seed(linked.id, linked.version === undefined ? node.version : linked.version, linked.graph);
+            /**
+             * A linked graph is part of the node that carries it, so where that
+             * node runs is where its inner nodes run too (plan §4.8.1: an
+             * instance may narrow placement, never widen it).  Inner nodes that
+             * say nothing inherit; one that says `server` inside a node placed
+             * in the browser keeps its own answer and is handed back.
+             */
+            const inherit = (inner: any, placement: string) => {
+                (inner && inner.nodes ? inner.nodes : []).forEach((n: any) => {
+                    n.properties = n.properties || {};
+                    if (!n.properties.placement) {
+                        n.properties.placement = placement;
+                    }
+                });
+            };
+            const walk = async (current: any, depth: number) => {
+                if (!current || depth > 8 || seen.has(String(current.id))) {
+                    return;
                 }
-            }
+                seen.add(String(current.id));
+                await seed(current.id, current.version, current);
+                for (const node of (current.nodes || [])) {
+                    const linked = node && node.linkedGraph;
+                    if (!linked || !linked.id) {
+                        continue;
+                    }
+                    const inner = await seed(linked.id, linked.version === undefined ? node.version : linked.version, linked.graph);
+                    const placement = node.properties && node.properties.placement;
+                    if (inner && placement && placement !== "portable") {
+                        inherit(inner, placement);
+                        inherit(linked.graph, placement);
+                    }
+                    await walk(inner, depth + 1);
+                    await walk(linked.graph, depth + 1);
+                }
+            };
+            await walk(graph, 0);
         };
         await prime();
         scheduler.addEventListener("load", async (e: any) => {

@@ -76,6 +76,31 @@ describe("a server-owned execution reaching a browser node", () => {
     });
 });
 
+describe("a linked graph", () => {
+    test("runs where the node that carries it runs, and an inner node keeps its own answer", async () => {
+        const s3 = new FakeS3Service();
+        const runner = new ExecutionRunner(s3);
+        const delivered = [];
+        const inner = {
+            id: "inner-1", url: "inner-1", version: 1, properties: { name: "inner" },
+            nodes: [node("innerA", "state.innerRan = true; edges.out = value;"), serverNode("innerB", "state.innerBRan = true;")],
+        };
+        inner.nodes[0].edges[0].connectors.push({ id: "ic1", nodeId: "innerB", field: "in", graphId: "inner-1", version: 1 });
+        const carrier = browserNode("carrier", "edges.out = value;");
+        carrier.linkedGraph = { id: "inner-1", version: 1, graph: inner, data: {}, properties: {}, fields: { inputs: { in: { id: "innerA", field: "in" } }, outputs: {} } };
+        const g = graphOf([node("entry", "edges.out = value;"), carrier], [["entry", "carrier"]]);
+        const state = {};
+        const summary = await runner.run({ graph: g, nodeUrl: "entry", value: 1, principal: owner, state, deliver: (d) => delivered.push(d) });
+        expect(summary.state).toBe("completed");
+        // the carrier is placed in the browser, so its inner node went there too
+        expect(state.innerRan).toBeUndefined();
+        expect(delivered.map((d) => d.nodeId)).toEqual(["innerA"]);
+        // and an inner node that says "server" is still the server's to run
+        expect(inner.nodes[0].properties.placement).toBe("browser");
+        expect(inner.nodes[1].properties.placement).toBe("server");
+    });
+});
+
 describe("a browser-owned execution reaching a server node", () => {
     async function setup() {
         const s3 = new FakeS3Service();
