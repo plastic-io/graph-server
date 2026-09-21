@@ -22,6 +22,12 @@ const revisionService = new RevisionService(crdtService.store, crdtService.admis
     fanOut: (graphId, update) => crdtService.fanOutUpdate(graphId, update),
     notify: (graphId, event) => crdtService.notifyGraph(graphId, event),
 });
+// The REST routes have their own revision service, and a gate that only one of
+// them knows about is not a gate: what refuses over the protocol has to refuse
+// here too (plan §8.1.8).
+revisionService.gate = (graphId, revisionId, projection) => eventSourceService.revisions.gate
+    ? eventSourceService.revisions.gate(graphId, revisionId, projection)
+    : Promise.resolve([]);
 const graphService = new GraphService();
 /**
  * Running a graph for an agent (plan PB-083 `graph.invoke`).  It is the same

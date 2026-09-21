@@ -409,6 +409,7 @@ export class RevisionService {
         callback(null, { statusCode, body: JSON.stringify(body), headers: corsHeaders });
     }
     private statusFor(code: string): number {
+        if (code === "GATE_FAILED") return 409;
         return code === "ADMISSION_DENIED" ? 403 : code === "NOT_FOUND" ? 404 : code === "RATE_LIMITED" ? 429 : 400;
     }
 
@@ -446,7 +447,9 @@ export class RevisionService {
 
     activateRoute(event: any, context: any, callback: (err: any, r: any) => void) {
         const { id: graphId, revisionId } = event.pathParameters;
-        this.activate(graphId, revisionId, event.principal)
+        // `?force=1` is for someone who has read what the gate found
+        const force = /(^|&)force=1/.test(String(event.rawQueryString || "")) || !!(event.queryStringParameters && event.queryStringParameters.force);
+        this.activate(graphId, revisionId, event.principal, force)
             .then((r: any) => r.error ? this.reply(callback, this.statusFor(r.code), r) : this.reply(callback, 200, r))
             .catch((err) => { console.error("Cannot activate a revision.", err); callback(null, { statusCode: 500, headers: corsHeaders }); });
     }
