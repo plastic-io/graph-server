@@ -5,6 +5,7 @@ import { buildHostMembers, HostDeps } from "./host";
 import { effectiveCapabilities, parseCapabilities } from "./capabilities";
 import { makeContractHooks } from "./contracts";
 import { AuditChain } from "../audit/chain";
+import { runInIsolate, isolationAvailable, isolationLoadError } from "./isolate";
 
 /**
  * Runs one execution on the server (plan §4.6, §4.5): scheduler 2.1 with a
@@ -35,6 +36,10 @@ export interface RunRequest {
     principalCapabilities?: any[] | null;
     defaultCapture?: "none" | "meta" | "full";
     maxObservations?: number;
+    /** Where node code runs when the node does not say (`worker` keeps the 2.0 realm, `isolate` contains it). */
+    defaultContainment?: "worker" | "isolate";
+    /** Limits for one contained node invocation. */
+    isolateLimits?: { timeoutMs: number; memoryMb: number };
 }
 
 export interface ExecutionSummary {
@@ -57,6 +62,9 @@ interface Store {
     setRaw(key: string, body: Buffer, meta: any, cb: (err: any, data: any) => void): void;
     remove(key: string, cb: (err: any, data: any) => void): void;
 }
+
+/** How much of a contained node's HTTP response may cross the boundary. */
+const MAX_CONTAINED_BODY = 1024 * 1024;
 
 const LEGACY_EVENTS = ["begin", "end", "beginconnector", "endconnector", "set", "afterSet", "error", "warning", "load", "observation", "cancel"];
 
@@ -99,6 +107,91 @@ export class ExecutionRunner {
             audit: (record) => this.chain.append(graph.id, record).then(() => undefined),
         };
         const hooks = makeContractHooks();
+        /**
+         * Where a node's code runs (plan §4.6.3).  A node says for itself, a
+         * graph can say for all of its nodes, and the deployment says what
+         * happens when neither does.  Asking for containment and not getting it
+         * is an error, never a quiet fall back into the ambient realm.
+         */
+        const containmentOf = (node: any): "worker" | "isolate" => {
+            const asked = (node && node.properties && node.properties.containment)
+                || (graph.properties && graph.properties.containment)
+                || req.defaultContainment
+                || "worker";
+            return asked === "isolate" ? "isolate" : "worker";
+        };
+        const limits = req.isolateLimits || { timeoutMs: 10000, memoryMb: 128 };
+        const executeNode = async ({ code, nodeInterface, execution, runInProcess }: any) => {
+            const node = nodeInterface.node;
+            if (containmentOf(node) !== "isolate") {
+                return runInProcess();
+            }
+            if (!isolationAvailable()) {
+                const why = isolationLoadError();
+                recorder.record({ kind: "exec.error", nodeId: node.id, payload: { message: `containment was asked for and is not available: ${why ? why.message : "isolated-vm is missing"}`, code: "CONTAINMENT_UNAVAILABLE" } });
+                throw new Error(`node ${node.id} asks for containment, which this runtime cannot provide`);
+            }
+            const host = nodeInterface.host || {};
+            const setPath = (target: any, path: string[], value: any) => {
+                if (!target || !path.length) return;
+                let cursor = target;
+                for (let i = 0; i < path.length - 1; i++) {
+                    if (cursor[path[i]] === null || typeof cursor[path[i]] !== "object") {
+                        cursor[path[i]] = {};
+                    }
+                    cursor = cursor[path[i]];
+                }
+                cursor[path[path.length - 1]] = value;
+            };
+            const outcome = await runInIsolate({
+                code,
+                limits,
+                inputs: {
+                    value: nodeInterface.value,
+                    state: nodeInterface.state,
+                    data: nodeInterface.data,
+                    properties: nodeInterface.properties,
+                    node: { id: node.id, url: node.url, version: node.version, graphId: node.graphId, properties: node.properties },
+                    field: nodeInterface.field,
+                    graph: { id: graph.id, url: graph.url, version: graph.version, properties: graph.properties },
+                    cache: {},
+                    capabilities: host.capabilities,
+                },
+                setEdge: (field, value) => { nodeInterface.edges[field] = value; },
+                setState: (path, value) => setPath(nodeInterface.state, path, value),
+                setData: (path, value) => setPath(nodeInterface.data, path, value),
+                hostCall: async (member, args) => {
+                    if (member === "fetch") {
+                        const response: any = await host.fetch(args[0], args[1] || {});
+                        const body = await response.text();
+                        const truncated = body.length > MAX_CONTAINED_BODY;
+                        const headers: Record<string, string> = {};
+                        if (response.headers && typeof response.headers.forEach === "function") {
+                            response.headers.forEach((v: string, k: string) => { headers[k] = v; });
+                        }
+                        return { ok: response.ok, status: response.status, statusText: response.statusText, url: response.url, headers, truncated, body: truncated ? body.slice(0, MAX_CONTAINED_BODY) : body };
+                    }
+                    if (member === "kv.get") return host.kv.get(args[0]);
+                    if (member === "kv.put") return host.kv.put(args[0], args[1]);
+                    if (member === "kv.del") return host.kv.del(args[0]);
+                    if (member === "secret.header") return host.secret(args[0]).header(args[1], args[2]);
+                    if (member === "emit") { host.emit(args[0], args[1]); return null; }
+                    throw new Error(`host.${member} is not available to a contained node`);
+                },
+                log: (level, args) => {
+                    if (req.logger && typeof (req.logger as any)[level] === "function") {
+                        (req.logger as any)[level](...args);
+                    }
+                },
+            });
+            if (outcome.error) {
+                if (outcome.error.kind === "timeout" || outcome.error.kind === "memory") {
+                    recorder.record({ kind: "budget.exhausted", nodeId: node.id, budget: { dimension: outcome.error.kind === "timeout" ? "wallMs" : "memoryMb", used: outcome.error.kind === "timeout" ? outcome.wallMs : limits.memoryMb, limit: outcome.error.kind === "timeout" ? limits.timeoutMs : limits.memoryMb }, payload: { message: outcome.error.message, contained: true } });
+                }
+                throw new Error(outcome.error.message);
+            }
+            return outcome.result;
+        };
         const scheduler = new Scheduler(graph, req.context || {}, req.state || {}, req.logger, {
             budget: req.budget,
             host: ({ execution, nodeInterface }: any) => buildHostMembers({
@@ -110,6 +203,7 @@ export class ExecutionRunner {
                 recorder,
                 principal: req.principal,
             }, hostDeps),
+            executeNode,
             onInput: hooks.onInput,
             onOutput: hooks.onOutput,
             contractMode: (graph.properties && graph.properties.contractMode === "reject") ? "reject" : "warn",

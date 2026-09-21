@@ -64,11 +64,30 @@ provider:
     SECRET_REFS: ${opt:secretRefs, 'openai=OPENAI_API_KEY'}
     # observation volume per execution before sampling kicks in (plan §4.7.4)
     MAX_OBSERVATIONS: ${opt:maxObservations, '5000'}
+    # Where node code runs when neither the node nor the graph says (plan §4.6.3,
+    # D-4).  `isolate` contains every node in its own V8 isolate; `worker` keeps
+    # the 2.0 realm, which still has the Lambda's ambient authority, so a node
+    # that asks for containment always gets it whatever this says.
+    DEFAULT_CONTAINMENT: ${opt:defaultContainment, 'worker'}
+    ISOLATE_TIMEOUT_MS: ${opt:isolateTimeoutMs, '10000'}
+    ISOLATE_MEMORY_MB: ${opt:isolateMemoryMb, '128'}
     # browsers that may call /mcp directly (non-browser MCP clients send no Origin)
     MCP_ALLOWED_ORIGINS: ${opt:mcpAllowedOrigins, 'http://localhost:8080,http://localhost:5173,https://plastic-io.github.io'}
     NODE_OPTIONS: "--enable-source-maps --unhandled-rejections=warn"
 
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"
+
+layers:
+  isolatedVm:
+    path: layers/isolated-vm
+    name: ${self:custom.prefix}-${self:provider.stage}-isolated-vm
+    description: isolated-vm 6.2.0 built against the Lambda Node 22 image (webpack cannot bundle a .node binary)
+    compatibleRuntimes:
+      - nodejs22.x
+    package:
+      patterns:
+        - '!Dockerfile'
+        - '!build.sh'
 
 custom:
   prefix: ${opt:prefix, 'plastic'}
@@ -712,6 +731,9 @@ functions:
 
   httpDefault:
     handler: src/handler.defaultRoute
+    # graph execution runs node code, which may ask to be contained
+    layers:
+      - !Ref IsolatedVmLambdaLayer
     timeout: 30
     events:
       - http:

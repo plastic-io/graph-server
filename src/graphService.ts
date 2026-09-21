@@ -534,6 +534,11 @@ class GraphService {
                     revisionId: execution.revisionId,
                     budget: { wallMs: graphTimeout, hops: 100000, fanOut: 10000, depth: 512 },
                     maxObservations: Number(process.env.MAX_OBSERVATIONS) || undefined,
+                    defaultContainment: process.env.DEFAULT_CONTAINMENT === "isolate" ? "isolate" : "worker",
+                    isolateLimits: {
+                        timeoutMs: Math.min(Number(process.env.ISOLATE_TIMEOUT_MS) || 10000, graphTimeout),
+                        memoryMb: Number(process.env.ISOLATE_MEMORY_MB) || 128,
+                    },
                     onEvent: (name, e) => {
                         if (this.graphEvents.indexOf(name) !== -1) {
                             this.send(name)({ ...e });

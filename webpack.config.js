@@ -24,6 +24,11 @@ module.exports = {
     filename: '[name].js',
   },
   target: 'node',
+  // The isolated-vm addon is a .node binary shipped as a Lambda layer; it is
+  // required at runtime (src/runtime/isolate.ts) and must never be bundled.
+  externals: {
+    'isolated-vm': 'commonjs isolated-vm',
+  },
   module: {
     rules: [
       {
