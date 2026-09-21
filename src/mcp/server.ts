@@ -211,6 +211,23 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
         return o;
     };
 
+    /**
+     * Everything observed for one execution: what the owning domain recorded,
+     * plus each node another domain ran on its behalf (plan §4.8.2).
+     */
+    const observationsForExecution = async (record: any): Promise<any[]> => {
+        const own = await readObservations(deps.crdtStore.store as any, record);
+        const deliveryKeys = await storeList(`executions/${record.executionId}/deliveries/`);
+        const fromOtherDomains: any[] = [];
+        for (const key of deliveryKeys) {
+            const delivery = await storeGet(key);
+            if (delivery && delivery.observationsKey) {
+                fromOtherDomains.push(...await readObservations(deps.crdtStore.store as any, { observations: { key: delivery.observationsKey } } as any));
+            }
+        }
+        return own.concat(fromOtherDomains);
+    };
+
     /** Executions of a graph, newest first (executions/by-graph/<g>/<id>.json). */
     const listExecutions = async (graphId: string): Promise<any[]> => {
         const prefix = `executions/by-graph/${graphId}/`;
@@ -239,7 +256,7 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
             const executions = filter.executionId ? [await storeGet(`executions/${filter.executionId}.json`)].filter(Boolean) : await listExecutions(args.graphId);
             for (const record of executions) {
                 if (record.graphId !== args.graphId) continue;
-                const observations = await readObservations(deps.crdtStore.store as any, record);
+                const observations = await observationsForExecution(record);
                 observations.forEach((o: any) => {
                     if (filter.kind && !String(o.kind).startsWith(filter.kind)) return;
                     if (filter.nodeId && o.nodeId !== filter.nodeId) return;
@@ -382,7 +399,7 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
         const record = await storeGet(`executions/${v(vars, "executionId")}.json`);
         if (!record || record.graphId !== graphId) denied(`not found: ${uri.href}`);
         const { decision } = await forGraph(graphId, ["graph:inspect-payloads"]);
-        const observations = (await readObservations(deps.crdtStore.store as any, record)).map((o: any) => redactFor(o, decision.allow));
+        const observations = (await observationsForExecution(record)).map((o: any) => redactFor(o, decision.allow));
         return text(uri, { execution: record, observations });
     });
     server.registerResource("proposal", new ResourceTemplate("plastic://graph/{graphId}/proposal/{proposalId}", { list: undefined }), { title: "Proposal", mimeType: "application/json" }, async (uri, vars: any) => {

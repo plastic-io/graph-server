@@ -54,6 +54,10 @@ function _proposalCommit(event: any, context: any, callback: (err: any, response
 function _proposalValidate(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.proposals.validateRoute(event, context, callback);
 }
+/** A browser-owned execution asks the server to run a server-placed node (plan §4.8.2). */
+function _edgeDeliver(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.deliveries.route(event, context, callback);
+}
 /** A browser execution reports its observations when it ends (src/runtime/ingest.ts). */
 function _executionIngest(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.executions.route(event, context, callback);
@@ -234,6 +238,7 @@ const getGraphWs = withPrincipal(broadcastService.store, _getGraphWs);
 const publishGraphWs = withPrincipal(broadcastService.store, _publishGraphWs);
 const publishNodeWs = withPrincipal(broadcastService.store, _publishNodeWs);
 const executionIngest = withPrincipal(broadcastService.store, _executionIngest);
+const edgeDeliver = withPrincipal(broadcastService.store, _edgeDeliver);
 const defaultRoute = withPrincipal(broadcastService.store, _defaultRoute);
 const getArtifact = withPrincipal(broadcastService.store, _getArtifact);
 const publish = withPrincipal(broadcastService.store, _publish);
@@ -318,6 +323,7 @@ export {
     getTocState,
     rebuildToc,
     executionIngest,
+    edgeDeliver,
     defaultRoute,
     panic,
 };

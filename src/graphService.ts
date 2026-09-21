@@ -534,6 +534,12 @@ class GraphService {
                     revisionId: execution.revisionId,
                     budget: { wallMs: graphTimeout, hops: 100000, fanOut: 10000, depth: 512 },
                     maxObservations: Number(process.env.MAX_OBSERVATIONS) || undefined,
+                    initiator: event.headers && (event.headers["x-session-id"] || event.headers["X-Session-Id"]),
+                    deliver: async (delivery: any) => {
+                        // the browsers watching this graph receive the value; the
+                        // one that matches the target runs the node (plan §4.8.2)
+                        await this.send("edge.deliver")({ ...delivery });
+                    },
                     defaultContainment: process.env.DEFAULT_CONTAINMENT === "isolate" ? "isolate" : "worker",
                     isolateLimits: {
                         timeoutMs: Math.min(Number(process.env.ISOLATE_TIMEOUT_MS) || 10000, graphTimeout),

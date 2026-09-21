@@ -530,6 +530,24 @@ functions:
               - Mcp-Name
               - Mcp-Session-Id
 
+  edgeDeliver:
+    handler: src/handler.edgeDeliver
+    # one node of a browser-owned execution, run here (plan §4.8.2)
+    layers:
+      - !Ref IsolatedVmLambdaLayer
+    timeout: 30
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/deliveries
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
   executionIngest:
     handler: src/handler.executionIngest
     timeout: 60

@@ -6,6 +6,7 @@ import { effectiveCapabilities, parseCapabilities } from "./capabilities";
 import { makeContractHooks } from "./contracts";
 import { AuditChain } from "../audit/chain";
 import { runInIsolate, isolationAvailable, isolationLoadError } from "./isolate";
+import { placementOf, runsHere, deliveryTarget, wireValue, EdgeDelivery } from "@plastic-io/graph-crdt";
 
 /**
  * Runs one execution on the server (plan §4.6, §4.5): scheduler 2.1 with a
@@ -36,6 +37,19 @@ export interface RunRequest {
     principalCapabilities?: any[] | null;
     defaultCapture?: "none" | "meta" | "full";
     maxObservations?: number;
+    /** Hand a browser-placed node to the browsers watching this graph (plan §4.8.2). */
+    deliver?: (delivery: EdgeDelivery) => Promise<void> | void;
+    /** See every value a node writes to an output edge, whether or not a connector carries it. */
+    onEdgeWrite?: (field: string, value: any, node: any) => void;
+    /**
+     * A run that belongs to an execution someone else owns (a delivery from a
+     * browser) keeps its observations but writes no execution record, because
+     * the owner writes that.  Its observations go to their own file.
+     */
+    ownsExecutionRecord?: boolean;
+    observationsSuffix?: string;
+    /** The session that started this execution, for deliveries that must happen once. */
+    initiator?: string;
     /** Where node code runs when the node does not say (`worker` keeps the 2.0 realm, `isolate` contains it). */
     defaultContainment?: "worker" | "isolate";
     /** Limits for one contained node invocation. */
@@ -107,6 +121,54 @@ export class ExecutionRunner {
             audit: (record) => this.chain.append(graph.id, record).then(() => undefined),
         };
         const hooks = makeContractHooks();
+        const onOutput = (info: any) => {
+            if (req.onEdgeWrite) {
+                req.onEdgeWrite(info.field, info.value, info.node);
+            }
+            return hooks.onOutput(info);
+        };
+        /**
+         * A node placed in the browser does not run here (plan §4.8.2).  The
+         * server still routes to it, still checks its contract and still
+         * observes the hop; what it does instead of running the code is hand
+         * the value to the browsers watching this graph.  The observation says
+         * the hop was deferred, so a reader can see where the execution went
+         * rather than seeing it stop.
+         */
+        let deliverySeq = 0;
+        const deliverToBrowser = async (nodeInterface: any, execution: any) => {
+            const node = nodeInterface.node;
+            deliverySeq += 1;
+            const wire: any = wireValue(nodeInterface.value);
+            if (!wire.ok) {
+                recorder.record({ kind: "exec.error", nodeId: node.id, edgeField: nodeInterface.field, payload: { message: wire.reason, code: "UNSENDABLE_VALUE" }, spanId: execution && execution.spanId });
+                throw new Error(wire.reason);
+            }
+            const delivery: EdgeDelivery = {
+                schemaVersion: 1,
+                executionId,
+                correlationId: req.correlationId || executionId,
+                revisionId,
+                graphId: graph.id,
+                nodeId: node.id,
+                field: nodeInterface.field,
+                value: wire.value,
+                seq: deliverySeq,
+                instancePath: [],
+                target: deliveryTarget(node),
+                budgetSlice: { wallMs: (req.budget && req.budget.wallMs) || 30000 },
+                initiator: req.initiator,
+            };
+            recorder.record({
+                kind: "route",
+                nodeId: node.id,
+                edgeField: nodeInterface.field,
+                payload: { deferred: "browser", target: delivery.target, seq: delivery.seq, bytes: wire.bytes },
+            });
+            if (req.deliver) {
+                await req.deliver(delivery);
+            }
+        };
         /**
          * Where a node's code runs (plan §4.6.3).  A node says for itself, a
          * graph can say for all of its nodes, and the deployment says what
@@ -123,6 +185,9 @@ export class ExecutionRunner {
         const limits = req.isolateLimits || { timeoutMs: 10000, memoryMb: 128 };
         const executeNode = async ({ code, nodeInterface, execution, runInProcess }: any) => {
             const node = nodeInterface.node;
+            if (!runsHere(node, "server")) {
+                return deliverToBrowser(nodeInterface, execution);
+            }
             if (containmentOf(node) !== "isolate") {
                 return runInProcess();
             }
@@ -205,7 +270,7 @@ export class ExecutionRunner {
             }, hostDeps),
             executeNode,
             onInput: hooks.onInput,
-            onOutput: hooks.onOutput,
+            onOutput,
             contractMode: (graph.properties && graph.properties.contractMode === "reject") ? "reject" : "warn",
         } as any);
         recorder.attach(scheduler);
@@ -218,7 +283,7 @@ export class ExecutionRunner {
         const handle = scheduler.invoke(req.nodeUrl, req.value, req.field, undefined, { executionId, revisionId });
         const result: any = await handle.done;
         const endedAt = Date.now();
-        const key = ObservationRecorder.keyFor(graph.id, executionId, startedAt);
+        const key = ObservationRecorder.keyFor(graph.id, executionId, startedAt).replace(/\.ndjson$/, `${req.observationsSuffix || ""}.ndjson`);
         const summary = recorder.summary();
         const observations = { count: summary.count, key, sampled: summary.sampled, capped: summary.capped };
         const record: ExecutionRecord = {
@@ -230,8 +295,10 @@ export class ExecutionRunner {
         };
         try {
             await this.putRaw(key, recorder.ndjson(), { "graph-id": graph.id, "execution-id": executionId, "content-type": "application/x-ndjson" });
-            await this.putJson(ExecutionRunner.executionKey(executionId), record);
-            await this.putJson(ExecutionRunner.byGraphKey(graph.id, executionId), record);
+            if (req.ownsExecutionRecord !== false) {
+                await this.putJson(ExecutionRunner.executionKey(executionId), record);
+                await this.putJson(ExecutionRunner.byGraphKey(graph.id, executionId), record);
+            }
         } catch (err) {
             console.error("Cannot write the execution's observations", err);
         }

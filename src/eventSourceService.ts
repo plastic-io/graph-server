@@ -13,6 +13,8 @@ import { ComponentService } from "./components/service";
 import { SummaryService } from "./summary/service";
 import { ProposalService } from "./proposals/service";
 import { ExecutionIngest } from "./runtime/ingest";
+import { DeliveryService } from "./runtime/deliveries";
+import { ExecutionRunner } from "./runtime/executor";
 import { DelegationStore } from "./policy/delegation";
 import {
     ensureBuilt,
@@ -47,6 +49,7 @@ export default class EventSourceService {
     summaries: SummaryService;
     proposals: ProposalService;
     executions: ExecutionIngest;
+    deliveries: DeliveryService;
     delegations: DelegationStore;
     store: S3Service;
     broadcastService: BroadcastService;
@@ -72,6 +75,10 @@ export default class EventSourceService {
         this.delegations = new DelegationStore(this.crdtStore.store as any);
         this.crdtService.admission.resolvePrincipal = (principal, graphId) => this.delegations.resolve(principal, graphId);
         this.executions = new ExecutionIngest(this.crdtStore.store as any);
+        // A browser running a graph reaches a server-placed node through here.
+        this.deliveries = new DeliveryService(this.crdtStore.store as any, this.crdtStore, {
+            runner: (live) => new ExecutionRunner(this.crdtStore.store as any, { live }),
+        });
         this.summaries = new SummaryService(this.revisions, this.components);
         this.proposals = new ProposalService(this.crdtStore, this.crdtService.admission, this.revisions, this.summaries, {
             fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
