@@ -1,6 +1,7 @@
 import {Context, S3CreateEvent, APIGatewayEvent} from "aws-lambda";
 import {ApiGatewayManagementApi} from "aws-sdk";
 import S3Service from './s3Service';
+import { principalFromAuthorizerContext, connectionKey, forgetConnection } from './auth/principal';
 import {newId} from './eventSourceService';
 const STAGE = process.env.STAGE;
 const BACKOFF_TIMER_ADD = 35;
@@ -87,14 +88,31 @@ export default class BroadcastService {
     }
     connect(event: any, context: Context, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
-        this.store.set(`connections/${ctx.connectionId}/${ctx.domainName}`, event, {}, (err) => {
+        // The principal comes from the $connect authorizer; every later message on this
+        // connection is attributed by reading this record (auth/principal.ts).
+        const principal = event.principal || principalFromAuthorizerContext(event);
+        if (!principal) {
+            console.error("Refusing a connection without a principal", ctx.connectionId);
+            return callback(null, { statusCode: 401, body: "unauthenticated" });
+        }
+        const record = { principal, connectionId: ctx.connectionId, domainName: ctx.domainName, connectedAt: Date.now() };
+        this.store.set(connectionKey(ctx), record, {}, (err) => {
             if (err) {
                 console.error("Cannot create connection record", err);
+                return callback(null, { statusCode: 500, body: "cannot record connection" });
             }
+            // Browsers can only send the token as a subprotocol; the handshake completes only if
+            // the server selects one, so echo the marker back.
+            const requested = String((event.headers || {})["Sec-WebSocket-Protocol"] || (event.headers || {})["sec-websocket-protocol"] || "");
+            const response: any = { statusCode: 200 };
+            if (/(^|,)\s*access_token\s*(,|$)/.test(requested)) {
+                response.headers = { "Sec-WebSocket-Protocol": "access_token" };
+            }
+            callback(null, response);
         });
-        callback(null, this.okResponse);
     }
     _disconnect(domainName, connectionId) {
+        forgetConnection({ connectionId, domainName });
         this.store.remove(`connections/${connectionId}/${domainName}`, (err) => {
             if (err) {
                 console.error("Cannot remove connection record", err);

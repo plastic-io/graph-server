@@ -16,6 +16,7 @@ import {
   encodeStateVector,
 } from "@plastic-io/graph-crdt";
 import CrdtStore, { decodeUlidTime } from "./crdtStore";
+import { subjectOf } from "./auth/principal";
 import BroadcastService from "./broadcastService";
 import TocStore from "./tocStore";
 import { ensureBuilt, listGraph } from "./tocService";
@@ -29,11 +30,7 @@ const corsHeaders = {
 const CHECKPOINT_INTERVAL_MS = Number(process.env.CHECKPOINT_INTERVAL_MS || 10000);
 
 function userIdOf(event: any): string {
-  const ctx = event && event.requestContext;
-  if (!ctx) {
-    return "Unknown";
-  }
-  return (ctx.identity && ctx.identity.userArn) || ctx.connectionId || "Unknown";
+  return subjectOf(event);
 }
 
 /**

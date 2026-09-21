@@ -36,17 +36,14 @@ provider:
         - secretsmanager:GetSecretValue
       Resource:
         - "arn:aws:secretsmanager:us-west-1:695527765921:secret:OPENAI_API_KEY-kcvByO"
-  # Interim access control until the admission service lands (plan §4.4): the HTTP
-  # execution route and the destructive/expensive HTTP routes require the stage API
-  # key (x-api-key); WebSocket execution is off unless explicitly enabled.
-  apiGateway:
-    apiKeys:
-      - ${self:service}-${self:provider.stage}-execute
-    usagePlan:
-      throttle:
-        burstLimit: 20
-        rateLimit: 10
+  # Identity (plan §4.4, M1): every HTTP route and the WebSocket $connect route are
+  # behind the JWT authorizer below (Auth0 access tokens for AUTH0_AUDIENCE).  Later
+  # WebSocket messages are attributed by the connection record written at $connect.
+  # WebSocket execution stays off unless explicitly enabled.
   environment:
+    AUTH0_DOMAIN: ${opt:auth0Domain, 'dev-7q-g69up.us.auth0.com'}
+    AUTH0_AUDIENCE: ${opt:auth0Audience, 'https://rmeu8g85f4.execute-api.us-west-1.amazonaws.com/dev'}
+    OWNER_SUBS: ${opt:ownerSubs, ''}
     WS_EXECUTION_ENABLED: ${opt:wsExecution, 'false'}
     API_REGION: ${self:provider.region}
     S3_BUCKET: ${self:custom.s3Bucket}
@@ -61,14 +58,28 @@ provider:
 custom:
   prefix: ${opt:prefix, 'plastic'}
   s3Bucket: ${self:service}
+  jwtAuthorizer:
+    name: authorizer
+    type: request
+    identitySource: method.request.header.Authorization
+    resultTtlInSeconds: 300
 
 functions:
+  # JWT authorizer shared by the REST API and the WebSocket handshake
+  authorizer:
+    handler: src/handler.authorize
+    timeout: 10
+
   # manage connection and disconnection of clients
   connect:
     handler: src/handler.connect
     events:
       - websocket:
           route: $connect
+          authorizer:
+            name: authorizer
+            identitySource:
+              - route.request.header.Sec-WebSocket-Protocol
 
   disconnect:
     handler: src/handler.disconnect
@@ -122,6 +133,7 @@ functions:
       - http:
           method: GET
           path: /events/{id}
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                paths:
@@ -137,6 +149,7 @@ functions:
       - http:
           method: GET
           path: /artifacts/{id}/{version}
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                paths:
@@ -152,6 +165,7 @@ functions:
       - http:
           method: GET
           path: /graph/{id}/{version}
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                paths:
@@ -167,6 +181,7 @@ functions:
       - http:
           method: GET
           path: /toc.json
+          authorizer: ${self:custom.jwtAuthorizer}
           cors:
             origin: '*'
 
@@ -181,7 +196,7 @@ functions:
       - http:
           method: DELETE
           path: /graph/{id}
-          private: true
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                paths:
@@ -198,7 +213,7 @@ functions:
       - http:
           method: POST
           path: /graph/{id}/restore
-          private: true
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                paths:
@@ -215,6 +230,7 @@ functions:
       - http:
           method: GET
           path: /toc/state
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                querystrings:
@@ -231,7 +247,7 @@ functions:
       - http:
           method: POST
           path: /toc/rebuild
-          private: true
+          authorizer: ${self:custom.jwtAuthorizer}
           cors:
             origin: '*'
 
@@ -242,6 +258,7 @@ functions:
       - http:
           method: GET
           path: /deleted.json
+          authorizer: ${self:custom.jwtAuthorizer}
           cors:
             origin: '*'
 
@@ -269,6 +286,7 @@ functions:
       - http:
           method: GET
           path: /crdt/{id}/state
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                paths:
@@ -283,6 +301,7 @@ functions:
       - http:
           method: GET
           path: /crdt/{id}/state/{updateId}
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                paths:
@@ -298,6 +317,7 @@ functions:
       - http:
           method: GET
           path: /crdt/{id}/history
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                paths:
@@ -312,6 +332,7 @@ functions:
       - http:
           method: POST
           path: /crdt/{id}/update
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                paths:
@@ -326,6 +347,7 @@ functions:
       - http:
           method: POST
           path: /crdt/{id}/checkpoint
+          authorizer: ${self:custom.jwtAuthorizer}
           request:
             parameters:
                paths:
@@ -357,7 +379,7 @@ functions:
       - http:
           method: ANY
           path: /{proxy+}
-          private: true
+          authorizer: ${self:custom.jwtAuthorizer}
           cors:
             origin: '*'
 

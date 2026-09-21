@@ -6,62 +6,64 @@ import EventSourceService from './eventSourceService';
 import BroadcastService from './broadcastService';
 import CrdtService from './crdtService';
 import GraphService, {panic as _panic} from './graphService';
+import { withPrincipal } from './auth/principal';
+import { authorize as _authorize } from './auth/authorizer';
 const broadcastService = new BroadcastService();
 const eventSourceService = new EventSourceService();
 const crdtService = new CrdtService();
 const graphService = new GraphService();
-function connect(event: any, context: any, callback: (err: any, response: any) => void) {
+function _connect(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.connect(event, context, callback);
 }
-function disconnect(event: any, context: any, callback: (err: any, response: any) => void) {
+function _disconnect(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.disconnect(event, context, callback);
 }
-function subscribe(event: any, context: any, callback: (err: any, response: any) => void) {
+function _subscribe(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.subscribe(event, context, callback);
 }
-function unsubscribe(event: any, context: any, callback: (err: any, response: any) => void) {
+function _unsubscribe(event: any, context: any, callback: (err: any, response: any) => void) {
     broadcastService.unsubscribe(event, context, callback);
 }
-function getGraph(event: any, context: any, callback: (err: any, response: any) => void) {
+function _getGraph(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getGraph(event, context, callback);
 }
-function getToc(event: any, context: any, callback: (err: any, response: any) => void) {
+function _getToc(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getToc(event, context, callback);
 }
-function getEvents(event: any, context: any, callback: (err: any, response: any) => void) {
+function _getEvents(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getEvents(event, context, callback);
 }
-function deleteGraph(event: any, context: any, callback: (err: any, response: any) => void) {
+function _deleteGraph(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.deleteGraph(event, context, callback);
 }
-function deleteGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+function _deleteGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.deleteGraphWs(event, context, callback);
 }
-function undeleteGraph(event: any, context: any, callback: (err: any, response: any) => void) {
+function _undeleteGraph(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.undeleteGraph(event, context, callback);
 }
-function undeleteGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+function _undeleteGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.undeleteGraphWs(event, context, callback);
 }
-function listDeletedGraphs(event: any, context: any, callback: (err: any, response: any) => void) {
+function _listDeletedGraphs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.listDeletedGraphs(event, context, callback);
 }
-function getTocState(event: any, context: any, callback: (err: any, response: any) => void) {
+function _getTocState(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getTocState(event, context, callback);
 }
-function rebuildToc(event: any, context: any, callback: (err: any, response: any) => void) {
+function _rebuildToc(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.rebuildToc(event, context, callback);
 }
-function getGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+function _getGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getGraphWs(event, context, callback);
 }
-function publishGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
+function _publishGraphWs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.publishGraphWs(event, context, callback);
 }
-function publishNodeWs(event: any, context: any, callback: (err: any, response: any) => void) {
+function _publishNodeWs(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.publishNodeWs(event, context, callback);
 }
-function defaultRoute(event: any, context: any, callback: (err: any, response: any) => void) {
+function _defaultRoute(event: any, context: any, callback: (err: any, response: any) => void) {
     graphService.init(event, context).then((res) => {
         console.error("Handler: complete");
         callback(null, { statusCode: 200, body: "ok", });
@@ -70,32 +72,66 @@ function defaultRoute(event: any, context: any, callback: (err: any, response: a
         callback(null, { statusCode: 200, body: "ok", });
     });
 }
-function panic(event: any, context: any, callback: (err: any, response: any) => void) {
+function _panicRoute(event: any, context: any, callback: (err: any, response: any) => void) {
     _panic(event, context, callback);
 }
-function getArtifact(event: any, context: any, callback: (err: any, response: any) => void) {
+function _getArtifact(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.getArtifact(event, context, callback);
 }
 /* ---- collaborative editing ---- */
-function crdtSync(event: any, context: any, callback: (err: any, response: any) => void) {
+function _crdtSync(event: any, context: any, callback: (err: any, response: any) => void) {
     crdtService.sync(event, context, callback);
 }
-function crdtState(event: any, context: any, callback: (err: any, response: any) => void) {
+function _crdtState(event: any, context: any, callback: (err: any, response: any) => void) {
     crdtService.getState(event, context, callback);
 }
-function crdtStateAt(event: any, context: any, callback: (err: any, response: any) => void) {
+function _crdtStateAt(event: any, context: any, callback: (err: any, response: any) => void) {
     crdtService.getStateAt(event, context, callback);
 }
-function crdtHistory(event: any, context: any, callback: (err: any, response: any) => void) {
+function _crdtHistory(event: any, context: any, callback: (err: any, response: any) => void) {
     crdtService.getHistory(event, context, callback);
 }
-function crdtUpdate(event: any, context: any, callback: (err: any, response: any) => void) {
+function _crdtUpdate(event: any, context: any, callback: (err: any, response: any) => void) {
     crdtService.postUpdate(event, context, callback);
 }
-function crdtCheckpoint(event: any, context: any, callback: (err: any, response: any) => void) {
+function _crdtCheckpoint(event: any, context: any, callback: (err: any, response: any) => void) {
     crdtService.checkpoint(event, context, callback);
 }
+// Every route runs with `event.principal` established on the server side (auth/principal.ts).
+const connect = withPrincipal(broadcastService.store, _connect);
+const subscribe = withPrincipal(broadcastService.store, _subscribe);
+const unsubscribe = withPrincipal(broadcastService.store, _unsubscribe);
+const getGraph = withPrincipal(broadcastService.store, _getGraph);
+const getToc = withPrincipal(broadcastService.store, _getToc);
+const getEvents = withPrincipal(broadcastService.store, _getEvents);
+const deleteGraph = withPrincipal(broadcastService.store, _deleteGraph);
+const deleteGraphWs = withPrincipal(broadcastService.store, _deleteGraphWs);
+const undeleteGraph = withPrincipal(broadcastService.store, _undeleteGraph);
+const undeleteGraphWs = withPrincipal(broadcastService.store, _undeleteGraphWs);
+const listDeletedGraphs = withPrincipal(broadcastService.store, _listDeletedGraphs);
+const getTocState = withPrincipal(broadcastService.store, _getTocState);
+const rebuildToc = withPrincipal(broadcastService.store, _rebuildToc);
+const getGraphWs = withPrincipal(broadcastService.store, _getGraphWs);
+const publishGraphWs = withPrincipal(broadcastService.store, _publishGraphWs);
+const publishNodeWs = withPrincipal(broadcastService.store, _publishNodeWs);
+const defaultRoute = withPrincipal(broadcastService.store, _defaultRoute);
+const getArtifact = withPrincipal(broadcastService.store, _getArtifact);
+const crdtSync = withPrincipal(broadcastService.store, _crdtSync);
+const crdtState = withPrincipal(broadcastService.store, _crdtState);
+const crdtStateAt = withPrincipal(broadcastService.store, _crdtStateAt);
+const crdtHistory = withPrincipal(broadcastService.store, _crdtHistory);
+const crdtUpdate = withPrincipal(broadcastService.store, _crdtUpdate);
+const crdtCheckpoint = withPrincipal(broadcastService.store, _crdtCheckpoint);
+const panic = withPrincipal(broadcastService.store, _panicRoute);
+// $disconnect must clean up even when the connection record is already gone.
+const disconnect = withPrincipal(broadcastService.store, _disconnect, { required: false });
+/** REQUEST authorizer for the REST API and the WebSocket $connect route. */
+function authorize(event: any) {
+    return _authorize(event);
+}
+
 export {
+    authorize,
     crdtSync,
     crdtState,
     crdtStateAt,

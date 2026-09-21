@@ -1,3 +1,4 @@
+import { subjectOf } from "./auth/principal";
 import {Context, S3CreateEvent, APIGatewayEvent} from "aws-lambda";
 import {diff, applyChange} from "deep-diff";
 import {CRC32} from "jshashes";
@@ -334,7 +335,7 @@ export default class EventSourceService {
         const event = body.event;
         const ctx = _event.requestContext;
         event.time = Date.now();
-        event.userId = ctx.identity.userArn || "Unknown userArn";
+        event.userId = subjectOf(event);
         this.add(event, (err) => {
             if (err) {
                 return this.broadcastService.postToClient(ctx.domainName, ctx.connectionId, {
@@ -408,7 +409,7 @@ export default class EventSourceService {
                 });
             }
             node.publishedOn = Date.now();
-            node.userId = event.requestContext.identity.userArn || "Unknown userArn";
+            node.userId = subjectOf(event);
             const nodeMeta = {
                 "graph-id": graph.id,
                 "graph-url": graph.url,
@@ -481,7 +482,7 @@ export default class EventSourceService {
                 return callback(err, null);
             }
             graph.publishedOn = Date.now();
-            graph.publishedBy = event.requestContext.identity.userArn || "Unknown userArn";
+            graph.publishedBy = subjectOf(event);
             const sendResponse = (err) => {
                 if (err) {
                     console.error("Error writing published graph to store.");
@@ -512,7 +513,7 @@ export default class EventSourceService {
                 "type": "publishedGraph",
                 "url": graph.url || graph.id,
                 "artifact-url": "artifacts/" + graph.id + "/" + graph.version,
-                "user-id": event.requestContext.identity.userArn || "Unknown userArn",
+                "user-id": subjectOf(event),
             };
             this.store.set(`graphs/projections/published/artifacts/${graph.id}.${graph.version}.json`, graph, graphMeta, sendResponse);
             this.store.set(`graphs/projections/published/endpoints/${graph.url}.json`, graph, graphMeta, sendResponse);
@@ -737,7 +738,7 @@ export default class EventSourceService {
         }
         const query = event.queryStringParameters || {};
         const permanent = String(query.permanent) === "true";
-        const userId = ((event.requestContext || {}).identity || {}).userArn;
+        const userId = subjectOf(event);
         const done = (err: any) => {
             if (err) {
                 console.error("Cannot delete graph.", id, err);
@@ -805,7 +806,7 @@ export default class EventSourceService {
         if (body.permanent === true) {
             return this._deleteGraph(body.id, done);
         }
-        const userId = ((event.requestContext || {}).identity || {}).userArn;
+        const userId = subjectOf(event);
         this.softDeleteGraph(body.id, userId, done);
     }
 

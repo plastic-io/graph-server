@@ -34,6 +34,7 @@
     "@plastic-io/plastic-io": "2.0.1",
     "deep-diff": "^1.0.2",
     "flatted": "^3.2.9",
+    "jose": "^5.10.0",
     "jshashes": "^1.0.8",
     "lib0": "^0.2.99",
     "openai": "^4.11.0",

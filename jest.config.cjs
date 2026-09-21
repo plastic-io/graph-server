@@ -14,6 +14,13 @@ module.exports = {
   // check the codec relies on.  The deployment bundle avoids this with
   // `resolve.symlinks: false` in webpack.config.js; this is the same fix.
   moduleNameMapper: {
+    // jest 26 cannot resolve the node: scheme that jose uses for core modules
+    "^node:buffer$": "<rootDir>/src/__testHelpers__/nodeCore/buffer.js",
+    "^node:crypto$": "<rootDir>/src/__testHelpers__/nodeCore/crypto.js",
+    "^node:events$": "<rootDir>/src/__testHelpers__/nodeCore/events.js",
+    "^node:http$": "<rootDir>/src/__testHelpers__/nodeCore/http.js",
+    "^node:https$": "<rootDir>/src/__testHelpers__/nodeCore/https.js",
+    "^node:util$": "<rootDir>/src/__testHelpers__/nodeCore/util.js",
     "^yjs$": "<rootDir>/node_modules/yjs",
     "^lib0/(.*)$": "<rootDir>/node_modules/lib0/$1",
   },

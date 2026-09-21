@@ -9,15 +9,26 @@ describe("Broadcast service", () => {
         AWS.mocks.S3.listObjects.mockClear();
         AWS.mocks.ApiGatewayManagementApi.postToConnection.mockClear();
     });
-    it("Connect should call S3 and store a connection.", (done) => {
+    it("Connect should store the connection's principal, not the raw event.", (done) => {
+        const broadcastService = new BroadcastService();
+        const req = require("./__data__/event_http_request.json");
+        const event = { ...req.event, requestContext: { ...req.event.requestContext, authorizer: { sub: "auth0|u1", kind: "human", tenant: "personal:auth0|u1", scopes: "[]" } } };
+        AWS.mocks.S3.putObject.mockImplementation((params, cb) => cb(null, {}));   // connect now waits for the record to be written
+        broadcastService.connect(event, req.context, (err, response) => {
+            expect(response.statusCode).toBe(200);
+            const call = AWS.mocks.S3.putObject.mock.calls[0][0];
+            expect(call.Key).toBe("connections/123456/localhost");
+            expect(JSON.parse(call.Body)).toMatchObject({ principal: { sub: "auth0|u1", tenant: "personal:auth0|u1" }, connectionId: "123456", domainName: "localhost" });
+            expect(JSON.parse(call.Body).headers).toBeUndefined();
+            done();
+        });
+    });
+    it("Connect without a principal is refused and nothing is stored.", (done) => {
         const broadcastService = new BroadcastService();
         const req = require("./__data__/event_http_request.json");
         broadcastService.connect(req.event, req.context, (err, response) => {
-            expect(AWS.mocks.S3.putObject.mock.calls[0][0]).toEqual({
-                Body: JSON.stringify({requestContext:{domainName: "localhost", connectionId: "123456"}}),
-                Key: "connections/123456/localhost",
-                Metadata: {},
-            });
+            expect(response.statusCode).toBe(401);
+            expect(AWS.mocks.S3.putObject.mock.calls.length).toBe(0);
             done();
         });
     });

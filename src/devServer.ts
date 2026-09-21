@@ -147,6 +147,7 @@ function apiEvent(connectionId: string, body: any) {
       connectionId,
       domainName: "localhost",
       identity: { userArn: "dev:" + connectionId },
+      authorizer: { sub: "dev:" + connectionId, kind: "human", tenant: "personal:dev", scopes: "[]" },
     },
   };
 }
@@ -226,7 +227,7 @@ const server = http.createServer(async (request, response) => {
     if (parts[0] === "crdt" && parts[2] === "update") {
       const body = await readBody(request);
       return crdtService.postUpdate(
-        { pathParameters: { id: parts[1] }, body, requestContext: { identity: { userArn: "dev:http" } } },
+        { pathParameters: { id: parts[1] }, body, requestContext: { identity: { userArn: "dev:http" }, authorizer: { sub: "dev:http", kind: "human", tenant: "personal:dev", scopes: "[]" } } },
         {}, send);
     }
     if (parts[0] === "crdt" && parts[2] === "checkpoint") {
