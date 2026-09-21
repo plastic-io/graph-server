@@ -77,15 +77,19 @@ export function decide(principal: Principal | undefined, required: Authority[]):
     if (owners.length && !owners.includes(principal.sub)) {
         return { allow: false, reason: `${principal.sub} is not an owner of this instance`, policyVersion: POLICY_VERSION };
     }
-    if (principal.kind === "agent") {
-        // an agent holds only what a human delegated to it (policy/delegation.ts resolves that into scopes)
+    if (principal.kind === "agent" || principal.kind === "synthetic") {
+        // an agent holds only what a human delegated to it (policy/delegation.ts
+        // resolves that into scopes), and a journey's synthetic principal holds
+        // only what running a journey needs: it must never be able to change a
+        // graph just because it is not a person (plan §8.1.7)
         const scopes = principal.scopes || [];
+        const what = principal.kind === "agent" ? `agent ${principal.sub}` : `journey ${principal.sub}`;
         if (!scopes.length) {
-            return { allow: false, reason: `agent ${principal.sub} has no delegation for this graph`, policyVersion: POLICY_VERSION };
+            return { allow: false, reason: `${what} has no delegation for this graph`, policyVersion: POLICY_VERSION };
         }
         const missing = required.filter((a) => !scopes.includes(a));
         if (missing.length) {
-            return { allow: false, reason: `agent ${principal.sub} lacks ${missing.join(", ")}`, policyVersion: POLICY_VERSION };
+            return { allow: false, reason: `${what} lacks ${missing.join(", ")}`, policyVersion: POLICY_VERSION };
         }
     }
     return { allow: true, policyVersion: POLICY_VERSION };

@@ -14,6 +14,7 @@ import { SummaryService } from "./summary/service";
 import { ProposalService } from "./proposals/service";
 import { ExecutionIngest } from "./runtime/ingest";
 import { DeliveryService } from "./runtime/deliveries";
+import { JourneyService } from "./journeys/service";
 import { ExecutionRunner } from "./runtime/executor";
 import { DelegationStore } from "./policy/delegation";
 import {
@@ -50,6 +51,7 @@ export default class EventSourceService {
     proposals: ProposalService;
     executions: ExecutionIngest;
     deliveries: DeliveryService;
+    journeys: JourneyService;
     delegations: DelegationStore;
     store: S3Service;
     broadcastService: BroadcastService;
@@ -78,6 +80,11 @@ export default class EventSourceService {
         // A browser running a graph reaches a server-placed node through here.
         this.deliveries = new DeliveryService(this.crdtStore.store as any, this.crdtStore, {
             runner: (live) => new ExecutionRunner(this.crdtStore.store as any, { live }),
+        });
+        // What the application is for, proved on a schedule (plan §8.1.7).
+        this.journeys = new JourneyService(this.crdtStore.store as any, this.crdtStore, {
+            runner: (live) => new ExecutionRunner(this.crdtStore.store as any, { live }),
+            notify: async (graphId, e) => { this.broadcastService._sendToChannel("graph-notify-" + graphId, e, () => undefined); },
         });
         this.summaries = new SummaryService(this.revisions, this.components);
         this.proposals = new ProposalService(this.crdtStore, this.crdtService.admission, this.revisions, this.summaries, {

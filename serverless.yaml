@@ -548,6 +548,84 @@ functions:
           cors:
             origin: '*'
 
+  journeys:
+    handler: src/handler.journeys
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/journeys
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+      - http:
+          method: POST
+          path: /crdt/{id}/journeys
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  journey:
+    handler: src/handler.journey
+    # a journey runs the graph, so it may need the isolate layer
+    layers:
+      - !Ref IsolatedVmLambdaLayer
+    timeout: 60
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/journeys/{journeyId}/runs
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 journeyId: true
+          cors:
+            origin: '*'
+      - http:
+          method: POST
+          path: /crdt/{id}/journeys/{journeyId}/run
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 journeyId: true
+          cors:
+            origin: '*'
+      - http:
+          method: DELETE
+          path: /crdt/{id}/journeys/{journeyId}
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 journeyId: true
+          cors:
+            origin: '*'
+
+  journeyTick:
+    handler: src/handler.journeyTick
+    # nobody calls this: it is the schedule asking whether the application
+    # still does what it is for (plan §8.1.7)
+    layers:
+      - !Ref IsolatedVmLambdaLayer
+    timeout: 300
+    events:
+      - schedule:
+          rate: rate(5 minutes)
+          enabled: ${opt:journeys, 'true'}
+
   executionsList:
     handler: src/handler.executionsList
     timeout: 30

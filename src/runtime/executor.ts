@@ -44,6 +44,12 @@ export interface RunRequest {
     principalCapabilities?: any[] | null;
     defaultCapture?: "none" | "meta" | "full";
     maxObservations?: number;
+    /**
+     * Keep this run's key-value writes under a prefix of their own, so a
+     * synthetic journey proves the graph works without touching what people
+     * are using (plan §8.1.7, `effects: "isolated"`).
+     */
+    kvPrefix?: string;
     /** Hand a browser-placed node to the browsers watching this graph (plan §4.8.2). */
     deliver?: (delivery: EdgeDelivery) => Promise<void> | void;
     /** See every value a node writes to an output edge, whether or not a connector carries it. */
@@ -119,13 +125,14 @@ export class ExecutionRunner {
         const startedAt = Date.now();
         const recorder = new ObservationRecorder({ graphId: graph.id, revisionId, executionId, correlationId: req.correlationId, owner, defaultCapture: req.defaultCapture, maxObservations: req.maxObservations, live: this.deps.live });
         recorder.learn(graph);
+        const kvKey = (key: string) => `kv/${req.kvPrefix ? `${req.kvPrefix}/` : ""}${key}.json`;
         const hostDeps: HostDeps = {
             fetchImpl: this.deps.fetchImpl,
             secrets: this.deps.secrets,
             kv: {
-                get: (key) => this.getJson(`kv/${key}.json`).then((v) => (v && "value" in v ? v.value : undefined)),
-                put: (key, value) => this.putJson(`kv/${key}.json`, { value, at: new Date().toISOString(), executionId }),
-                del: (key) => new Promise((resolve) => this.store.remove(`kv/${key}.json`, () => resolve())),
+                get: (key) => this.getJson(kvKey(key)).then((v) => (v && "value" in v ? v.value : undefined)),
+                put: (key, value) => this.putJson(kvKey(key), { value, at: new Date().toISOString(), executionId }),
+                del: (key) => new Promise((resolve) => this.store.remove(kvKey(key), () => resolve())),
             },
             audit: (record) => this.chain.append(graph.id, record).then(() => undefined),
         };

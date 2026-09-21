@@ -54,6 +54,17 @@ function _proposalCommit(event: any, context: any, callback: (err: any, response
 function _proposalValidate(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.proposals.validateRoute(event, context, callback);
 }
+/** Journeys: what this graph is for, and whether it still does it (plan §8.1.7). */
+function _journeys(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.journeys.listRoute(event, context, callback);
+}
+function _journey(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.journeys.journeyRoute(event, context, callback);
+}
+/** The scheduled tick; EventBridge calls this, not a person. */
+function journeyTick(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.journeys.tickRoute(event, context, callback);
+}
 /** What ran for a graph, and what one execution observed (the editor's executions panel). */
 function _executionsList(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.executions.listRoute(event, context, callback);
@@ -243,6 +254,8 @@ const publishGraphWs = withPrincipal(broadcastService.store, _publishGraphWs);
 const publishNodeWs = withPrincipal(broadcastService.store, _publishNodeWs);
 const executionIngest = withPrincipal(broadcastService.store, _executionIngest);
 const executionsList = withPrincipal(broadcastService.store, _executionsList);
+const journeys = withPrincipal(broadcastService.store, _journeys);
+const journey = withPrincipal(broadcastService.store, _journey);
 const edgeDeliver = withPrincipal(broadcastService.store, _edgeDeliver);
 const defaultRoute = withPrincipal(broadcastService.store, _defaultRoute);
 const getArtifact = withPrincipal(broadcastService.store, _getArtifact);
@@ -329,6 +342,9 @@ export {
     rebuildToc,
     executionIngest,
     executionsList,
+    journeys,
+    journey,
+    journeyTick,
     edgeDeliver,
     defaultRoute,
     panic,
