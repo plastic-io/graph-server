@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  GitHub Actions OIDC deploy role for plastic-io graph-server (plan PB-125). Lets the
+  graph-server repository deploy the Serverless stack from a tagged release without
+  long-lived AWS keys. Deploy this template once by hand with an administrator profile;
+  it is substrate configuration, never touched by the IaC component (plan §4.10).
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: plastic-io
+  GitHubRepo:
+    Type: String
+    Default: graph-server
+  AllowedRef:
+    Type: String
+    Default: refs/tags/v*
+    Description: Only workflow runs for this ref pattern may assume the role (tags by default).
+  ServiceName:
+    Type: String
+    Default: plastic-io-graph-server
+  CreateProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Set to false if the account already has the token.actions.githubusercontent.com provider.
+Conditions:
+  MakeProvider: !Equals [!Ref CreateProvider, "true"]
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList: [6938fd4d98bab03faadb97b34396831e3780aea1]   # GitHub's published root thumbprint; AWS now validates the chain itself
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ServiceName}-github-deploy"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - MakeProvider
+                - !Ref GitHubOidcProvider
+                - !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:${AllowedRef}"
+      Policies:
+        - PolicyName: serverless-deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: OwnStackOnly
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:ListStackResources
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ServiceName}/*"
+              - Sid: DeploymentBucket
+                Effect: Allow
+                Action: [s3:CreateBucket, s3:GetBucketLocation, s3:ListBucket, s3:GetObject, s3:PutObject, s3:DeleteObject, s3:PutBucketPolicy, s3:GetBucketPolicy, s3:PutEncryptionConfiguration, s3:GetEncryptionConfiguration, s3:PutBucketVersioning, s3:GetBucketVersioning, s3:PutLifecycleConfiguration, s3:GetLifecycleConfiguration, s3:PutBucketAcl, s3:GetBucketAcl, s3:PutBucketTagging]
+                Resource:
+                  - !Sub "arn:aws:s3:::${ServiceName}*"
+                  - !Sub "arn:aws:s3:::${ServiceName}*/*"
+              - Sid: FunctionsOfThisService
+                Effect: Allow
+                Action: [lambda:*]
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ServiceName}-*"
+              - Sid: LayersAndEventSourceReads
+                Effect: Allow
+                Action: [lambda:GetLayerVersion, lambda:ListLayerVersions]
+                Resource: "*"
+              - Sid: ApiGateway
+                Effect: Allow
+                Action: [apigateway:*]
+                Resource:
+                  - !Sub "arn:aws:apigateway:${AWS::Region}::/restapis*"
+                  - !Sub "arn:aws:apigateway:${AWS::Region}::/apis*"
+                  - !Sub "arn:aws:apigateway:${AWS::Region}::/apikeys*"
+                  - !Sub "arn:aws:apigateway:${AWS::Region}::/usageplans*"
+                  - !Sub "arn:aws:apigateway:${AWS::Region}::/tags*"
+              - Sid: LogGroupsOfThisService
+                Effect: Allow
+                Action: [logs:CreateLogGroup, logs:DeleteLogGroup, logs:DescribeLogGroups, logs:PutRetentionPolicy, logs:DeleteRetentionPolicy, logs:TagLogGroup, logs:TagResource, logs:ListTagsForResource]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ServiceName}-*"
+              - Sid: TheLambdaExecutionRoleOnly
+                Effect: Allow
+                Action: [iam:CreateRole, iam:DeleteRole, iam:GetRole, iam:PutRolePolicy, iam:DeleteRolePolicy, iam:GetRolePolicy, iam:AttachRolePolicy, iam:DetachRolePolicy, iam:TagRole, iam:UntagRole, iam:UpdateAssumeRolePolicy]
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-*"
+              - Sid: PassOnlyThatRoleToLambda
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: lambda.amazonaws.com
+              - Sid: ReadOnlyDescribes
+                Effect: Allow
+                Action: [cloudformation:ListStacks, sts:GetCallerIdentity]
+                Resource: "*"
+Outputs:
+  RoleArn:
+    Value: !GetAtt DeployRole.Arn
+    Description: Put this in the repository variable AWS_DEPLOY_ROLE_ARN used by the deploy workflow.
