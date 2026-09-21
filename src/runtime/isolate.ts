@@ -36,6 +36,8 @@ export interface IsolateLimits {
 export interface IsolateRunRequest {
     code: string;
     limits: IsolateLimits;
+    /** Who this run belongs to, so a catastrophic failure names it before the process goes. */
+    label?: { graphId?: string; nodeId?: string; executionId?: string };
     /** What the node sees; everything crosses the boundary as JSON. */
     inputs: {
         value: any;
@@ -171,7 +173,25 @@ export async function runInIsolate(req: IsolateRunRequest): Promise<IsolateOutco
         throw new Error(`containment is not available in this runtime: ${loadError ? loadError.message : "isolated-vm is not installed"}`);
     }
     const startedAt = Date.now();
-    const isolate = new ivm.Isolate({ memoryLimit: Math.max(8, req.limits.memoryMb) });
+    const isolate = new ivm.Isolate({
+        memoryLimit: Math.max(8, req.limits.memoryMb),
+        /**
+         * V8 has lost control of the isolate and nothing here can recover it:
+         * a single allocation far beyond the limit (`new Array(5e7).fill(0)`
+         * against a 64 MB isolate) puts V8 into an unrecoverable out-of-memory
+         * state that ends the whole process, unlike a growth loop, which the
+         * limit contains.  All this can do is say which execution did it, so
+         * the last line before the process goes names the graph and the node.
+         * The blast radius is one Lambda invocation: the platform starts a new
+         * container and the caller sees that request fail.
+         */
+        onCatastrophicError: (message: string) => {
+            const label = req.label || {};
+            console.error("Isolate catastrophic error; this process is going down.", {
+                message, graphId: label.graphId, nodeId: label.nodeId, executionId: label.executionId, memoryMb: req.limits.memoryMb,
+            });
+        },
+    });
     let disposed = false;
     /** The spike's rule: once stopped, dispose and never call in again. */
     const dispose = () => {

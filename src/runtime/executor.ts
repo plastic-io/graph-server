@@ -57,6 +57,8 @@ export interface RunRequest {
     observationsSuffix?: string;
     /** The session that started this execution, for deliveries that must happen once. */
     initiator?: string;
+    /** Receives the execution handle, so a caller can cancel what it started (plan §4.6.6). */
+    onHandle?: (handle: any) => void;
     /** Where node code runs when the node does not say (`worker` keeps the 2.0 realm, `isolate` contains it). */
     defaultContainment?: "worker" | "isolate";
     /** Limits for one contained node invocation. */
@@ -218,6 +220,7 @@ export class ExecutionRunner {
             const outcome = await runInIsolate({
                 code,
                 limits,
+                label: { graphId: graph.id, nodeId: node.id, executionId },
                 inputs: {
                     value: nodeInterface.value,
                     state: nodeInterface.state,
@@ -364,6 +367,9 @@ export class ExecutionRunner {
             scheduler.addEventListener("set", (e: any) => { if (e.setContext) e.setContext(req.setContext!(e)); });
         }
         const handle = scheduler.invoke(req.nodeUrl, req.value, req.field, undefined, { executionId, revisionId });
+        if (req.onHandle) {
+            req.onHandle(handle);
+        }
         const result: any = await handle.done;
         const endedAt = Date.now();
         const key = ObservationRecorder.keyFor(graph.id, executionId, startedAt).replace(/\.ndjson$/, `${req.observationsSuffix || ""}.ndjson`);

@@ -28,3 +28,18 @@ jobs:
         working-directory: graph-server
       - run: npx jest --ci
         working-directory: graph-server
+
+  # The isolate addon is native and only matters where it will run, so the same
+  # suite runs again inside the Lambda image (plan §8.1.4).
+  containment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: graph-server
+      - uses: actions/checkout@v4
+        with:
+          repository: plastic-io/graph-editor
+          path: graph-editor
+      - run: sh .github/docker-test.sh
+        working-directory: graph-server

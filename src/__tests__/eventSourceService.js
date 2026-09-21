@@ -1,4 +1,4 @@
-import EventSourceService from "../EventSourceService";
+import EventSourceService from "../eventSourceService";
 import TocStore from "../tocStore";
 import FakeS3Service from "../__testHelpers__/fakeS3";
 const AWS = require("aws-sdk");
