@@ -414,7 +414,12 @@ class GraphService {
                 (global as any).openai = openai;
             }
 
-            const scheduler = new Scheduler(graph, {openai, event, context, callback: cb}, workerObjProxy, logger);
+            // Scheduler 2.1 bounds the run (wall clock = the invocation's own timeout, plus hop,
+            // fan-out and depth caps) and resolves url() only when every promise has settled;
+            // a 2.0 scheduler ignores the extra argument.
+            const scheduler = new Scheduler(graph, {openai, event, context, callback: cb}, workerObjProxy, logger, {
+                budget: { wallMs: graphTimeout, hops: 100000, fanOut: 10000, depth: 512 },
+            });
 
             scheduler.addEventListener("set", (e: any) => {
                 if (!e.nodeInterface) {
@@ -476,10 +481,19 @@ class GraphService {
                 });
                 resolve({ statusCode: 200, body: "ok", });
             };
-            const postGraph = async () => {
+            const postGraph = async (result: any) => {
                 const duration = Date.now() - startTimer;
                 console.log("URL promise completed field: ", nodeUrl, field);
                 console.log("Promise Invoked Callback: Request duration " + duration + "ms");
+                if (result && result.state) {
+                    // 2.1: how the execution ended, for the caller's log
+                    this.send("info")({
+                        graphId: graph.id,
+                        nodeId: node.id,
+                        nodeUrl,
+                        message: { execution: { id: result.executionId, state: result.state, reason: result.reason, hops: result.hops, errors: result.errors, duration: result.duration } },
+                    });
+                }
                 resolve({ statusCode: 200, body: "ok", });
             }
             try {
