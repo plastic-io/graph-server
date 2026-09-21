@@ -31,6 +31,11 @@ export interface McpDeps {
     proposals: ProposalService;
     summaries: SummaryService;
     delegations: DelegationStore;
+    journeys?: { run(graphId: string, journeyId: string, by: "schedule" | "request", principal?: Principal): Promise<any> };
+    /** Run a graph for an agent (the server wires this to the execution runner). */
+    invoke?: (graphId: string, principal: Principal | undefined, request: { nodeUrl: string; field?: string; value?: any; budget?: any }) => Promise<any>;
+    /** Ask a running execution to stop. */
+    cancel?: (graphId: string, principal: Principal | undefined, executionId: string, reason: string) => Promise<any>;
     rate?: { reads: RateLimiter; writes: RateLimiter };
 }
 
@@ -308,6 +313,116 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
         if (r.error) return fail(r.code, r.error, retryFor(r.code, r.rebaseTo), r.details);
         const p = r.proposal;
         return ok(principal, { proposalId: p.proposalId, proposalDigest: p.proposalDigest, state: p.state, validation: p.validation, impact: p.impact, requiredDecisions: p.requiredDecisions, diffSummary: p.diffSummary }, { graphId: args.graphId, baseRevision: p.baseRevision });
+    }));
+
+    /* ------------------------------------------------- acting on the graph */
+
+    server.registerTool("proposal.decide", {
+        title: "Approve or reject a proposal",
+        description: "Record a decision on a proposal, bound to the digest that was reviewed. A proposal cannot be approved by whoever proposed it.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, proposalId: ULID, decision: z.enum(["approve", "reject"]), proposalDigest: z.string().max(200).optional(), rationale: z.string().max(4000).optional() }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: true },
+    }, guarded("proposal.decide", "write", (a) => a.graphId, ["graph:approve"], async (args, principal) => {
+        const r: any = await deps.proposals.decideProposal(args.graphId, args.proposalId, principal, args.decision, args.proposalDigest, args.rationale || "");
+        if (r.error) return fail(r.code, r.error, retryFor(r.code), r.details);
+        const p = r.proposal;
+        return ok(principal, { proposalId: p.proposalId, state: p.state, requiredDecisions: p.requiredDecisions, decisions: p.decisions }, { graphId: args.graphId });
+    }));
+
+    server.registerTool("proposal.commit", {
+        title: "Commit a proposal",
+        description: "Admit the exact bytes that were validated, as the committing principal, and cut a revision for the result. Refused while the proposal still needs a decision, or if the graph moved since it was validated.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, proposalId: ULID }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: true },
+    }, guarded("proposal.commit", "write", (a) => a.graphId, ["graph:commit"], async (args, principal) => {
+        const r: any = await deps.proposals.commit(args.graphId, args.proposalId, principal);
+        if (r.error) return fail(r.code, r.error, retryFor(r.code, r.rebaseTo), r.details);
+        const p = r.proposal;
+        return ok(principal, { proposalId: p.proposalId, state: p.state, resultRevision: p.resultRevision, mutationId: p.mutationId, warnings: p.warnings }, { graphId: args.graphId, resultRevision: p.resultRevision });
+    }));
+
+    server.registerTool("revision.cut", {
+        title: "Name this state of the graph",
+        description: "Cut a revision of the graph as it is now, so later work can name it. Returns the existing revision when nothing changed since the last one.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, label: z.string().max(200).optional() }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: true },
+    }, guarded("revision.cut", "write", (a) => a.graphId, ["graph:commit"], async (args, principal) => {
+        const r: any = await deps.revisions.cut(args.graphId, principal, args.label || "");
+        if (r.error) return fail(r.code, r.error, retryFor(r.code));
+        return ok(principal, { revision: revRef(r.revision.revisionId), seq: r.revision.seq, label: r.revision.label, created: r.created, digest: digestRef(r.revision.digest.full) }, { graphId: args.graphId, resultRevision: revRef(r.revision.revisionId) });
+    }));
+
+    server.registerTool("revision.activate", {
+        title: "Run this revision",
+        description: "Point execution at a revision. New work runs it; work already in flight finishes on the revision it started with.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, revisionId: REV }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: true },
+    }, guarded("revision.activate", "write", (a) => a.graphId, ["graph:activate"], async (args, principal) => {
+        const r: any = await deps.revisions.activate(args.graphId, revId(args.revisionId), principal);
+        if (r.error) return fail(r.code, r.error, retryFor(r.code));
+        return ok(principal, { active: { revision: revRef(r.active.revisionId), seq: r.active.seq, label: r.active.label, at: r.active.at } }, { graphId: args.graphId, resultRevision: revRef(r.active.revisionId) });
+    }));
+
+    server.registerTool("revision.rollback", {
+        title: "Bring the graph back to a revision",
+        description: "Restore the graph's definition to an earlier revision as an ordinary admitted change, so history is never rewritten and the rollback can itself be undone.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, revisionId: REV }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: false },
+    }, guarded("revision.rollback", "write", (a) => a.graphId, ["graph:rollback"], async (args, principal) => {
+        const r: any = await deps.revisions.restore(args.graphId, revId(args.revisionId), principal);
+        if (r.error) return fail(r.code, r.error, retryFor(r.code));
+        return ok(principal, { decision: r.decision, mutationId: r.mutationId, reason: r.reason }, { graphId: args.graphId });
+    }));
+
+    server.registerTool("component.publish", {
+        title: "Publish a component",
+        description: "Publish the graph, or one node of it, as an immutable version other graphs can import. The version is the revision's sequence number; publishing an unchanged graph returns the version that already exists.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, nodeId: ID.optional(), label: z.string().max(200).optional(), revisionId: REV.optional() }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: true },
+    }, guarded("component.publish", "write", (a) => a.graphId, ["component:publish"], async (args, principal) => {
+        const r: any = await deps.components.publish(args.graphId, principal, { nodeId: args.nodeId, label: args.label, revisionId: args.revisionId ? revId(args.revisionId) : undefined });
+        if (r.error) return fail(r.code, r.error, retryFor(r.code));
+        return ok(principal, {
+            publishedId: r.manifest.publishedId, version: r.manifest.version, created: r.created,
+            digest: digestRef(r.manifest.digest), contract: r.manifest.contract, capabilities: r.manifest.capabilities,
+            revision: revRef(r.revision.revisionId),
+        }, { graphId: args.graphId, resultRevision: revRef(r.revision.revisionId) });
+    }));
+
+    server.registerTool("graph.invoke", {
+        title: "Run a graph",
+        description: "Run the graph from one of its nodes and answer with what the execution did: its id, state, hops, errors, effects allowed and refused, and where its observations are. Nodes placed in a browser are handed to whichever browsers are watching; the execution does not wait for them.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, nodeUrl: z.string().min(1).max(256), field: z.string().max(128).optional(), value: z.any().optional(), budget: z.object({ wallMs: z.number().int().min(100).max(60000).optional(), hops: z.number().int().min(1).max(100000).optional() }).strict().optional() }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: false },
+    }, guarded("graph.invoke", "write", (a) => a.graphId, ["graph:execute"], async (args, principal) => {
+        if (!deps.invoke) return fail("INTERNAL", "this server cannot run graphs");
+        const r: any = await deps.invoke(args.graphId, principal, { nodeUrl: args.nodeUrl, field: args.field, value: args.value, budget: args.budget });
+        if (r.error) return fail(r.code, r.error, retryFor(r.code));
+        return ok(principal, r.summary, { graphId: args.graphId, resultRevision: r.summary && r.summary.revisionId && r.summary.revisionId !== "live" ? revRef(r.summary.revisionId) : undefined });
+    }));
+
+    server.registerTool("execution.cancel", {
+        title: "Stop an execution",
+        description: "Ask a running execution to stop. It notices at its next hop; work already in flight is not taken back.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, executionId: ULID, reason: z.string().max(200).optional() }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: true },
+    }, guarded("execution.cancel", "write", (a) => a.graphId, ["graph:execute"], async (args, principal) => {
+        if (!deps.cancel) return fail("INTERNAL", "this server cannot cancel executions");
+        const r: any = await deps.cancel(args.graphId, principal, args.executionId, args.reason || "");
+        if (r.error) return fail(r.code, r.error, retryFor(r.code));
+        return ok(principal, r, { graphId: args.graphId });
+    }));
+
+    server.registerTool("journey.run", {
+        title: "Prove the graph still does what it is for",
+        description: "Run one intent journey now and answer with its verdict: passed, failed, unresolvable (nothing provides the capability any more), or probe-error.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, journeyId: z.string().min(1).max(64) }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: false },
+    }, guarded("journey.run", "write", (a) => a.graphId, ["graph:test"], async (args, principal) => {
+        if (!deps.journeys) return fail("INTERNAL", "this server has no journeys");
+        const r: any = await deps.journeys.run(args.graphId, args.journeyId, "request", principal);
+        if (r.error) return fail(r.code, r.error, retryFor(r.code));
+        return ok(principal, { runId: r.runId, state: r.state, reason: r.reason, intent: r.intent, steps: r.steps, duration: r.duration }, { graphId: args.graphId });
     }));
 
     /* ------------------------------------------------------------ resources */

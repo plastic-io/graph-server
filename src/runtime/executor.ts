@@ -65,6 +65,8 @@ export interface RunRequest {
     initiator?: string;
     /** Receives the execution handle, so a caller can cancel what it started (plan §4.6.6). */
     onHandle?: (handle: any) => void;
+    /** Look for a cancellation request between hops; off for short single-node runs. */
+    watchForCancellation?: boolean;
     /** Where node code runs when the node does not say (`worker` keeps the 2.0 realm, `isolate` contains it). */
     defaultContainment?: "worker" | "isolate";
     /** Limits for one contained node invocation. */
@@ -115,6 +117,7 @@ export class ExecutionRunner {
     }
 
     static executionKey(executionId: string) { return `executions/${executionId}.json`; }
+    static cancelKey(executionId: string) { return `executions/${executionId}/cancel.json`; }
     static byGraphKey(graphId: string, executionId: string) { return `executions/by-graph/${graphId}/${executionId}.json`; }
 
     async run(req: RunRequest): Promise<ExecutionSummary> {
@@ -376,6 +379,29 @@ export class ExecutionRunner {
         const handle = scheduler.invoke(req.nodeUrl, req.value, req.field, undefined, { executionId, revisionId });
         if (req.onHandle) {
             req.onHandle(handle);
+        }
+        /**
+         * Someone asked this execution to stop (plan PB-065).  The request is
+         * written where any invocation can leave it; this one notices at the
+         * next hop, which is the earliest point it can stop without abandoning
+         * work already in flight.
+         */
+        if (req.watchForCancellation !== false) {
+            let lastLooked = 0;
+            const lookForCancellation = async () => {
+                const now = Date.now();
+                if (now - lastLooked < 500) {
+                    return;
+                }
+                lastLooked = now;
+                const request = await this.getJson(ExecutionRunner.cancelKey(executionId));
+                if (request) {
+                    recorder.record({ kind: "exec.error", payload: { message: `cancelled: ${request.reason || "no reason given"}`, code: "CANCELLED", by: request.by } });
+                    await handle.cancel(request.reason || "cancelled");
+                }
+            };
+            scheduler.addEventListener("beginconnector", () => { lookForCancellation().catch(() => undefined); });
+            scheduler.addEventListener("beginedge", () => { lookForCancellation().catch(() => undefined); });
         }
         const result: any = await handle.done;
         const endedAt = Date.now();

@@ -10,6 +10,7 @@ import { makeMcpHandler } from './mcp/handler';
 import { decide, Authority } from './policy/decide';
 import GraphService, {panic as _panic} from './graphService';
 import { withPrincipal } from './auth/principal';
+import { ExecutionRunner } from './runtime/executor';
 import { authorize as _authorize } from './auth/authorizer';
 import { protectedResourceMetadataHandler } from './auth/metadata';
 const broadcastService = new BroadcastService();
@@ -22,10 +23,60 @@ const revisionService = new RevisionService(crdtService.store, crdtService.admis
     notify: (graphId, event) => crdtService.notifyGraph(graphId, event),
 });
 const graphService = new GraphService();
+/**
+ * Running a graph for an agent (plan PB-083 `graph.invoke`).  It is the same
+ * runner the HTTP route uses, with the agent as the principal, so what an agent
+ * can reach is exactly what its delegation allows.
+ */
+async function invokeForAgent(graphId: string, principal: any, request: { nodeUrl: string; field?: string; value?: any; budget?: any }) {
+    const graph: any = await eventSourceService.crdtStore.projectGraph(graphId).catch(() => null);
+    if (!graph || !Array.isArray(graph.nodes)) {
+        return { error: `no graph ${graphId}`, code: "NOT_FOUND" };
+    }
+    const node = graph.nodes.find((n: any) => n.url === request.nodeUrl || n.id === request.nodeUrl);
+    if (!node) {
+        return { error: `no node ${request.nodeUrl} in ${graphId}`, code: "NOT_FOUND" };
+    }
+    const active: any = await eventSourceService.crdtStore.activeRevision(graphId).catch(() => null);
+    const runner = new ExecutionRunner(eventSourceService.crdtStore.store as any, {
+        live: (observation) => { broadcastService._sendToChannel("graph-notify-" + graphId, { ...observation, eventType: "observation" }, () => undefined); },
+    });
+    const summary = await runner.run({
+        graph,
+        nodeUrl: node.url,
+        field: request.field || ((node.properties && node.properties.inputs && node.properties.inputs[0] && node.properties.inputs[0].name) || "in"),
+        value: request.value,
+        principal: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant } : null,
+        revisionId: active && active.revisionId ? active.revisionId : "live",
+        budget: { wallMs: 25000, hops: 10000, fanOut: 1000, depth: 64, ...(request.budget || {}) },
+        defaultContainment: process.env.DEFAULT_CONTAINMENT === "isolate" ? "isolate" : "worker",
+        deliver: async (delivery: any) => { broadcastService._sendToChannel("graph-notify-" + graphId, { ...delivery, eventType: "edge.deliver" }, () => undefined); },
+    } as any);
+    return { summary };
+}
+
+/** Ask a running execution to stop; it notices at its next hop (plan PB-065). */
+async function cancelExecution(graphId: string, principal: any, executionId: string, reason: string) {
+    const record: any = await new Promise((resolve) => eventSourceService.crdtStore.store.get(ExecutionRunner.executionKey(executionId), (err: any, data: any) => resolve(err ? null : data)));
+    if (record && record.graphId && record.graphId !== graphId) {
+        return { error: "that execution belongs to another graph", code: "NOT_FOUND" };
+    }
+    if (record && record.endedAt) {
+        return { executionId, alreadyFinished: true, state: record.state };
+    }
+    await new Promise<void>((resolve, reject) => eventSourceService.crdtStore.store.set(ExecutionRunner.cancelKey(executionId), {
+        at: new Date().toISOString(), by: principal ? principal.sub : null, reason,
+    }, {}, (err: any) => (err ? reject(err) : resolve())));
+    return { executionId, requested: true, reason };
+}
+
 const mcp = makeMcpHandler({
     crdtStore: eventSourceService.crdtStore,
     tocStore: eventSourceService.tocStore,
     admission: eventSourceService.crdtService.admission,
+    journeys: eventSourceService.journeys,
+    invoke: invokeForAgent,
+    cancel: cancelExecution,
     revisions: eventSourceService.revisions,
     components: eventSourceService.components,
     proposals: eventSourceService.proposals,

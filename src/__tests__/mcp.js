@@ -41,8 +41,31 @@ async function setup() {
     const doc = fromJSON(graphJson());
     await store.appendUpdate("g1", encodeState(doc), "seed", "system");
     await listGraph(tocStore, broadcast, graphJson(), "system");
-    const mcp = makeMcpHandler({ crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations });
-    return { s3, store, crdt, revisions, components, summaries, proposals, delegations, doc, mcp, notified, broadcast };
+    const { JourneyService } = require("../journeys/service");
+    const { ExecutionRunner } = require("../runtime/executor");
+    const journeys = new JourneyService(s3, store, { runner: (live) => new ExecutionRunner(s3, { live }) });
+    const invoked = [];
+    const cancelled = [];
+    const { RateLimiter } = require("../admission/limits");
+    const mcp = makeMcpHandler({
+        crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys,
+        // the brake is tested in its own suite; here it would only stop the test
+        rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: 1000 }) },
+        invoke: async (graphId, principal, request) => {
+            invoked.push({ graphId, principal: principal && principal.sub, request });
+            const graph = await store.projectGraph(graphId);
+            const node = graph.nodes.find((n) => n.url === request.nodeUrl || n.id === request.nodeUrl);
+            if (!node) return { error: `no node ${request.nodeUrl}`, code: "NOT_FOUND" };
+            const runner = new ExecutionRunner(s3);
+            const summary = await runner.run({ graph, nodeUrl: node.url, field: request.field || "in", value: request.value, principal: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant } : null });
+            return { summary };
+        },
+        cancel: async (graphId, principal, executionId, reason) => {
+            cancelled.push({ graphId, executionId, reason, by: principal && principal.sub });
+            return { executionId, requested: true, reason };
+        },
+    });
+    return { s3, store, crdt, revisions, components, summaries, proposals, delegations, journeys, doc, mcp, notified, broadcast, invoked, cancelled };
 }
 
 /** a real MCP client whose fetch goes straight into the handler, as the Lambda would */
@@ -61,7 +84,11 @@ describe("MCP over the Lambda handler", () => {
         const { mcp } = await setup();
         const client = await connect(mcp, owner);
         const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-        expect(tools).toEqual(["component.search", "graph.expand", "graph.summary", "observations.query", "proposal.create", "proposal.validate"]);
+        expect(tools).toEqual([
+            "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
+            "journey.run", "observations.query", "proposal.commit", "proposal.create", "proposal.decide", "proposal.validate",
+            "revision.activate", "revision.cut", "revision.rollback",
+        ]);
         const r = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
         expect(r.envelope).toMatchObject({ schemaVersion: "1", principal: { sub: "auth0|u1", kind: "human" }, graphId: "g1", policyVersion: "m1-diff", truncated: false });
         expect(r.envelope.resultRevision).toMatch(/^rev_[0-9A-HJKMNP-TV-Z]{26}$/);
@@ -246,6 +273,76 @@ describe("MCP over the Lambda handler", () => {
         expect(redacted.result.observations[0].payload).toEqual({ meta: expect.objectContaining({ type: "string" }), redacted: "payload" });
         const noExec = await client.readResource({ uri: "plastic://graph/g1/execution/01J8ZK5K0B1C2D3E4F5G6H7J8Z" }).catch((e) => e);
         expect(String(noExec.message || noExec)).toMatch(/not found/);
+        await client.close();
+    });
+
+    test("an agent acts on the graph only where it was delegated, and every act is bounded by the same rules", async () => {
+        const { mcp, delegations, proposals, invoked, cancelled, store } = await setup();
+        // a delegation that can read and run, and nothing else
+        await delegations.put({ agentSub: "agent|a1", graphId: "g1", delegatedBy: "auth0|u1", scopes: ["graph:read", "graph:observe", "graph:execute", "graph:propose"], expiresAt: null, createdAt: new Date().toISOString() });
+        let client = await connect(mcp, agent);
+        const ran = parse(await client.callTool({ name: "graph.invoke", arguments: { schemaVersion: 1, graphId: "g1", nodeUrl: "form", value: { hello: "world" } } }));
+        expect(ran.result).toMatchObject({ graphId: "g1", state: "completed", hops: expect.any(Number) });
+        expect(invoked[0]).toMatchObject({ graphId: "g1", principal: "agent|a1" });
+        const stop = parse(await client.callTool({ name: "execution.cancel", arguments: { schemaVersion: 1, graphId: "g1", executionId: ran.result.executionId, reason: "changed my mind" } }));
+        expect(stop.result).toMatchObject({ requested: true, reason: "changed my mind" });
+        expect(cancelled[0]).toMatchObject({ executionId: ran.result.executionId, by: "agent|a1" });
+        // what it was not given, it cannot do
+        for (const call of [
+            { name: "revision.cut", arguments: { schemaVersion: 1, graphId: "g1", label: "mine now" } },
+            { name: "revision.activate", arguments: { schemaVersion: 1, graphId: "g1", revisionId: "rev_01J8ZK5K0B1C2D3E4F5G6H7J8A" } },
+            { name: "component.publish", arguments: { schemaVersion: 1, graphId: "g1" } },
+            { name: "journey.run", arguments: { schemaVersion: 1, graphId: "g1", journeyId: "anything" } },
+        ]) {
+            const refused = await client.callTool(call);
+            expect(refused.isError).toBe(true);
+            expect(parse(refused).error).toMatchObject({ code: "ADMISSION_DENIED", message: expect.stringMatching(/lacks/) });
+        }
+        // an agent still cannot commit its own proposal: a human's approval is a separate act
+        const rev = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } })).envelope.resultRevision;
+        const created = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.trim();" }], description: "Trim", idempotencyKey: ULID } }));
+        expect(created.result.requiredDecisions).toEqual(["approve"]);
+        await client.close();
+        // the human approves and commits through the same tools
+        client = await connect(mcp, owner);
+        const decided = parse(await client.callTool({ name: "proposal.decide", arguments: { schemaVersion: 1, graphId: "g1", proposalId: created.result.proposalId, decision: "approve", proposalDigest: created.result.proposalDigest, rationale: "read it, it is fine" } }));
+        expect(decided.result).toMatchObject({ state: "validated", requiredDecisions: [] });
+        const committed = parse(await client.callTool({ name: "proposal.commit", arguments: { schemaVersion: 1, graphId: "g1", proposalId: created.result.proposalId } }));
+        expect(committed.result).toMatchObject({ state: "committed", resultRevision: expect.stringMatching(/^rev_/) });
+        expect((await store.projectGraph("g1")).nodes.find((n) => n.id === "normalize").template.set).toBe("edges.out = value.trim();");
+        // and can name, publish and activate what it committed
+        const cut = parse(await client.callTool({ name: "revision.cut", arguments: { schemaVersion: 1, graphId: "g1", label: "after the trim" } }));
+        expect(cut.result).toMatchObject({ revision: expect.stringMatching(/^rev_/), seq: expect.any(Number) });
+        const published = parse(await client.callTool({ name: "component.publish", arguments: { schemaVersion: 1, graphId: "g1", label: "trimmed" } }));
+        expect(published.result).toMatchObject({ publishedId: "g1", version: expect.any(Number), digest: expect.stringMatching(/^sha256:/) });
+        const activated = parse(await client.callTool({ name: "revision.activate", arguments: { schemaVersion: 1, graphId: "g1", revisionId: cut.result.revision } }));
+        expect(activated.result.active).toMatchObject({ revision: cut.result.revision });
+        const rolledBack = parse(await client.callTool({ name: "revision.rollback", arguments: { schemaVersion: 1, graphId: "g1", revisionId: rev } }));
+        expect(rolledBack.result.decision).toBe("accepted");
+        await client.close();
+    });
+
+    test("a journey is runnable through the protocol, and says what it found", async () => {
+        const { mcp, journeys, store } = await setup();
+        await journeys.put("g1", owner, {
+            id: "still-normalises", intent: "A value sent to the form is normalised", capability: "form.normalise",
+            schedule: "*/5 * * * *", effects: "sim",
+            steps: [{ act: { invoke: { capability: "form.normalise", input: "  Ada  " } }, expect: { observation: { kind: "exec.end", where: { state: "completed" } } } }],
+        });
+        const client = await connect(mcp, owner);
+        const missing = parse(await client.callTool({ name: "journey.run", arguments: { schemaVersion: 1, graphId: "g1", journeyId: "still-normalises" } }));
+        expect(missing.result).toMatchObject({ state: "unresolvable", reason: expect.stringMatching(/nothing in this graph provides form.normalise/) });
+        // say what the node provides, and the same journey passes
+        const graph = await store.projectGraph("g1");
+        graph.nodes.find((n) => n.id === "form").properties.provides = ["form.normalise"];
+        // change the document, the way an editor would, rather than merging a new one over it
+        const doc = new Y.Doc();
+        applyUpdate(doc, (await store.loadMerged("g1")).update);
+        reconcile(doc, graph);
+        await store.appendUpdate("g1", encodeState(doc), "provide", "system");
+        const passed = parse(await client.callTool({ name: "journey.run", arguments: { schemaVersion: 1, graphId: "g1", journeyId: "still-normalises" } }));
+        expect(passed.result).toMatchObject({ state: "passed", intent: expect.stringContaining("normalised") });
+        expect(passed.result.steps[0]).toMatchObject({ capability: "form.normalise", resolvedNode: "form", state: "passed" });
         await client.close();
     });
 
