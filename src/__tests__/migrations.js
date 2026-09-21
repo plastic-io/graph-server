@@ -134,6 +134,21 @@ describe("the migration", () => {
         expect(await ctx.migrations.status(owner)).toMatchObject({ graphs: 3, done: 3, remaining: 0 });
     });
 
+    test("it finds graphs the table of contents never knew: the ones only the 2.0 endpoint file records", async () => {
+        const ctx = await setup();
+        const old2 = oldGraph("only-an-endpoint", [node("plain")]);
+        old2.url = "OnlyAnEndpoint";
+        await new Promise((resolve) => ctx.s3.set(`graphs/projections/endpoints/${old2.url}.json`, old2, {}, resolve));
+        // it is in no table of contents and has no latest projection; it is only what the 2.0 server executed
+        expect(Object.keys(await ctx.tocStore.project())).toEqual([]);
+        const r = await ctx.migrations.run(owner, { limit: 10 });
+        expect(r.migrated).toBe(1);
+        expect(r.results[0]).toMatchObject({ graphId: "only-an-endpoint", did: expect.arrayContaining([expect.stringContaining("seeded a document")]) });
+        const projected = await ctx.store.projectGraph("only-an-endpoint");
+        expect(projected.nodes.map((n) => n.id)).toEqual(["plain"]);
+        expect(await ctx.revisions.list("only-an-endpoint")).toHaveLength(1);
+    });
+
     test("a graph with nothing to seed from is left alone and said so", async () => {
         const ctx = await setup();
         await ctx.tocStore.write ? null : null;

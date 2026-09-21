@@ -81,7 +81,7 @@ export class MigrationService {
      * One graph.  Returns what it did and what it left alone; running it again
      * is safe and says the same thing about a graph it already finished.
      */
-    async graph(graphId: string, principal: Principal | undefined, options: { force?: boolean; dryRun?: boolean } = {}): Promise<GraphMigration | { error: string; code: string }> {
+    async graph(graphId: string, principal: Principal | undefined, options: { force?: boolean; dryRun?: boolean; seedKey?: string } = {}): Promise<GraphMigration | { error: string; code: string }> {
         const allowed = decide(principal, ["graph:commit"]);
         if (!allowed.allow) {
             return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
@@ -96,7 +96,10 @@ export class MigrationService {
             let projection: any = await this.crdtStore.projectGraph(graphId).catch(() => null);
             const hasDocument = !!(projection && projection.id && Array.isArray(projection.nodes));
             if (!hasDocument) {
-                const stored: any = await this.getJson(`graphs/projections/latest/${graphId}.json`);
+                // The newer layout first, then the 2.0 endpoint file, which is
+                // all a graph written before that layout ever had.
+                const stored: any = (options.seedKey ? await this.getJson(options.seedKey) : null)
+                    || await this.getJson(`graphs/projections/latest/${graphId}.json`);
                 if (!stored || !Array.isArray(stored.nodes)) {
                     result.left.push("no document and no stored projection to seed one from");
                     return this.finish(result, options);
@@ -244,7 +247,7 @@ export class MigrationService {
         const limit = Math.min(options.limit || 25, 200);
         const results: GraphMigration[] = [];
         let skipped = 0;
-        for (const graphId of graphIds) {
+        for (const { graphId, seedKey } of graphIds) {
             if (results.length >= limit) {
                 break;
             }
@@ -253,7 +256,7 @@ export class MigrationService {
                 skipped += 1;
                 continue;
             }
-            const r = await this.graph(graphId, principal, options);
+            const r = await this.graph(graphId, principal, { ...options, seedKey });
             if (!("error" in r)) {
                 results.push(r);
             }
@@ -284,13 +287,34 @@ export class MigrationService {
     }
 
     /**
-     * The graphs, and only the graphs: the table of contents also carries an
-     * `endpoint/<url>` entry for each one, which is a way in rather than a
-     * thing to migrate.
+     * Every graph that exists, wherever it is recorded.  The table of contents
+     * knows the ones this server has seen (and also carries an
+     * `endpoint/<url>` entry per graph, which is a way in rather than a thing
+     * to migrate); older graphs exist only as the endpoint file the 2.0 server
+     * executed, and those are exactly the ones with most to gain here.
      */
-    private async graphIds(): Promise<string[]> {
+    private async graphIds(): Promise<{ graphId: string; seedKey?: string }[]> {
+        const found = new Map<string, { graphId: string; seedKey?: string }>();
         const toc = await this.tocStore.project();
-        return Object.keys(toc || {}).filter((key) => !key.includes("/") && (toc as any)[key] && (toc as any)[key].type !== "endpoint");
+        Object.keys(toc || {})
+            .filter((key) => !key.includes("/") && (toc as any)[key] && (toc as any)[key].type !== "endpoint")
+            .forEach((graphId) => found.set(graphId, { graphId }));
+        const latest: string[] = await new Promise((resolve) => this.store.list("graphs/projections/latest/", (err: any, items: any[]) => resolve(err ? [] : (items || []).map((i: any) => i.Key))));
+        latest.forEach((key) => {
+            const graphId = key.slice("graphs/projections/latest/".length).replace(/\.json$/, "");
+            if (graphId && !found.has(graphId)) {
+                found.set(graphId, { graphId, seedKey: key });
+            }
+        });
+        const endpoints: string[] = await new Promise((resolve) => this.store.list("graphs/projections/endpoints/", (err: any, items: any[]) => resolve(err ? [] : (items || []).map((i: any) => i.Key))));
+        for (const key of endpoints) {
+            const projection: any = await this.getJson(key);
+            const graphId = projection && projection.id;
+            if (graphId && Array.isArray(projection.nodes) && !found.has(graphId)) {
+                found.set(graphId, { graphId, seedKey: key });
+            }
+        }
+        return [...found.values()];
     }
 
     /** How far the migration has got. */
