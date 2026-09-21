@@ -34,7 +34,7 @@
     "@aws-sdk/client-secrets-manager": "^3.421.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "@plastic-io/graph-crdt": "file:../graph-editor/packages/GraphCrdt",
-    "@plastic-io/plastic-io": "file:vendor-plastic-io-2.2.0.tgz",
+    "@plastic-io/plastic-io": "^2.2.0",
     "ajv": "^8.20.0",
     "deep-diff": "^1.0.2",
     "flatted": "^3.2.9",
