@@ -9,15 +9,22 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # Both repositories are checked out as siblings inside the workspace:
+      # the CRDT package is linked from the editor by path
+      # (file:../graph-editor/packages/GraphCrdt) until it is published to npm
+      # (plan item PB-120), and actions/checkout refuses a path outside the
+      # workspace, so the server lives in a subdirectory too.
       - uses: actions/checkout@v4
-      # The CRDT package is linked from the sibling editor checkout (file:../graph-editor/packages/GraphCrdt)
-      # until it is published to npm (plan item PB-120), so the editor is checked out next to the server.
+        with:
+          path: graph-server
       - uses: actions/checkout@v4
         with:
           repository: plastic-io/graph-editor
-          path: ../graph-editor
+          path: graph-editor
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
+          node-version-file: graph-server/.nvmrc
       - run: npm ci
+        working-directory: graph-server
       - run: npx jest --ci
+        working-directory: graph-server

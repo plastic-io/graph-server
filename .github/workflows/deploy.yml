@@ -13,24 +13,33 @@ jobs:
     runs-on: ubuntu-latest
     environment: dev
     steps:
+      # Siblings inside the workspace: the CRDT package is linked from the
+      # editor by path, and actions/checkout refuses a path outside it.
       - uses: actions/checkout@v4
+        with:
+          path: graph-server
       - uses: actions/checkout@v4
         with:
           repository: plastic-io/graph-editor
-          path: ../graph-editor
+          path: graph-editor
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
+          node-version-file: graph-server/.nvmrc
       - run: npm ci
+        working-directory: graph-server
       - run: npx jest --ci
+        working-directory: graph-server
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-west-1
       # package first: a failed webpack build exits 0 and produces no artifact, so a bare deploy can look like a success
       - run: npx serverless package --stage dev
+        working-directory: graph-server
       - run: test -s .serverless/plastic-io-graph-server.zip
+        working-directory: graph-server
       - run: npx serverless deploy --stage dev --package .serverless
+        working-directory: graph-server
       # routes removed in this release would otherwise linger in the stage snapshot (see plan task 1 log)
       - run: |
           REST=$(aws apigateway get-rest-apis --query "items[?name=='dev-plastic-io-graph-server'].id" --output text)
