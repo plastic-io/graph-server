@@ -42,7 +42,7 @@ provider:
   # WebSocket execution stays off unless explicitly enabled.
   environment:
     AUTH0_DOMAIN: ${opt:auth0Domain, 'dev-7q-g69up.us.auth0.com'}
-    AUTH0_AUDIENCE: ${opt:auth0Audience, 'https://rmeu8g85f4.execute-api.us-west-1.amazonaws.com/dev'}
+    AUTH0_AUDIENCE: ${opt:auth0Audience, 'plastic-io-graph-server'}
     OWNER_SUBS: ${opt:ownerSubs, ''}
     WS_EXECUTION_ENABLED: ${opt:wsExecution, 'false'}
     API_REGION: ${self:provider.region}
@@ -69,6 +69,17 @@ functions:
   authorizer:
     handler: src/handler.authorize
     timeout: 10
+
+  # RFC 9728 protected-resource metadata: public, so clients can discover the audience
+  protectedResourceMetadata:
+    handler: src/handler.protectedResourceMetadata
+    timeout: 6
+    events:
+      - http:
+          method: GET
+          path: /.well-known/oauth-protected-resource
+          cors:
+            origin: '*'
 
   # manage connection and disconnection of clients
   connect:

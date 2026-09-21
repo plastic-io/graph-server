@@ -137,3 +137,16 @@ describe("reference-instance policy", () => {
         expect(decide(agent, ["graph:commit"])).toMatchObject({ allow: false, reason: expect.stringContaining("graph:commit") });
     });
 });
+
+describe("protected resource metadata", () => {
+    const { protectedResourceMetadata, protectedResourceMetadataHandler } = require("../auth/metadata");
+    test("publishes the audience and the authorization server for clients to discover", (done) => {
+        process.env.AUTH0_AUDIENCE = "plastic-io-graph-server"; process.env.AUTH0_DOMAIN = "tenant.example.auth0.com";
+        expect(protectedResourceMetadata()).toMatchObject({ resource: "plastic-io-graph-server", authorization_servers: ["https://tenant.example.auth0.com/"], bearer_methods_supported: ["header"] });
+        protectedResourceMetadataHandler({}, {}, (err, res) => {
+            expect(res.statusCode).toBe(200); expect(res.headers["Access-Control-Allow-Origin"]).toBe("*");
+            expect(JSON.parse(res.body).scopes_supported).toContain("graph:commit");
+            delete process.env.AUTH0_AUDIENCE; delete process.env.AUTH0_DOMAIN; done();
+        });
+    });
+});

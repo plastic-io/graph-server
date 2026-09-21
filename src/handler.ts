@@ -8,6 +8,7 @@ import CrdtService from './crdtService';
 import GraphService, {panic as _panic} from './graphService';
 import { withPrincipal } from './auth/principal';
 import { authorize as _authorize } from './auth/authorizer';
+import { protectedResourceMetadataHandler } from './auth/metadata';
 const broadcastService = new BroadcastService();
 const eventSourceService = new EventSourceService();
 const crdtService = new CrdtService();
@@ -125,6 +126,8 @@ const crdtCheckpoint = withPrincipal(broadcastService.store, _crdtCheckpoint);
 const panic = withPrincipal(broadcastService.store, _panicRoute);
 // $disconnect must clean up even when the connection record is already gone.
 const disconnect = withPrincipal(broadcastService.store, _disconnect, { required: false });
+/** RFC 9728 metadata: which audience and authorization server this API uses (public). */
+const protectedResourceMetadata = protectedResourceMetadataHandler;
 /** REQUEST authorizer for the REST API and the WebSocket $connect route. */
 function authorize(event: any) {
     return _authorize(event);
@@ -132,6 +135,7 @@ function authorize(event: any) {
 
 export {
     authorize,
+    protectedResourceMetadata,
     crdtSync,
     crdtState,
     crdtStateAt,
