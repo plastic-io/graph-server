@@ -281,6 +281,38 @@ export class ExecutionRunner {
             contractMode: (graph.properties && graph.properties.contractMode === "reject") ? "reject" : "warn",
         } as any);
         recorder.attach(scheduler);
+        /**
+         * The scheduler's loader answers from a cache it fills synchronously
+         * (a `load` listener has to set the value before the dispatch
+         * returns), so anything that has to come from storage is fetched
+         * before the run and seeded here.  What needs seeding: the graph
+         * itself, because a node that embeds a linked graph runs with that
+         * inner graph in scope and its connectors still name the outer one,
+         * and every linked graph a node carries.
+         */
+        const prime = async () => {
+            const seed = async (id: any, version: any, value?: any) => {
+                if (!id || version === undefined || version === null) {
+                    return;
+                }
+                const path = scheduler.getGraphPath(String(id), Number(version));
+                if ((scheduler.graphLoader as any).cache[path]) {
+                    return;
+                }
+                const resolved = value || (req.resolve ? await req.resolve(path) : null);
+                if (resolved) {
+                    (scheduler.graphLoader as any).cache[path] = resolved;
+                }
+            };
+            await seed(graph.id, graph.version, graph);
+            for (const node of (graph.nodes || [])) {
+                const linked = node && node.linkedGraph;
+                if (linked && linked.id) {
+                    await seed(linked.id, linked.version === undefined ? node.version : linked.version, linked.graph);
+                }
+            }
+        };
+        await prime();
         scheduler.addEventListener("load", async (e: any) => {
             // the scheduler asks for a linked graph or a published node by path
             if (!req.resolve) {
