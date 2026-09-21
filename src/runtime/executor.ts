@@ -29,6 +29,13 @@ export interface RunRequest {
     budget?: any;
     /** Forward a scheduler event to the legacy notify channel. */
     onEvent?: (name: string, event: any) => void;
+    /**
+     * Resolve a linked graph or a published node the scheduler asks for
+     * (`artifacts/graph/<id>.<version>`).  Without this the scheduler falls
+     * back to fetching the path as a URL, which is how linked graphs came to
+     * fail on the server (plan PB-046).
+     */
+    resolve?: (path: string) => Promise<any | null>;
     /** Extra members for the set function's `this` (the 2.0 setContext). */
     setContext?: (event: any) => any;
     /** Manifest capabilities per pinned component, when known. */
@@ -274,6 +281,18 @@ export class ExecutionRunner {
             contractMode: (graph.properties && graph.properties.contractMode === "reject") ? "reject" : "warn",
         } as any);
         recorder.attach(scheduler);
+        scheduler.addEventListener("load", async (e: any) => {
+            // the scheduler asks for a linked graph or a published node by path
+            if (!req.resolve) {
+                return;
+            }
+            const loaded = await req.resolve(e.url);
+            if (loaded) {
+                e.setValue(loaded);
+                return;
+            }
+            recorder.record({ kind: "component.unresolved", payload: { path: e.url } });
+        });
         if (req.onEvent) {
             LEGACY_EVENTS.forEach((name) => scheduler.addEventListener(name, (e: any) => req.onEvent!(name, e)));
         }

@@ -484,6 +484,36 @@ class GraphService {
                     }
                 },
             });
+            /**
+             * Linked graphs and published nodes the scheduler asks for.  The
+             * component layout answers first (a pin names a published version),
+             * then the 2.0 artifacts, then the live document of that graph,
+             * which is what an unpublished linked graph actually is.
+             */
+            const resolveArtifact = async (path: string): Promise<any | null> => {
+                const match = /^artifacts\/(graph|nodes)\/(.+)\.(\d+)$/.exec(String(path || ""));
+                if (!match) {
+                    return null;
+                }
+                const [, kind, id, version] = match;
+                const get = (key: string) => new Promise<any | null>((res) => this.store.get(key, (err: any, data: any) => res(err ? null : data)));
+                const component: any = await get(`components/${id}/${version}/artifact.json`);
+                if (component) {
+                    return component.artifact || component;
+                }
+                const legacy: any = await get(`graphs/projections/published/artifacts/${id}.${version}.json`);
+                if (legacy) {
+                    return legacy.artifact || legacy;
+                }
+                if (kind === "graph") {
+                    const live: any = await get(`graphs/projections/latest/${id}.json`);
+                    if (live) {
+                        return live;
+                    }
+                }
+                console.warn("Cannot resolve", path);
+                return null;
+            };
             console.log("Navigate to node URL/field: ", nodeUrl, field);
             const graphCatch = (err) => {
                 console.error("Error in graph", err);
@@ -534,6 +564,7 @@ class GraphService {
                     revisionId: execution.revisionId,
                     budget: { wallMs: graphTimeout, hops: 100000, fanOut: 10000, depth: 512 },
                     maxObservations: Number(process.env.MAX_OBSERVATIONS) || undefined,
+                    resolve: resolveArtifact,
                     initiator: event.headers && (event.headers["x-session-id"] || event.headers["X-Session-Id"]),
                     deliver: async (delivery: any) => {
                         // the browsers watching this graph receive the value; the

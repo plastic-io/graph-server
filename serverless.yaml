@@ -765,6 +765,7 @@ functions:
               - Authorization
               - X-Execution-Id
               - X-Correlation-Id
+              - X-Session-Id
 
 resources:
   Resources:
