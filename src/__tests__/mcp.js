@@ -212,6 +212,39 @@ describe("MCP over the Lambda handler", () => {
         await client.close();
     });
 
+    test("observations.query and the execution resources read what the runtime recorded; payloads need inspect-payloads", async () => {
+        const { ExecutionRunner } = require("../runtime/executor");
+        const { mcp, delegations, s3 } = await setup();
+        const g = graphJson();
+        g.nodes[2].properties.inputs[0].capture = "full";
+        const runner = new ExecutionRunner(s3);
+        const summary = await runner.run({ graph: g, nodeUrl: "form", field: "in", value: "  Ada  ", principal: { sub: "auth0|u1", kind: "human", tenant: "personal:auth0|u1" }, revisionId: "01J8ZK5K0B1C2D3E4F5G6H7J8A" });
+        expect(summary.state).toBe("completed");
+        let client = await connect(mcp, owner);
+        const all = parse(await client.callTool({ name: "observations.query", arguments: { schemaVersion: 1, graphId: "g1", filter: { executionId: summary.executionId } } }));
+        expect(all.result.observations.map((o) => o.kind)).toEqual(["exec.end", "edge.input", "route", "edge.input", "route", "edge.input", "exec.begin"]);
+        const intoValidate = all.result.observations.find((o) => o.kind === "edge.input" && o.nodeId === "validate");
+        expect(intoValidate.payload.value).toBe("  Ada  ");
+        const routes = parse(await client.callTool({ name: "observations.query", arguments: { schemaVersion: 1, graphId: "g1", filter: { kind: "route" }, limit: 1 } }));
+        expect(routes.result.observations).toHaveLength(1); expect(routes.result.nextCursor).toBeDefined();
+        const next = parse(await client.callTool({ name: "observations.query", arguments: { schemaVersion: 1, graphId: "g1", filter: { kind: "route" }, limit: 1, cursor: routes.result.nextCursor } }));
+        expect(next.result.observations[0].id < routes.result.observations[0].id).toBe(true);
+        const executions = JSON.parse((await client.readResource({ uri: "plastic://graph/g1/executions" })).contents[0].text);
+        expect(executions.executions.map((e) => [e.executionId, e.state, e.revisionId])).toEqual([[summary.executionId, "completed", "rev_01J8ZK5K0B1C2D3E4F5G6H7J8A"]]);
+        const one = JSON.parse((await client.readResource({ uri: `plastic://graph/g1/execution/${summary.executionId}` })).contents[0].text);
+        expect(one.execution.executionId).toBe(summary.executionId); expect(one.observations).toHaveLength(7);
+        await client.close();
+        // an observing agent without inspect-payloads sees metadata only
+        await delegations.put({ agentSub: "agent|a1", graphId: "g1", delegatedBy: "auth0|u1", scopes: ["graph:read", "graph:observe"], expiresAt: null, createdAt: new Date().toISOString() });
+        client = await connect(mcp, agent);
+        const redacted = parse(await client.callTool({ name: "observations.query", arguments: { schemaVersion: 1, graphId: "g1", filter: { executionId: summary.executionId, nodeId: "validate" } } }));
+        expect(redacted.result.observations.map((o) => o.kind)).toEqual(["edge.input", "route"]);
+        expect(redacted.result.observations[0].payload).toEqual({ meta: expect.objectContaining({ type: "string" }), redacted: "payload" });
+        const noExec = await client.readResource({ uri: "plastic://graph/g1/execution/01J8ZK5K0B1C2D3E4F5G6H7J8Z" }).catch((e) => e);
+        expect(String(noExec.message || noExec)).toMatch(/not found/);
+        await client.close();
+    });
+
     test("the Lambda face: an API Gateway event becomes a request; no principal is 401; a foreign Origin is refused", async () => {
         const { mcp } = await setup();
         const call = (event) => new Promise((res) => mcp.lambda(event, {}, (e, r) => res(r)));

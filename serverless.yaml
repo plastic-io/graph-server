@@ -60,6 +60,10 @@ provider:
     RATE_MAX_REJECTIONS: ${opt:rateMaxRejections, '30'}
     # warn (default) records drifted embedded component copies; reject refuses them
     COMPONENT_INTEGRITY: ${opt:componentIntegrity, 'warn'}
+    # secret references node code may open through host.secret(ref): ref=SecretsManager name, comma separated (plan §4.5.4)
+    SECRET_REFS: ${opt:secretRefs, 'openai=OPENAI_API_KEY'}
+    # observation volume per execution before sampling kicks in (plan §4.7.4)
+    MAX_OBSERVATIONS: ${opt:maxObservations, '5000'}
     # browsers that may call /mcp directly (non-browser MCP clients send no Origin)
     MCP_ALLOWED_ORIGINS: ${opt:mcpAllowedOrigins, 'http://localhost:8080,http://localhost:5173,https://plastic-io.github.io'}
     NODE_OPTIONS: "--enable-source-maps --unhandled-rejections=warn"

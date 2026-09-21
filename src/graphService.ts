@@ -5,7 +5,7 @@ const { Worker, isMainThread, workerData, parentPort } = require('worker_threads
 
 import {Context, S3CreateEvent, APIGatewayEvent, APIGatewayEventRequestContext} from "aws-lambda";
 import OpenAI from 'openai';
-import Scheduler, {Node, Graph} from "@plastic-io/plastic-io";
+import {Node, Graph} from "@plastic-io/plastic-io";
 import {createDeepProxy, type Path} from "./proxy";
 import {toJSON} from "flatted";
 import S3Service from "./s3Service";
@@ -16,6 +16,16 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
+import { ulid } from "ulid";
+import { ExecutionRunner } from "./runtime/executor";
+import CrdtStore from "./crdtStore";
+
+/** Secret references node code may name through host.secret(ref): ref=SecretsManager name, comma separated. */
+const SECRET_REFS: Record<string, string> = (process.env.SECRET_REFS || "openai=OPENAI_API_KEY").split(",").reduce((acc: Record<string, string>, pair) => {
+    const [ref, name] = pair.split("=").map((s) => s.trim());
+    if (ref && name) acc[ref] = name;
+    return acc;
+}, {});
 
 const STAGE = process.env.STAGE;
 const objectCache = {};
@@ -28,8 +38,7 @@ let paniking = 0;
 let graphExecutionComplete = false;
 let graphTimeout = 25000;
 
-const getSecret = async () => {
-    const secret_name = "OPENAI_API_KEY";
+const getSecret = async (secret_name = "OPENAI_API_KEY") => {
     const client = new SecretsManagerClient({
       region: "us-west-1",
     });
@@ -211,29 +220,52 @@ class GraphService {
                 }
                 this.graph = graph;
                 const node = graph.nodes.find((n) => n.url === nodeUrl);
-                this.node = node;
+                this.node = node || { id: "unknown" };
+                // the execution's identity and the revision it runs (plan §4.5.3, §4.7.4)
+                const executionId = (event.headers && (event.headers["x-execution-id"] || event.headers["X-Execution-Id"])) || ulid();
+                const active: any = await new Promise((res) => this.store.get(CrdtStore.activeKey(graph.id), (e, d) => res(e ? null : d)));
+                const principal = event.principal ? { sub: event.principal.sub, kind: event.principal.kind, tenant: event.principal.tenant } : null;
                 const params = JSON.stringify({
                     graph,
                     nodeUrl,
                     value,
                     field,
-                    event,
+                    event: { ...event, principal: undefined },
                     context,
+                    executionId,
+                    revisionId: active && active.revisionId ? active.revisionId : "live",
+                    principal,
                 });
+                let customResponse: any = null;
+                let summary: any = null;
                 console.log('got graph, starting worker', __filename);
 
                 this.worker = new Worker(__filename, {
                     workerData: params,
                 });
                 this.worker.on("message", (result) => {
-                    console.log("worker-message", result);
+                    console.log("worker-message", typeof result === "string" ? result : result && result.type);
+                    if (result && result.type === "response") {
+                        customResponse = result.response;   // the node answered the request itself (this.callback)
+                        return;
+                    }
+                    if (result && result.type === "summary") {
+                        summary = result.summary;
+                        return;
+                    }
                     if (result === 'shutdown') {
                         console.log("Shutting down");
                         this.worker.terminate().then((exitCode) => {
                             console.log("Shutdown exit code", exitCode);
-                            resolve({ statusCode: 200, body: "ok", });
+                            if (customResponse) {
+                                return resolve(customResponse);
+                            }
+                            resolve({
+                                statusCode: 200,
+                                headers: { ...corsHeaders, "Content-Type": "application/json", "X-Execution-Id": executionId },
+                                body: JSON.stringify(summary || { executionId, state: "unknown" }),
+                            });
                         });
-                        
                     }
                 });
                 this.worker.on("error", async (error) => {
@@ -266,12 +298,12 @@ class GraphService {
             });
         });
     }
-    router(graph: any, nodeUrl: string, field: string, value: string, event: any, context: any): Promise<any> {
+    router(graph: any, nodeUrl: string, field: string, value: string, event: any, context: any, execution: { executionId?: string; revisionId?: string; principal?: any } = {}): Promise<any> {
         return new Promise(async (resolve) => {
             const startTimer = Date.now();
             console.log('starting router');
             this.graph = graph;
-            const node = graph.nodes.find((n) => n.url === nodeUrl);
+            const node = graph.nodes.find((n) => n.url === nodeUrl) || { id: "unknown" };
             this.node = node;
             graphTimeout = Math.min(MAX_TIMEOUT, ((this.graph.properties as any).timeout || graphTimeout));
             responseTimeout = setTimeout(() => {
@@ -287,6 +319,10 @@ class GraphService {
                 const duration = Date.now() - startTimer;
                 console.log("Graph Invoked Callback: Request duration " + duration + "ms");
                 clearTimeout(responseTimeout);
+                // the node answered the HTTP request itself: hand that answer to the main thread
+                if (!isMainThread && parentPort && response) {
+                    parentPort.postMessage({ type: "response", response });
+                }
                 resolve(response);
             };
             const logger = {
@@ -414,56 +450,39 @@ class GraphService {
                 (global as any).openai = openai;
             }
 
-            // Scheduler 2.1 bounds the run (wall clock = the invocation's own timeout, plus hop,
-            // fan-out and depth caps) and resolves url() only when every promise has settled;
-            // a 2.0 scheduler ignores the extra argument.
-            const scheduler = new Scheduler(graph, {openai, event, context, callback: cb}, workerObjProxy, logger, {
-                budget: { wallMs: graphTimeout, hops: 100000, fanOut: 10000, depth: 512 },
+            // The execution runner (src/runtime/executor.ts) builds scheduler 2.1 with the budget, the
+            // capability host, contract hooks and the observation recorder; legacy events still go to the
+            // notify channel and the 2.0 `this` context is kept for graphs that use it.
+            const logContext = {
+                graphId: graph.id,
+                nodeId: node.id,
+                nodeUrl: nodeUrl,
+            };
+            const legacyContext = () => ({
+                openai,
+                event,
+                context,
+                callback: cb,
+                AWS,
+                console: {
+                    log: (e) => { console.log('node-serializer-interface:', e); this.send("log")({level: "log", message: e, ...logContext}); },
+                    warn: (e) => { console.warn('node-serializer-interface:', e); this.send("log")({level: "warn", message: e, ...logContext}); },
+                    debug: (e) => { console.debug('node-serializer-interface:', e); this.send("log")({level: "debug", message: e, ...logContext}); },
+                    info: (e) => { console.info('node-serializer-interface:', e); this.send("log")({level: "info", message: e, ...logContext}); },
+                    error: (e) => { console.error('node-serializer-interface:', e); this.send("log")({level: "error", err: { message: e }, ...logContext}); },
+                },
             });
-
-            scheduler.addEventListener("set", (e: any) => {
-                if (!e.nodeInterface) {
-                    return;
-                }
-                const logContext = {
-                    graphId: graph.id,
-                    nodeId: node.id,
-                    nodeUrl: nodeUrl,
-                };
-                e.setContext({
-                    openai,
-                    event,
-                    context,
-                    callback: cb,
-                    AWS,
-                    console: {
-                        log: (e) => { 
-                            console.log('node-serializer-interface:', e);
-                            this.send("log")({level: "log", message: e, ...logContext});
-                        },
-                        warn: (e) => {
-                            console.warn('node-serializer-interface:', e);
-                            this.send("log")({level: "warn", message: e, ...logContext});
-                        },
-                        debug: (e) => {
-                            console.debug('node-serializer-interface:', e);
-                            this.send("log")({level: "debug", message: e, ...logContext});
-                        },
-                        info: (e) => {
-                            console.info('node-serializer-interface:', e);
-                            this.send("log")({level: "info", message: e, ...logContext});
-                        },
-                        error: (e) => {
-                            console.error('node-serializer-interface:', e);
-                            this.send("log")({level: "error", err: { message: e }, ...logContext});
-                        },
+            const runner = new ExecutionRunner(this.store as any, {
+                secrets: async (ref: string) => {
+                    const name = SECRET_REFS[ref];
+                    if (!name) throw new Error(`no secret is registered as ${ref}`);
+                    return getSecret(name);
+                },
+                live: (observation) => {
+                    if (this.broadcastEvents.indexOf("observation") !== -1 || observation.kind === "exec.error" || observation.kind === "effect.denied" || observation.kind === "contract.violation") {
+                        this.send("observation")({ ...observation });
                     }
-                });
-            });
-            this.graphEvents.forEach((eventName) => {
-                scheduler.addEventListener(eventName, (ev) => {
-                    this.send(eventName)(ev);
-                });
+                },
             });
             console.log("Navigate to node URL/field: ", nodeUrl, field);
             const graphCatch = (err) => {
@@ -481,23 +500,41 @@ class GraphService {
                 });
                 resolve({ statusCode: 200, body: "ok", });
             };
-            const postGraph = async (result: any) => {
+            const postGraph = async (summary: any) => {
                 const duration = Date.now() - startTimer;
                 console.log("URL promise completed field: ", nodeUrl, field);
                 console.log("Promise Invoked Callback: Request duration " + duration + "ms");
-                if (result && result.state) {
-                    // 2.1: how the execution ended, for the caller's log
+                if (summary && summary.state) {
                     this.send("info")({
                         graphId: graph.id,
                         nodeId: node.id,
                         nodeUrl,
-                        message: { execution: { id: result.executionId, state: result.state, reason: result.reason, hops: result.hops, errors: result.errors, duration: result.duration } },
+                        message: { execution: { id: summary.executionId, state: summary.state, reason: summary.reason, hops: summary.hops, errors: summary.errors, duration: summary.duration, observations: summary.observations } },
                     });
+                    if (!isMainThread && parentPort) {
+                        parentPort.postMessage({ type: "summary", summary });
+                    }
                 }
-                resolve({ statusCode: 200, body: "ok", });
+                resolve({ statusCode: 200, body: JSON.stringify(summary || { ok: true }), headers: { ...corsHeaders, "Content-Type": "application/json" } });
             }
             try {
-                scheduler.url(nodeUrl, value, field, null).then(postGraph).catch(graphCatch);
+                runner.run({
+                    graph, nodeUrl, field, value,
+                    context: { openai, event, context, callback: cb },
+                    state: workerObjProxy,
+                    logger,
+                    principal: execution.principal || null,
+                    executionId: execution.executionId,
+                    revisionId: execution.revisionId,
+                    budget: { wallMs: graphTimeout, hops: 100000, fanOut: 10000, depth: 512 },
+                    maxObservations: Number(process.env.MAX_OBSERVATIONS) || undefined,
+                    onEvent: (name, e) => {
+                        if (this.graphEvents.indexOf(name) !== -1) {
+                            this.send(name)({ ...e });
+                        }
+                    },
+                    setContext: legacyContext,
+                }).then(postGraph).catch(graphCatch);
             } catch (err) {
                 graphCatch(err);
             }
@@ -515,7 +552,8 @@ if (!isMainThread) {
         parsedData.field,
         parsedData.value,
         parsedData.event,
-        parsedData.context)
+        parsedData.context,
+        { executionId: parsedData.executionId, revisionId: parsedData.revisionId, principal: parsedData.principal })
     .then(() => {
         console.log("Worker: Ending router, waiting for handles and requests to complete.");
         let activityTimeout;

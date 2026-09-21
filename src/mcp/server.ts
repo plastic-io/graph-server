@@ -12,6 +12,7 @@ import { RevisionService } from "../revisions/service";
 import { ComponentService } from "../components/service";
 import { ProposalService } from "../proposals/service";
 import { SummaryService, revRef, revId, digestRef } from "../summary/service";
+import { readObservations } from "../runtime/executor";
 import CrdtStore from "../crdtStore";
 import TocStore from "../tocStore";
 
@@ -200,32 +201,70 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
         return ok(principal, { components: page, nextCursor: offset + limit < matches.length ? String(offset + limit) : undefined }, { truncated: offset + limit < matches.length });
     }));
 
+    const storeList = (prefix: string): Promise<string[]> => new Promise((resolve, reject) => (deps.crdtStore.store as any).list(prefix, (err: any, items: any[]) => (err ? reject(err) : resolve((items || []).map((i: any) => i.Key)))));
+    const storeGet = (key: string): Promise<any | null> => new Promise((resolve) => (deps.crdtStore.store as any).get(key, (err: any, data: any) => resolve(err ? null : data)));
+    const inspectPayloads = (principal: Principal | undefined) => decide(principal, ["graph:inspect-payloads"]).allow;
+    const redactFor = (o: any, allowed: boolean) => {
+        if (allowed || !o.payload || typeof o.payload !== "object") return o;
+        const p = o.payload;
+        if (p.value !== undefined) return { ...o, payload: { meta: p.meta, redacted: "payload" } };
+        return o;
+    };
+
+    /** Executions of a graph, newest first (executions/by-graph/<g>/<id>.json). */
+    const listExecutions = async (graphId: string): Promise<any[]> => {
+        const prefix = `executions/by-graph/${graphId}/`;
+        const keys = (await storeList(prefix)).sort().reverse();
+        const out: any[] = [];
+        for (const key of keys.slice(0, 200)) {
+            const r = await storeGet(key);
+            if (r) out.push(r);
+        }
+        return out;
+    };
+
     server.registerTool("observations.query", {
         title: "Query what happened to a graph",
-        description: "Audit-backed observations for a graph, newest first: admitted and refused mutations, revisions, publications, proposals. Filter by kind or node; continue with the cursor.",
+        description: "Observations of a graph's executions (edge inputs, routes, effects, denials, errors, budget, contracts), newest first, plus the audit trail (mutations, revisions, publications, proposals) when asked for those kinds. Filter by execution, node or kind; continue with the cursor. Payloads need graph:inspect-payloads.",
         inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, filter: z.object({ nodeId: ID.optional(), kind: z.string().max(64).optional(), executionId: z.string().max(64).optional(), since: z.string().max(64).optional() }).strict().optional(), limit: z.number().int().min(1).max(500).optional(), cursor: z.string().max(64).optional() }).strict(),
         annotations: { readOnlyHint: true },
     }, guarded("observations.query", "read", (a) => a.graphId, ["graph:observe"], async (args, principal) => {
-        const prefix = `${deps.admission.chain.prefix}/${args.graphId}/`;
-        const keys: string[] = await new Promise((resolve, reject) => (deps.crdtStore.store as any).list(prefix, (err: any, items: any[]) => (err ? reject(err) : resolve((items || []).map((i: any) => i.Key)))));
-        let ids = keys.filter((k) => !k.endsWith("HEAD.json")).map((k) => k.slice(prefix.length, -5)).sort().reverse();
         const filter = args.filter || {};
-        if (filter.since) ids = ids.filter((id) => id > filter.since!);
-        if (args.cursor) ids = ids.filter((id) => id < args.cursor!);
         const limit = args.limit || 50;
-        const out: any[] = [];
-        for (const id of ids) {
-            if (out.length >= limit) break;
-            const record: any = await new Promise((resolve) => (deps.crdtStore.store as any).get(`${prefix}${id}.json`, (err: any, data: any) => resolve(err ? null : data)));
-            if (!record) continue;
-            if (filter.kind && !String(record.kind).startsWith(filter.kind)) continue;
-            if (filter.executionId && record.executionId !== filter.executionId) continue;
-            if (filter.nodeId && record.nodeId !== filter.nodeId && !(record.diff && record.diff.ops && record.diff.ops.some((o: any) => o.nodeId === filter.nodeId))) continue;
-            out.push(observationOf(record));
+        const wantsAudit = !filter.kind || /^(mutation|revision|component|proposal|mcp)/.test(filter.kind);
+        const wantsExecutions = !filter.kind || !/^(mutation|revision|component|proposal|mcp)/.test(filter.kind);
+        const payloads = inspectPayloads(principal);
+        let items: any[] = [];
+        if (wantsExecutions) {
+            const executions = filter.executionId ? [await storeGet(`executions/${filter.executionId}.json`)].filter(Boolean) : await listExecutions(args.graphId);
+            for (const record of executions) {
+                if (record.graphId !== args.graphId) continue;
+                const observations = await readObservations(deps.crdtStore.store as any, record);
+                observations.forEach((o: any) => {
+                    if (filter.kind && !String(o.kind).startsWith(filter.kind)) return;
+                    if (filter.nodeId && o.nodeId !== filter.nodeId) return;
+                    items.push(redactFor(o, payloads));
+                });
+                if (items.length > limit * 4) break;
+            }
         }
-        const last = out.length ? out[out.length - 1].id : undefined;
-        const more = last ? ids.indexOf(last) < ids.length - 1 : false;
-        return ok(principal, { observations: out, nextCursor: more ? last : undefined }, { graphId: args.graphId, truncated: more });
+        if (wantsAudit && !filter.executionId) {
+            const prefix = `${deps.admission.chain.prefix}/${args.graphId}/`;
+            const ids = (await storeList(prefix)).filter((k) => !k.endsWith("HEAD.json")).map((k) => k.slice(prefix.length, -5)).sort().reverse().slice(0, limit * 2);
+            for (const id of ids) {
+                const record = await storeGet(`${prefix}${id}.json`);
+                if (!record) continue;
+                if (filter.kind && !String(record.kind).startsWith(filter.kind)) continue;
+                if (filter.nodeId && record.nodeId !== filter.nodeId && !(record.diff && record.diff.ops && record.diff.ops.some((o: any) => o.nodeId === filter.nodeId))) continue;
+                items.push(observationOf(record));
+            }
+        }
+        items.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+        if (filter.since) items = items.filter((o) => o.id > filter.since!);
+        if (args.cursor) items = items.filter((o) => o.id < args.cursor!);
+        const page = items.slice(0, limit);
+        const more = items.length > limit;
+        return ok(principal, { observations: page, nextCursor: more ? page[page.length - 1].id : undefined }, { graphId: args.graphId, truncated: more });
     }));
 
     const OPS = z.array(z.object({ op: z.string() }).passthrough()).min(1).max(500);
@@ -330,6 +369,21 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
         if (!from || !to) denied(`not found: ${uri.href}`);
         const diff = semanticDiff(from, to);
         return text(uri, { fromRevision: v(vars, "fromRev"), toRevision: v(vars, "toRev"), namespaces: diff.namespaces, changes: diff.ops, privilegeDelta: diff.privilegeDelta, layoutOnly: diff.namespaces.every((ns) => ns === "layout" || ns === "housekeeping"), nodesAdded: diff.nodesAdded, nodesRemoved: diff.nodesRemoved, nodesChanged: diff.nodesChanged });
+    });
+    server.registerResource("executions", new ResourceTemplate("plastic://graph/{graphId}/executions", { list: undefined }), { title: "Executions of a graph", mimeType: "application/json" }, async (uri, vars: any) => {
+        const graphId = v(vars, "graphId");
+        await readable(graphId, ["graph:observe"]);
+        const executions = (await listExecutions(graphId)).slice(0, 100).map((r: any) => ({ ...r, revisionId: r.revisionId && r.revisionId !== "live" ? revRef(r.revisionId) : r.revisionId }));
+        return text(uri, { graphId, executions });
+    });
+    server.registerResource("execution", new ResourceTemplate("plastic://graph/{graphId}/execution/{executionId}", { list: undefined }), { title: "One execution and its observations", mimeType: "application/json" }, async (uri, vars: any) => {
+        const graphId = v(vars, "graphId");
+        await readable(graphId, ["graph:observe"]);
+        const record = await storeGet(`executions/${v(vars, "executionId")}.json`);
+        if (!record || record.graphId !== graphId) denied(`not found: ${uri.href}`);
+        const { decision } = await forGraph(graphId, ["graph:inspect-payloads"]);
+        const observations = (await readObservations(deps.crdtStore.store as any, record)).map((o: any) => redactFor(o, decision.allow));
+        return text(uri, { execution: record, observations });
     });
     server.registerResource("proposal", new ResourceTemplate("plastic://graph/{graphId}/proposal/{proposalId}", { list: undefined }), { title: "Proposal", mimeType: "application/json" }, async (uri, vars: any) => {
         const graphId = v(vars, "graphId");
