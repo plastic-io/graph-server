@@ -3,6 +3,8 @@ const { fromJSON, toJSON, reconcile, encodeState, writeUpdate, toBase64, mergeUp
 const CrdtStore = require("../crdtStore").default;
 const CrdtService = require("../crdtService").default;
 const { AdmissionService } = require("../admission/admit");
+const { RateLimiter } = require("../admission/limits");
+const { AuditChain, hashRecord } = require("../audit/chain");
 const { parseEnvelope, isEnvelopeError } = require("../admission/envelope");
 const fakeS3 = require("../__testHelpers__/fakeS3");
 const FakeS3Service = fakeS3.FakeS3Service || fakeS3;
@@ -31,6 +33,9 @@ async function seeded() {
     return { s3, store, doc };
 }
 const keysUnder = (s3, prefix) => [...s3.objects.keys()].filter((k) => k.startsWith(prefix));
+const auditRecords = (s3, g = "g1") => keysUnder(s3, `audit/${g}/`).filter((k) => !k.endsWith("HEAD.json")).sort();
+/** one V2 update written straight into the document, for changes reconcile() would never make */
+function rawUpdate(doc, fn) { let out; const h = (u) => (out = u); doc.on("updateV2", h); doc.transact(() => fn(doc.getMap("graph")), { source: "raw" }); doc.off("updateV2", h); return out; }
 
 describe("envelope parsing", () => {
     test("v2 envelope with a mutationId; legacy envelope gets one minted", () => {
@@ -55,7 +60,7 @@ describe("admission (stage A)", () => {
         const r = await admission.admit({ graphId: "g1", mutationId: ULID_A, content: new Uint8Array([2, 3, 1, 2, 3]), description: "garbage", principal: owner });
         expect(r).toMatchObject({ decision: "rejected", code: "SCHEMA_INVALID" });
         expect(keysUnder(s3, "graphs/g1/").length).toBe(before);              // no update object
-        expect(keysUnder(s3, "audit/g1/").length).toBe(1);                      // the rejection is audited
+        expect(auditRecords(s3).length).toBe(1);                                 // the rejection is audited
         expect(keysUnder(s3, "mutations/g1/").length).toBe(0);                  // no record for a rejected mutation
         const { update } = await store.loadMerged("g1"); expect(toJSON(new (require("yjs").Doc)()) === null || update).toBeTruthy();  // graph still readable
     });
@@ -63,14 +68,14 @@ describe("admission (stage A)", () => {
         const { s3, store, doc } = await seeded(); const admission = new AdmissionService(store);
         const content = updateFor(doc, (g) => { g.properties.name = "renamed"; });
         const r1 = await admission.admit({ graphId: "g1", mutationId: ULID_A, content, description: "Rename", principal: owner });
-        expect(r1).toMatchObject({ decision: "accepted", policyVersion: "m1-owner" }); expect(r1.updateId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+        expect(r1).toMatchObject({ decision: "accepted", policyVersion: "m1-diff" }); expect(r1.diffSummary).toMatchObject({ namespaces: ["definition"], nodesChanged: 0, ops: [{ op: "set-graph-props", keys: ["name"] }] }); expect(typeof r1.headStateVector).toBe("string"); expect(r1.updateId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
         const objects = keysUnder(s3, "graphs/g1/crdt/v2/updates/").length;
         const r2 = await admission.admit({ graphId: "g1", mutationId: ULID_A, content, description: "Rename", principal: owner });
         expect(r2.updateId).toBe(r1.updateId); expect(r2.replayed).toBe(true);
         expect(keysUnder(s3, "graphs/g1/crdt/v2/updates/").length).toBe(objects);
         expect(keysUnder(s3, "mutations/g1/").length).toBe(1);
         const projected = await store.projectGraph("g1"); expect(projected.properties.name).toBe("renamed");
-        const audit = keysUnder(s3, "audit/g1/"); expect(audit.length).toBe(1);
+        const audit = auditRecords(s3); expect(audit.length).toBe(1);
         const record = JSON.parse(s3.objects.get(audit[0]).toString()); expect(record).toMatchObject({ kind: "mutation.accepted", principal: { sub: "auth0|u1" }, description: "Rename" }); expect(record.sha256).toMatch(/^[0-9a-f]{64}$/);
     });
     test("reusing a mutationId for different content is refused", async () => {
@@ -117,5 +122,78 @@ describe("admission over the transports", () => {
         expect(denied.statusCode).toBe(403); expect(JSON.parse(denied.body).code).toBe("ADMISSION_DENIED");
         const malformed = await call({ payload: toBase64(writeUpdate(new Uint8Array([2, 3, 1, 2, 3]))), format: 2 }, owner);
         expect(malformed.statusCode).toBe(400); expect(JSON.parse(malformed.body).code).toBe("SCHEMA_INVALID");
+    });
+});
+
+describe("admission (stage B: staging, diff, policy on the diff, audit chain, limits)", () => {
+    const agent = { sub: "agent|a1", kind: "agent", tenant: "personal:auth0|u1", scopes: ["graph:commit"] };
+    test("a layout move is accepted with a layout-only diff", async () => {
+        const { store, doc } = await seeded(); const admission = new AdmissionService(store);
+        const r = await admission.admit({ graphId: "g1", mutationId: ULID_A, content: updateFor(doc, (g) => { g.nodes[0].properties.x = 5; g.nodes[0].properties.presentation.x = 5; }), description: "Move", principal: owner });
+        expect(r.decision).toBe("accepted");
+        expect(r.diffSummary).toMatchObject({ namespaces: ["layout"], nodesChanged: 1, ops: [{ op: "set-node-props", namespace: "layout", nodeId: "n1", keys: ["presentation", "x"] }] });
+    });
+    test("an agent scoped to graph:commit cannot mark a node as running on the server, the owner can", async () => {
+        const { s3, store, doc } = await seeded(); const admission = new AdmissionService(store);
+        const content = updateFor(doc, (g) => { g.nodes[0].properties.placement = "server"; });
+        const denied = await admission.admit({ graphId: "g1", mutationId: ULID_A, content, description: "Run on server", principal: agent });
+        expect(denied).toMatchObject({ decision: "rejected", code: "ADMISSION_DENIED" }); expect(denied.reason).toMatch(/graph:connect-privileged/);
+        expect(denied.diffSummary.privilegeDelta.placementToServer).toEqual(["n1"]);
+        expect(keysUnder(s3, "graphs/g1/crdt/v2/updates/").length).toBe(1);
+        const ok = await admission.admit({ graphId: "g1", mutationId: ULID_B, content, description: "Run on server", principal: owner });
+        expect(ok.decision).toBe("accepted");
+        const record = JSON.parse(s3.objects.get(auditRecords(s3)[0]).toString());
+        expect(record).toMatchObject({ kind: "mutation.rejected", required: ["graph:commit", "graph:connect-privileged"] });
+    });
+    test("a client cannot write a server-owned namespace, whoever it is", async () => {
+        const { s3, store, doc } = await seeded(); const admission = new AdmissionService(store);
+        const content = rawUpdate(doc, (root) => root.set("observedStatus", { deployed: true }));
+        const r = await admission.admit({ graphId: "g1", mutationId: ULID_A, content, description: "Fake status", principal: owner });
+        expect(r).toMatchObject({ decision: "rejected", code: "ADMISSION_DENIED" }); expect(r.reason).toMatch(/observed namespace is written only by the server/);
+        expect(keysUnder(s3, "graphs/g1/crdt/v2/updates/").length).toBe(1);
+    });
+    test("an update that depends on changes the server has not seen is STALE_BASE, and applies once they arrive", async () => {
+        const { store, doc } = await seeded(); const admission = new AdmissionService(store);
+        const first = updateFor(doc, (g) => { g.properties.name = "one"; });
+        const second = updateFor(doc, (g) => { g.properties.name = "two"; });
+        const stale = await admission.admit({ graphId: "g1", mutationId: ULID_B, content: second, description: "two", principal: owner });
+        expect(stale).toMatchObject({ decision: "rejected", code: "STALE_BASE" });
+        expect((await admission.admit({ graphId: "g1", mutationId: ULID_A, content: first, description: "one", principal: owner })).decision).toBe("accepted");
+        // a rejected id is not burned: the same mutation, sent again, is judged afresh
+        expect((await admission.admit({ graphId: "g1", mutationId: ULID_B, content: second, description: "two", principal: owner })).decision).toBe("accepted");
+        expect((await store.projectGraph("g1")).properties.name).toBe("two");
+    });
+    test("an update that would empty the graph is refused", async () => {
+        const { s3, store, doc } = await seeded(); const admission = new AdmissionService(store);
+        const content = rawUpdate(doc, (root) => Array.from(root.keys()).forEach((k) => root.delete(k)));
+        const r = await admission.admit({ graphId: "g1", mutationId: ULID_A, content, description: "Clear", principal: owner });
+        expect(r).toMatchObject({ decision: "rejected", code: "SCHEMA_INVALID" }); expect(r.reason).toMatch(/empty the graph/);
+        expect(keysUnder(s3, "graphs/g1/crdt/v2/updates/").length).toBe(1);
+    });
+    test("the audit chain links every decision, and verify catches a tampered record", async () => {
+        const { s3, store, doc } = await seeded(); const admission = new AdmissionService(store);
+        await admission.admit({ graphId: "g1", mutationId: ULID_A, content: updateFor(doc, (g) => { g.properties.name = "a"; }), description: "a", principal: owner });
+        await admission.admit({ graphId: "g1", mutationId: ULID_B, content: new Uint8Array([2, 3, 1, 2, 3]), description: "garbage", principal: owner });
+        await admission.admit({ graphId: "g1", mutationId: "01J8ZK5K0B1C2D3E4F5G6H7J8C", content: updateFor(doc, (g) => { g.properties.name = "c"; }), description: "c", principal: owner });
+        const chain = new AuditChain(s3);
+        expect(await chain.verify("g1")).toEqual({ ok: true, length: 3, breaks: [] });
+        const records = auditRecords(s3).map((k) => JSON.parse(s3.objects.get(k).toString()));
+        expect(records.map((r) => r.seq)).toEqual([1, 2, 3]);
+        expect(records[0].prev).toBeNull(); expect(records[1].prev).toBe(records[0].hash); expect(records[2].prev).toBe(records[1].hash);
+        expect(records.map((r) => r.kind)).toEqual(["mutation.accepted", "mutation.rejected", "mutation.accepted"]);
+        expect(records[1].diff).toBeUndefined(); expect(records[0].diff.namespaces).toEqual(["definition"]);
+        // tamper with the middle record: its own hash and the next record's prev both stop matching
+        const key = auditRecords(s3)[1]; const tampered = { ...records[1], description: "innocent" };
+        s3.objects.set(key, Buffer.from(JSON.stringify(tampered)));
+        const v = await chain.verify("g1"); expect(v.ok).toBe(false); expect(v.breaks.some((b) => /does not match its hash/.test(b))).toBe(true);
+        expect(hashRecord(tampered)).not.toBe(records[1].hash);
+    });
+    test("a principal that keeps sending refused updates is rate limited", async () => {
+        const { store } = await seeded(); const admission = new AdmissionService(store, undefined, { rate: new RateLimiter({ maxRejections: 2 }) });
+        const garbage = (id) => admission.admit({ graphId: "g1", mutationId: id, content: new Uint8Array([2, 3, 1, 2, 3]), description: "x", principal: owner });
+        expect((await garbage(ULID_A)).code).toBe("SCHEMA_INVALID");
+        expect((await garbage(ULID_B)).code).toBe("SCHEMA_INVALID");
+        const limited = await garbage("01J8ZK5K0B1C2D3E4F5G6H7J8C");
+        expect(limited.code).toBe("RATE_LIMITED"); expect(limited.retryAfterMs).toBeGreaterThan(0);
     });
 });

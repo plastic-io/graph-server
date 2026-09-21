@@ -19,6 +19,7 @@ import CrdtStore, { decodeUlidTime } from "./crdtStore";
 import { subjectOf, principalFromAuthorizerContext } from "./auth/principal";
 import { parseEnvelope, isEnvelopeError } from "./admission/envelope";
 import { AdmissionService, AdmissionResult } from "./admission/admit";
+import { POLICY_VERSION } from "./policy/decide";
 import BroadcastService from "./broadcastService";
 import TocStore from "./tocStore";
 import { ensureBuilt, listGraph } from "./tocService";
@@ -218,7 +219,7 @@ export default class CrdtService {
   private async admitEnvelope(event: any, body: any, content: Uint8Array): Promise<AdmissionResult> {
     const parsed = parseEnvelope(body);
     if (isEnvelopeError(parsed)) {
-      return { mutationId: typeof body.mutationId === "string" ? body.mutationId : "", decision: "rejected", code: parsed.code, reason: parsed.reason, policyVersion: "m1-owner" };
+      return { mutationId: typeof body.mutationId === "string" ? body.mutationId : "", decision: "rejected", code: parsed.code, reason: parsed.reason, policyVersion: POLICY_VERSION };
     }
     const principal = event.principal || principalFromAuthorizerContext(event);
     return this.admission.admit({

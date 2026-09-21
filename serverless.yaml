@@ -51,6 +51,12 @@ provider:
     # How stale the JSON projection of a collaborative graph may get before an
     # edit refreshes it.  Graph execution and publishing read those files.
     CHECKPOINT_INTERVAL_MS: ${opt:checkpointInterval, '10000'}
+    # Admission limits (plan PB-025): decoded update size, Yjs struct count per
+    # update, and the per-principal brake on mutations and rejections per minute.
+    MAX_UPDATE_BYTES: ${opt:maxUpdateBytes, '1048576'}
+    MAX_STRUCTS: ${opt:maxStructs, '200000'}
+    RATE_MAX_MUTATIONS: ${opt:rateMaxMutations, '600'}
+    RATE_MAX_REJECTIONS: ${opt:rateMaxRejections, '30'}
     NODE_OPTIONS: "--enable-source-maps --unhandled-rejections=warn"
 
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"

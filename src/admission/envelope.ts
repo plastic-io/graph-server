@@ -22,8 +22,8 @@ export interface EnvelopeError {
     reason: string;
 }
 
-export const MAX_UPDATE_BYTES = Number(process.env.MAX_UPDATE_BYTES || 1048576);   // 1 MiB decoded
-export const MAX_DESCRIPTION = 200;
+import { MAX_UPDATE_BYTES, MAX_DESCRIPTION, MAX_INTENT } from "./limits";
+export { MAX_UPDATE_BYTES, MAX_DESCRIPTION };
 const ID = /^[A-Za-z0-9_.-]{1,64}$/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
@@ -75,7 +75,7 @@ export function parseEnvelope(body: any): ParsedEnvelope | EnvelopeError {
         legacy,
         description,
         update,
-        intent: typeof body.intent === "string" ? body.intent.slice(0, 4000) : undefined,
+        intent: typeof body.intent === "string" ? body.intent.slice(0, MAX_INTENT) : undefined,
         clientInfo,
         origin: typeof body.origin === "string" ? body.origin : undefined,
     };

@@ -1,23 +1,53 @@
 import * as Y from "yjs";
 import { createHash } from "crypto";
-import { ulid } from "ulid";
+import { toBase64, DiffSummary } from "@plastic-io/graph-crdt";
 import { Principal } from "../auth/principal";
-import { decide, Authority } from "../policy/decide";
+import { decide, requiredAuthorities, serverOwnedViolation, POLICY_VERSION } from "../policy/decide";
+import { AuditChain } from "../audit/chain";
+import { stage } from "./staging";
+import { MAX_STRUCTS, RateLimiter } from "./limits";
 
 /**
- * Admission (plan §4.4), stage A: the single place a mutation becomes trusted.  Every
- * update, from any transport, passes through admit(): structural guard, idempotency,
- * policy, append, audit.  The semantic diff and staging document (stage B) slot in
- * between the structural guard and the policy check.
+ * Admission (plan §4.4): the single place a mutation becomes trusted.  Every update,
+ * from any transport, passes through admit():
+ *
+ *   1. idempotency   the same mutationId answers the same way and is stored once
+ *   2. rate          a principal that keeps sending refused updates is slowed down
+ *   3. structure     the bytes are a Yjs V2 update within the size and struct limits
+ *   4. staging       the update is applied to a copy of the current document and
+ *                    described as a semantic diff (namespaces, nodes, wiring, privilege)
+ *   5. policy        what the diff needs against what the principal holds
+ *   6. append        the exact bytes that were staged
+ *   7. audit         a hash-chained record of the decision, accepted or not
  */
 export interface AdmissionResult {
     mutationId: string;
     decision: "accepted" | "rejected";
-    code?: "SCHEMA_INVALID" | "ADMISSION_DENIED" | "RATE_LIMITED" | "INTERNAL";
+    code?: "SCHEMA_INVALID" | "ADMISSION_DENIED" | "RATE_LIMITED" | "STALE_BASE" | "INTERNAL";
     reason?: string;
     updateId?: string;
     policyVersion: string;
     legacy?: boolean;
+    replayed?: boolean;
+    /** What the change touched, for the sender and the audit record (values omitted). */
+    diffSummary?: DiffSummaryCompact;
+    /** The server's state vector after the change, base64, so the sender can resync. */
+    headStateVector?: string;
+    retryAfterMs?: number;
+}
+
+export interface DiffSummaryCompact {
+    empty: boolean;
+    seed: boolean;
+    namespaces: string[];
+    nodesAdded: number;
+    nodesRemoved: number;
+    nodesChanged: number;
+    connectorsAdded: number;
+    connectorsRemoved: number;
+    privilegeDelta: DiffSummary["privilegeDelta"];
+    ops: DiffSummary["ops"];
+    opsTruncated: boolean;
 }
 
 export interface AdmissionRequest {
@@ -31,20 +61,42 @@ export interface AdmissionRequest {
     principal: Principal | undefined;
 }
 
-export const MAX_STRUCTS = Number(process.env.MAX_STRUCTS || 200000);
+export { MAX_STRUCTS };
+const MAX_OPS_IN_SUMMARY = 50;
 
 /** Store surface needed here (S3Service / MemoryStore / FakeS3Service all provide it). */
 interface Store {
     get(key: string, cb: (err: any, data: any) => void): void;
     set(key: string, val: any, meta: any, cb: (err: any, data: any) => void): void;
+    list(prefix: string, cb: (err: any, data: any) => void): void;
+}
+
+export function compactDiff(diff: DiffSummary): DiffSummaryCompact {
+    return {
+        empty: diff.empty,
+        seed: diff.seed,
+        namespaces: diff.namespaces,
+        nodesAdded: diff.nodesAdded.length,
+        nodesRemoved: diff.nodesRemoved.length,
+        nodesChanged: diff.nodesChanged.length,
+        connectorsAdded: diff.connectorsAdded.length,
+        connectorsRemoved: diff.connectorsRemoved.length,
+        privilegeDelta: diff.privilegeDelta,
+        ops: diff.ops.slice(0, MAX_OPS_IN_SUMMARY),
+        opsTruncated: diff.ops.length > MAX_OPS_IN_SUMMARY,
+    };
 }
 
 export class AdmissionService {
     private crdtStore: any;
     private store: Store;
-    constructor(crdtStore: any, store?: Store) {
+    readonly chain: AuditChain;
+    readonly rate: RateLimiter;
+    constructor(crdtStore: any, store?: Store, options: { rate?: RateLimiter } = {}) {
         this.crdtStore = crdtStore;
         this.store = store || crdtStore.store;
+        this.chain = new AuditChain(this.store);
+        this.rate = options.rate || new RateLimiter();
     }
 
     private getJson(key: string): Promise<any | null> {
@@ -54,7 +106,6 @@ export class AdmissionService {
         return new Promise((resolve, reject) => this.store.set(key, value, {}, (err: any) => (err ? reject(err) : resolve())));
     }
     static recordKey(graphId: string, mutationId: string) { return `mutations/${graphId}/${mutationId}.json`; }
-    static auditKey(graphId: string, id: string) { return `audit/${graphId}/${id}.json`; }
 
     /** Structural guard: the bytes must be a Yjs V2 update that applies to a document. */
     static structuralCheck(content: Uint8Array): { ok: true; structs: number } | { ok: false; reason: string } {
@@ -85,59 +136,83 @@ export class AdmissionService {
         const at = new Date().toISOString();
         const sha256 = createHash("sha256").update(req.content).digest("hex");
         const base = { mutationId: req.mutationId, legacy: req.legacy };
+        const rateKey = req.principal ? req.principal.sub : "anonymous";
+        const principalSummary = req.principal ? { sub: req.principal.sub, kind: req.principal.kind, tenant: req.principal.tenant } : null;
         const audit = async (result: AdmissionResult, extra: any = {}) => {
+            this.rate.record(rateKey, result.decision !== "accepted");
             try {
-                await this.putJson(AdmissionService.auditKey(req.graphId, ulid()), {
+                await this.chain.append(req.graphId, {
                     kind: `mutation.${result.decision}`, at, graphId: req.graphId, mutationId: req.mutationId,
-                    principal: req.principal ? { sub: req.principal.sub, kind: req.principal.kind, tenant: req.principal.tenant } : null,
+                    principal: principalSummary,
                     decision: result.decision, code: result.code, reason: result.reason, updateId: result.updateId,
                     description: req.description, intent: req.intent, clientInfo: req.clientInfo, bytes: req.content.byteLength, sha256,
-                    policyVersion: result.policyVersion, ...extra,
+                    policyVersion: result.policyVersion, diff: result.diffSummary, ...extra,
                 });
             } catch (err) {
                 console.error("Cannot write the audit record", err);
             }
+        };
+        const reject = async (code: AdmissionResult["code"], reason: string, extra: Partial<AdmissionResult> = {}, auditExtra: any = {}): Promise<AdmissionResult> => {
+            const result: AdmissionResult = { ...base, decision: "rejected", code, reason, policyVersion: POLICY_VERSION, ...extra };
+            await audit(result, auditExtra);
+            return result;
         };
 
         // 1. idempotency: the same mutation id answers the same way, and is stored once
         const existing = await this.getJson(AdmissionService.recordKey(req.graphId, req.mutationId));
         if (existing && existing.result) {
             if (existing.sha256 !== sha256) {
-                const result: AdmissionResult = { ...base, decision: "rejected", code: "SCHEMA_INVALID", reason: "mutationId was already used for different content", policyVersion: existing.result.policyVersion };
-                await audit(result, { replay: true });
-                return result;
+                return reject("SCHEMA_INVALID", "mutationId was already used for different content", { policyVersion: existing.result.policyVersion }, { replay: true });
             }
             return { ...existing.result, replayed: true } as AdmissionResult;
         }
 
-        // 2. structural guard (never store bytes that do not decode)
+        // 2. rate: the cheapest check, so a flood of garbage costs nothing to refuse
+        const rate = this.rate.check(rateKey);
+        if (!rate.ok) {
+            return reject("RATE_LIMITED", rate.reason || "too many mutations", { retryAfterMs: rate.retryAfterMs });
+        }
+
+        // 3. structural guard (never store bytes that do not decode)
         const check = AdmissionService.structuralCheck(req.content);
         if (check.ok === false) {
-            const result: AdmissionResult = { ...base, decision: "rejected", code: "SCHEMA_INVALID", reason: check.reason, policyVersion: "m1-owner" };
-            await audit(result);
-            return result;
+            return reject("SCHEMA_INVALID", check.reason);
         }
 
-        // 3. policy (stage A: the reference-instance owner policy; stage B decides on the semantic diff)
-        const required: Authority[] = ["graph:commit"];
+        // 4. staging: apply to a copy of the head and describe the change
+        const { update: head } = await this.crdtStore.loadMerged(req.graphId);
+        const staged = stage(head, req.content);
+        if (staged.ok === false) {
+            return reject(staged.code, staged.reason);
+        }
+        const diffSummary = compactDiff(staged.diff);
+        const headStateVector = toBase64(staged.headStateVector);
+        if (staged.cleared) {
+            return reject("SCHEMA_INVALID", "the update would empty the graph; delete it through the delete route instead", { diffSummary, headStateVector });
+        }
+
+        // 5. policy on the diff
+        const violation = serverOwnedViolation(staged.diff, req.principal);
+        if (violation) {
+            return reject("ADMISSION_DENIED", violation, { diffSummary, headStateVector });
+        }
+        const required = requiredAuthorities(staged.diff);
         const decision = decide(req.principal, required);
         if (!decision.allow) {
-            const result: AdmissionResult = { ...base, decision: "rejected", code: "ADMISSION_DENIED", reason: decision.reason, policyVersion: decision.policyVersion };
-            await audit(result);
-            return result;
+            return reject("ADMISSION_DENIED", decision.reason || "denied", { diffSummary, headStateVector, policyVersion: decision.policyVersion }, { required });
         }
 
-        // 4. append the exact bytes that were validated
+        // 6. append the exact bytes that were staged
         const updateId = await this.crdtStore.appendUpdate(req.graphId, req.content, req.description, req.principal ? req.principal.sub : "Unknown");
-        const result: AdmissionResult = { ...base, decision: "accepted", updateId, policyVersion: decision.policyVersion };
+        const result: AdmissionResult = { ...base, decision: "accepted", updateId, policyVersion: decision.policyVersion, diffSummary, headStateVector };
 
-        // 5. record + audit
+        // 7. record + audit
         try {
             await this.putJson(AdmissionService.recordKey(req.graphId, req.mutationId), { sha256, at, result });
         } catch (err) {
             console.error("Cannot write the mutation record", err);
         }
-        await audit(result, { structs: check.structs });
+        await audit(result, { structs: check.structs, required });
         return result;
     }
 }
