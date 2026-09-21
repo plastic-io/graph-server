@@ -705,6 +705,11 @@ functions:
           authorizer: ${self:custom.jwtAuthorizer}
           cors:
             origin: '*'
+            headers:
+              - Content-Type
+              - Authorization
+              - X-Execution-Id
+              - X-Correlation-Id
 
 resources:
   Resources:

@@ -341,6 +341,8 @@ export class ProposalService {
             return { error: result.reason || "rejected", code: (result.code === "STALE_BASE" ? "STALE_BASE" : result.code === "ADMISSION_DENIED" ? "ADMISSION_DENIED" : "CONFLICT") as any };
         }
         if (this.hooks.fanOut) await this.hooks.fanOut(graphId, content);
+        // execution and the TOC read plain projections; refresh them as an editor's edit would
+        await this.crdtStore.writeProjections(graphId);
         const cut = await this.revisions.cut(graphId, principal, proposal.description);
         proposal.state = "committed";
         proposal.mutationId = result.mutationId;

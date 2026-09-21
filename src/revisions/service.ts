@@ -362,6 +362,7 @@ export class RevisionService {
             });
             if (result.decision === "accepted") {
                 await this.fanOut(graphId, update);
+                await this.crdtStore.writeProjections(graphId);
                 await this.notify(graphId, { eventType: "revision", action: "restored", revisionId, seq: revision.seq, by: principal ? principal.sub : null });
             }
             return result;

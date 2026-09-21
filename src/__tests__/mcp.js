@@ -124,7 +124,7 @@ describe("MCP over the Lambda handler", () => {
     });
 
     test("an agent without a delegation can do nothing; with one it can read and propose but not more; proposals are validated, stored, audited and committed by a human", async () => {
-        const { mcp, delegations, proposals, notified, store, broadcast } = await setup();
+        const { mcp, delegations, proposals, notified, store, broadcast, s3 } = await setup();
         let client = await connect(mcp, agent);
         const denied = await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } });
         expect(denied.isError).toBe(true); expect(parse(denied).error).toMatchObject({ code: "ADMISSION_DENIED", message: expect.stringMatching(/no delegation/) });
@@ -175,6 +175,10 @@ describe("MCP over the Lambda handler", () => {
         const committed2 = await proposals.commit("g1", priv.result.proposalId, owner);
         expect(committed2.proposal.state).toBe("committed");
         expect((await store.projectGraph("g1")).nodes[2].properties.placement).toBe("server");
+        // the execution projection follows the commit (graphService loads it by url)
+        const projection = JSON.parse(s3.objects.get("graphs/projections/endpoints/g1.json").toString());
+        expect(projection.nodes.find((n) => n.id === "normalize").template.set).toBe("edges.out = value.trim();");
+        expect(projection.nodes[2].properties.placement).toBe("server");
         client = await connect(mcp, agent);
         const audit = parse(await client.callTool({ name: "observations.query", arguments: { schemaVersion: 1, graphId: "g1", limit: 50 } }));
         expect(audit.result.observations.map((o) => o.kind)).toEqual(expect.arrayContaining(["mcp.tool.proposal.create", "proposal.created", "proposal.committed", "mutation.accepted", "revision.cut", "proposal.decided"]));
