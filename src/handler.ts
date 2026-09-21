@@ -54,6 +54,10 @@ function _proposalCommit(event: any, context: any, callback: (err: any, response
 function _proposalValidate(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.proposals.validateRoute(event, context, callback);
 }
+/** A browser execution reports its observations when it ends (src/runtime/ingest.ts). */
+function _executionIngest(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.executions.route(event, context, callback);
+}
 /** The newest audit records of a graph (the editor's agent activity view). */
 function _auditList(event: any, context: any, callback: (err: any, response: any) => void) {
     const graphId = event.pathParameters.id;
@@ -229,6 +233,7 @@ const rebuildToc = withPrincipal(broadcastService.store, _rebuildToc);
 const getGraphWs = withPrincipal(broadcastService.store, _getGraphWs);
 const publishGraphWs = withPrincipal(broadcastService.store, _publishGraphWs);
 const publishNodeWs = withPrincipal(broadcastService.store, _publishNodeWs);
+const executionIngest = withPrincipal(broadcastService.store, _executionIngest);
 const defaultRoute = withPrincipal(broadcastService.store, _defaultRoute);
 const getArtifact = withPrincipal(broadcastService.store, _getArtifact);
 const publish = withPrincipal(broadcastService.store, _publish);
@@ -312,6 +317,7 @@ export {
     listDeletedGraphs,
     getTocState,
     rebuildToc,
+    executionIngest,
     defaultRoute,
     panic,
 };

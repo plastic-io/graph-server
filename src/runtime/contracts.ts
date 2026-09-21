@@ -38,9 +38,6 @@ export function makeContractHooks() {
     return { onInput: check("inputs"), onOutput: check("outputs") };
 }
 
-/** Conservative assignability: same declared type, or either side untyped/Object. */
-export function assignable(from: any, to: any): boolean {
-    const a = from && from.type ? String(from.type) : "Object";
-    const b = to && to.type ? String(to.type) : "Object";
-    return a === b || a === "Object" || b === "Object";
-}
+// Connect-time assignability is asked by the editor too, so it lives in the
+// shared package; this re-export keeps the server's import path.
+export { assignable, schemaConflict } from "@plastic-io/graph-crdt";

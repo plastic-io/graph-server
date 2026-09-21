@@ -511,6 +511,21 @@ functions:
               - Mcp-Name
               - Mcp-Session-Id
 
+  executionIngest:
+    handler: src/handler.executionIngest
+    timeout: 60
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/executions
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
   proposalsList:
     handler: src/handler.proposalsList
     timeout: 60

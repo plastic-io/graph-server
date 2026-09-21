@@ -57,6 +57,52 @@ describe("capabilities", () => {
     });
 });
 
+describe("browser executions reported to the server", () => {
+    const { ExecutionIngest } = require("../runtime/ingest");
+    const obs = (over = {}) => ({ id: "01M32AAAAAAAAAAAAAAAAAAAAA", seq: 1, at: "2026-09-21T10:00:00.000Z", kind: "edge.input", graphId: "somebody-elses", revisionId: "whatever", executionId: "nope", correlationId: "nope", domain: "server", owner: { sub: "auth0|attacker", kind: "human", tenant: "other" }, instancePath: [], nodeId: "a", edgeField: "in", payload: { meta: { type: "string", bytes: 3 } }, ...over });
+    const record = (over = {}) => ({ executionId: "01M32BBBBBBBBBBBBBBBBBBBBB", graphId: "somebody-elses", revisionId: "01M32AAAAAAAAAAAAAAAAAAAAA", domain: "server", owner: { sub: "auth0|attacker", kind: "human", tenant: "other" }, entry: { nodeUrl: "a", field: "in" }, startedAt: "2026-09-21T10:00:00.000Z", endedAt: "2026-09-21T10:00:01.000Z", state: "completed", duration: 1000, hops: 2, errors: 0, observations: { count: 2, key: "anywhere", sampled: false, capped: false }, effects: { allowed: 9, denied: 9 }, correlationId: "01M32BBBBBBBBBBBBBBBBBBBBB", ...over });
+
+    test("the report is stored under the requesting identity, not the one in the body", async () => {
+        const s3 = new FakeS3Service();
+        const ingest = new ExecutionIngest(s3);
+        const r = await ingest.ingest("g1", owner, { record: record(), observations: [obs(), obs({ seq: 2, kind: "effect", capability: { kind: "net:https", scope: ["api.example.com"], decision: "allowed" } })] });
+        expect(r).toMatchObject({ replayed: false, observations: 2 });
+        expect(r.record).toMatchObject({ executionId: "01M32BBBBBBBBBBBBBBBBBBBBB", graphId: "g1", domain: "browser", owner, state: "completed", hops: 2, revisionId: "01M32AAAAAAAAAAAAAAAAAAAAA", effects: { allowed: 1, denied: 0 } });
+        expect(r.record.receivedAt).toEqual(expect.any(String));
+        const stored = await readObservations(s3, readJson(s3, "executions/01M32BBBBBBBBBBBBBBBBBBBBB.json"));
+        expect(stored).toHaveLength(2);
+        expect(stored.every((o) => o.graphId === "g1" && o.domain === "browser" && o.owner.sub === "auth0|u1" && o.executionId === "01M32BBBBBBBBBBBBBBBBBBBBB")).toBe(true);
+        expect(readJson(s3, "executions/by-graph/g1/01M32BBBBBBBBBBBBBBBBBBBBB.json").executionId).toBe("01M32BBBBBBBBBBBBBBBBBBBBB");
+        expect(stored[0].payload).toEqual({ meta: { type: "string", bytes: 3 } });
+    });
+
+    test("unknown kinds and stray fields are dropped; the first report of an execution wins", async () => {
+        const s3 = new FakeS3Service();
+        const ingest = new ExecutionIngest(s3);
+        const first = await ingest.ingest("g1", owner, { record: record(), observations: [obs({ kind: "not-a-kind" }), obs({ seq: 2, kind: "route", secretField: "keep this out", capability: { kind: "secret", scope: ["openai"], decision: "allowed", layer: "instance" } })] });
+        expect(first.observations).toBe(1);
+        const stored = await readObservations(s3, first.record);
+        expect(stored[0].secretField).toBeUndefined();
+        expect(stored[0].capability).toEqual({ kind: "secret", scope: ["openai"], decision: "allowed", layer: "instance" });
+        const again = await ingest.ingest("g1", owner, { record: record({ state: "error", hops: 999 }), observations: [] });
+        expect(again).toMatchObject({ replayed: true });
+        expect(again.record.state).toBe("completed");
+        expect(readJson(s3, "executions/01M32BBBBBBBBBBBBBBBBBBBBB.json").hops).toBe(2);
+    });
+
+    test("volume, identity and shape are refused rather than trusted", async () => {
+        const s3 = new FakeS3Service();
+        const ingest = new ExecutionIngest(s3);
+        expect(await ingest.ingest("g1", undefined, { record: record(), observations: [] })).toMatchObject({ code: "ADMISSION_DENIED" });
+        expect(await ingest.ingest("g1", owner, { record: record({ executionId: "not-a-ulid" }), observations: [] })).toMatchObject({ code: "SCHEMA_INVALID" });
+        const many = Array.from({ length: 5001 }, (_, i) => obs({ seq: i + 1 }));
+        expect(await ingest.ingest("g1", owner, { record: record(), observations: many })).toMatchObject({ code: "LIMIT_EXCEEDED", details: { count: 5001 } });
+        const fat = Array.from({ length: 200 }, (_, i) => obs({ seq: i + 1, payload: { value: "x".repeat(20000) } }));
+        expect(await ingest.ingest("g1", owner, { record: record(), observations: fat })).toMatchObject({ code: "LIMIT_EXCEEDED" });
+        expect([...s3.objects.keys()].filter((k) => k.startsWith("executions/"))).toEqual([]);
+    });
+});
+
 describe("the execution runner", () => {
     test("observes an execution end to end and writes the NDJSON and the record", async () => {
         const s3 = new FakeS3Service();

@@ -12,6 +12,7 @@ import { RevisionService } from "./revisions/service";
 import { ComponentService } from "./components/service";
 import { SummaryService } from "./summary/service";
 import { ProposalService } from "./proposals/service";
+import { ExecutionIngest } from "./runtime/ingest";
 import { DelegationStore } from "./policy/delegation";
 import {
     ensureBuilt,
@@ -45,6 +46,7 @@ export default class EventSourceService {
     components: ComponentService;
     summaries: SummaryService;
     proposals: ProposalService;
+    executions: ExecutionIngest;
     delegations: DelegationStore;
     store: S3Service;
     broadcastService: BroadcastService;
@@ -69,6 +71,7 @@ export default class EventSourceService {
         // crdtStore already holds the S3 service; this.store is assigned further down the constructor
         this.delegations = new DelegationStore(this.crdtStore.store as any);
         this.crdtService.admission.resolvePrincipal = (principal, graphId) => this.delegations.resolve(principal, graphId);
+        this.executions = new ExecutionIngest(this.crdtStore.store as any);
         this.summaries = new SummaryService(this.revisions, this.components);
         this.proposals = new ProposalService(this.crdtStore, this.crdtService.admission, this.revisions, this.summaries, {
             fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
