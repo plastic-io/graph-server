@@ -245,7 +245,7 @@ describe("asking what crossed a connector", () => {
         const answer = await ingest.query("g1", owner, { connectorId: "c1" });
         expect(answer.observations.map((o) => o.id)).toEqual(["01AAC", "01AAA"]);
         expect(answer.observations[0].payload.value).toEqual({ price: 84 });
-        expect(answer.executionsRead).toBe(1);
+        expect(answer.filesRead).toBe(1);
     });
 
     test("filters by node and by kind as well", async () => {

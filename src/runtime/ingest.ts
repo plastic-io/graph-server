@@ -19,6 +19,8 @@ const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const KINDS = new Set(["edge.input", "edge.output", "route", "exec.begin", "exec.end", "exec.error", "effect", "effect.denied",
     "budget.exhausted", "contract.violation", "component.unresolved", "test.result", "custom", "gap"]);
 const MAX_OBSERVATIONS = 5000;
+/** How far back one query reads; a person asking about a wire wants an answer, not every hour this graph ever ran. */
+const MAX_FILES_PER_QUERY = 40;
 const MAX_BYTES = 2 * 1024 * 1024;
 const STATES = new Set(["completed", "cancelled", "error", "budget", "unknown"]);
 
@@ -240,41 +242,56 @@ export class ExecutionIngest {
         }
         const limit = Math.min(200, Math.max(1, filter.limit || 50));
         const payloads = decide(principal, ["graph:inspect-payloads"]).allow;
-        let records: any[] = [];
+        const matches = (o: any) => {
+            if (filter.connectorId && o.connectorId !== filter.connectorId) return false;
+            if (filter.nodeId && o.nodeId !== filter.nodeId) return false;
+            if (filter.kind && !String(o.kind).startsWith(filter.kind)) return false;
+            return true;
+        };
+        const newestFirst = (a: any, b: any) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+        const redact = (o: any) => (payloads || !(o.payload && o.payload.value !== undefined)
+            ? o
+            : { ...o, payload: { meta: o.payload.meta, redacted: "payload" } });
         if (filter.executionId) {
-            const one = await this.getJson(ExecutionRunner.executionKey(filter.executionId));
-            records = one && one.graphId === graphId ? [one] : [];
-        } else {
-            const keys = (await this.list_(`executions/by-graph/${graphId}/`)).sort().reverse().slice(0, 50);
-            for (const key of keys) {
-                const record = await this.getJson(key);
-                if (record) {
-                    records.push(record);
-                }
+            // One execution is asked for by name: its record joins both halves.
+            const record = await this.getJson(ExecutionRunner.executionKey(filter.executionId));
+            if (!record || record.graphId !== graphId) {
+                return { error: "no such execution", code: "NOT_FOUND" };
             }
+            const found = (await this.allObservations(record)).filter(matches).sort(newestFirst);
+            return { graphId, observations: found.slice(0, limit).map(redact), filesRead: 1, more: found.length > limit };
         }
-        const matches: any[] = [];
-        let read = 0;
-        for (const record of records) {
-            read += 1;
-            const observations = await this.allObservations(record);
-            observations.forEach((o: any) => {
-                if (filter.connectorId && o.connectorId !== filter.connectorId) return;
-                if (filter.nodeId && o.nodeId !== filter.nodeId) return;
-                if (filter.kind && !String(o.kind).startsWith(filter.kind)) return;
-                matches.push(o);
-            });
-            if (matches.length >= limit) {
+        /**
+         * Everything observed for this graph is filed by the hour it happened
+         * in, whichever domain wrote it — the owner's own file, a node another
+         * domain ran, a browser's report.  Reading those files newest first is
+         * both the cheapest way to answer "what crossed this wire" and the
+         * only one that covers all three.
+         */
+        const keys = (await this.list_(`observations/${graphId}/`))
+            .filter((key) => key.endsWith(".ndjson"))
+            .sort()
+            .reverse();
+        const found: any[] = [];
+        let filesRead = 0;
+        for (const key of keys) {
+            if (found.length >= limit || filesRead >= MAX_FILES_PER_QUERY) {
                 break;
             }
+            filesRead += 1;
+            const observations = await readObservations(this.store as any, { observations: { key } } as any);
+            observations.forEach((o: any) => {
+                if (matches(o)) {
+                    found.push(o);
+                }
+            });
         }
-        matches.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
-        const page = matches.slice(0, limit);
+        found.sort(newestFirst);
         return {
             graphId,
-            observations: payloads ? page : page.map((o: any) => (o.payload && o.payload.value !== undefined ? { ...o, payload: { meta: o.payload.meta, redacted: "payload" } } : o)),
-            executionsRead: read,
-            more: matches.length > limit,
+            observations: found.slice(0, limit).map(redact),
+            filesRead,
+            more: found.length > limit || filesRead >= MAX_FILES_PER_QUERY,
         };
     }
 
