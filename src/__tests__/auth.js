@@ -138,15 +138,45 @@ describe("reference-instance policy", () => {
     });
 });
 
-describe("protected resource metadata", () => {
-    const { protectedResourceMetadata, protectedResourceMetadataHandler } = require("../auth/metadata");
-    test("publishes the audience and the authorization server for clients to discover", (done) => {
+describe("what a client with no token can find out", () => {
+    const { protectedResourceMetadata, protectedResourceMetadataHandler, baseUrlOf, bearerChallenge, resourceIdentifier } = require("../auth/metadata");
+    const request = { headers: { Host: "api.example.com" }, requestContext: { stage: "dev" } };
+    afterEach(() => { delete process.env.AUTH0_AUDIENCE; delete process.env.AUTH0_DOMAIN; delete process.env.MCP_RESOURCE; });
+
+    test("names the authorization server, and a resource identifier a token can be asked for", (done) => {
         process.env.AUTH0_AUDIENCE = "plastic-io-graph-server"; process.env.AUTH0_DOMAIN = "tenant.example.auth0.com";
-        expect(protectedResourceMetadata()).toMatchObject({ resource: "plastic-io-graph-server", authorization_servers: ["https://tenant.example.auth0.com/"], bearer_methods_supported: ["header"] });
-        protectedResourceMetadataHandler({}, {}, (err, res) => {
+        // A client passes `resource` back as the RFC 8707 resource indicator, so it
+        // has to be a URI; the API's name cannot be one.
+        expect(protectedResourceMetadata(baseUrlOf(request))).toMatchObject({
+            resource: "https://api.example.com/dev/mcp",
+            authorization_servers: ["https://tenant.example.auth0.com/"],
+            bearer_methods_supported: ["header"],
+        });
+        protectedResourceMetadataHandler(request, {}, (err, res) => {
             expect(res.statusCode).toBe(200); expect(res.headers["Access-Control-Allow-Origin"]).toBe("*");
             expect(JSON.parse(res.body).scopes_supported).toContain("graph:commit");
-            delete process.env.AUTH0_AUDIENCE; delete process.env.AUTH0_DOMAIN; done();
+            done();
         });
+    });
+
+    test("uses the identifier the authorization server knows, when it is told one", () => {
+        process.env.AUTH0_AUDIENCE = "plastic-io-graph-server";
+        process.env.MCP_RESOURCE = "https://graphs.example.com/mcp";
+        expect(resourceIdentifier(baseUrlOf(request))).toBe("https://graphs.example.com/mcp");
+    });
+
+    test("an audience that is already a URI is the identifier", () => {
+        process.env.AUTH0_AUDIENCE = "https://graphs.example.com/mcp";
+        expect(resourceIdentifier(baseUrlOf(request))).toBe("https://graphs.example.com/mcp");
+    });
+
+    test("the challenge points at the document, absolutely, because a relative one cannot be fetched", () => {
+        expect(bearerChallenge(baseUrlOf(request)))
+            .toBe('Bearer resource_metadata="https://api.example.com/dev/.well-known/oauth-protected-resource"');
+    });
+
+    test("a Function URL has no stage, and a local server is not https", () => {
+        expect(baseUrlOf({ headers: { host: "abc.lambda-url.us-west-1.on.aws" } })).toBe("https://abc.lambda-url.us-west-1.on.aws");
+        expect(baseUrlOf({ headers: { host: "localhost:3030" } })).toBe("http://localhost:3030");
     });
 });

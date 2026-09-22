@@ -50,6 +50,12 @@ provider:
   environment:
     AUTH0_DOMAIN: ${opt:auth0Domain, 'dev-7q-g69up.us.auth0.com'}
     AUTH0_AUDIENCE: ${opt:auth0Audience, 'plastic-io-graph-server'}
+    # The resource identifier an MCP client asks for a token for (RFC 8707).
+    # It must be a URI and it must be an API identifier the authorization server
+    # knows; tokens for it and for AUTH0_AUDIENCE are both accepted, so one can
+    # be introduced without the other stopping.  Unset, the canonical /mcp URL
+    # is advertised, which only works once an Auth0 API carries that identifier.
+    MCP_RESOURCE: ${opt:mcpResource, ''}
     OWNER_SUBS: ${opt:ownerSubs, ''}
     WS_EXECUTION_ENABLED: ${opt:wsExecution, 'false'}
     API_REGION: ${self:provider.region}
@@ -1077,6 +1083,31 @@ functions:
 
 resources:
   Resources:
+    # What a client with no token is told (RFC 9728).  The authorizer refuses
+    # before any handler runs, so this challenge cannot come from code — an
+    # unauthorized request would otherwise get a bare 401 and an MCP client
+    # would have nothing to discover.  The URL is absolute because a relative
+    # one cannot be fetched.
+    UnauthorizedGatewayResponse:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        ResponseType: UNAUTHORIZED
+        StatusCode: '401'
+        ResponseParameters:
+          gatewayresponse.header.WWW-Authenticate: !Sub "'Bearer resource_metadata=\"https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${self:provider.stage}/.well-known/oauth-protected-resource\"'"
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        ResponseTemplates:
+          application/json: '{"error":"unauthenticated","code":"UNAUTHENTICATED"}'
+    AccessDeniedGatewayResponse:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        ResponseType: ACCESS_DENIED
+        StatusCode: '403'
+        ResponseParameters:
+          gatewayresponse.header.WWW-Authenticate: !Sub "'Bearer resource_metadata=\"https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${self:provider.stage}/.well-known/oauth-protected-resource\"'"
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
     StaticSite:
       Type: AWS::S3::Bucket
       Properties:

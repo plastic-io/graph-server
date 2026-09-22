@@ -1,6 +1,7 @@
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { Principal } from "../auth/principal";
 import { verifyBearer, JwtConfig, configFromEnv } from "../auth/jwt";
+import { baseUrlOf, bearerChallenge, protectedResourceMetadata } from "../auth/metadata";
 import { decide } from "../policy/decide";
 import { buildServer, McpDeps } from "./server";
 import { ChangeFeed, watchesFor, graphOfUri, FeedStore } from "./subscriptions";
@@ -191,6 +192,15 @@ export function makeMcpStreamHandler(deps: McpDeps, options: StreamOptions = {})
             if (method === "OPTIONS") {
                 return finish(204, corsHeaders, "");
             }
+            /**
+             * A client handed *this* endpoint has to be able to discover how to
+             * get a token for it, so the same document the REST API publishes is
+             * served here (RFC 9728).  It is unauthenticated by design.
+             */
+            if (String(http.path || "").indexOf("/.well-known/oauth-protected-resource") !== -1) {
+                return finish(200, { ...corsHeaders, "content-type": "application/json", "cache-control": "public, max-age=300" },
+                    JSON.stringify(protectedResourceMetadata(baseUrlOf(event))));
+            }
             const headers = new Headers();
             Object.keys(event.headers || {}).forEach((k) => {
                 if (event.headers[k] !== undefined && event.headers[k] !== null) {
@@ -208,7 +218,22 @@ export function makeMcpStreamHandler(deps: McpDeps, options: StreamOptions = {})
                 }
             }
             if (!principal) {
-                return finish(401, { ...corsHeaders, "content-type": "application/json", "WWW-Authenticate": 'Bearer resource_metadata="/.well-known/oauth-protected-resource"' }, JSON.stringify({ error: "unauthenticated" }));
+                /**
+                 * Lambda renames `WWW-Authenticate` on a Function URL response
+                 * (it arrives as `x-amzn-Remapped-www-authenticate`), so a
+                 * client looking for the challenge here will not find it.  The
+                 * document it points at is served above, and the REST endpoint —
+                 * which can carry a real challenge — is the one to hand a client
+                 * that has no token yet.
+                 */
+                return finish(401, {
+                    ...corsHeaders,
+                    "content-type": "application/json",
+                    "WWW-Authenticate": bearerChallenge(baseUrlOf(event)),
+                }, JSON.stringify({
+                    error: "unauthenticated",
+                    resource_metadata: `${baseUrlOf(event)}/.well-known/oauth-protected-resource`,
+                }));
             }
             headers.delete("authorization");        // the principal is what matters downstream
             const url = `https://${headers.get("host") || (event.requestContext && event.requestContext.domainName) || "localhost"}${http.path || "/mcp"}`;

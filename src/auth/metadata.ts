@@ -1,7 +1,18 @@
 /**
  * OAuth 2.0 Protected Resource Metadata (RFC 9728), unauthenticated by design: it is how a
  * client learns which audience to request a token for and from which authorization server.
- * The editor reads `resource`; the MCP server (plan §5.0) requires this document.
+ * The editor reads `resource`; an MCP client that arrives with no token reads all of it.
+ *
+ * Two things here are the difference between "an MCP server exists" and "a client can
+ * connect to it without being told anything":
+ *
+ *   - `resource` is a **URI**, because a client passes it back as the RFC 8707 resource
+ *     indicator when it asks for a token.  A bare name cannot be a resource indicator, so
+ *     a client that follows the spec asks for a token for nothing in particular and gets
+ *     one this server will not accept.
+ *   - the 401 that sends a client here must name this document at an **absolute** URL.
+ *     That challenge is emitted by the API Gateway itself (the authorizer refuses before
+ *     any handler runs), so it is configured beside the routes in `serverless.yaml`.
  */
 const AUTHORITIES = [
     "graph:read", "graph:inspect-internals", "graph:inspect-payloads", "graph:observe",
@@ -10,14 +21,46 @@ const AUTHORITIES = [
     "component:publish", "registry:read", "iac:propose", "iac:approve", "iac:read-status", "policy:admin",
 ];
 
-export function protectedResourceMetadata() {
+/** Where this deployment answers, as a client would have to address it. */
+export function baseUrlOf(event: any): string {
+    const headers = event && event.headers ? event.headers : {};
+    const host = headers.Host || headers.host
+        || (event && event.requestContext && (event.requestContext.domainName || (event.requestContext.http && event.requestContext.http.host)))
+        || "localhost";
+    const stage = event && event.requestContext && event.requestContext.stage;
+    const proto = String(host).indexOf("localhost") === 0 ? "http" : "https";
+    // A Function URL has no stage; the REST API carries one in the path.
+    return stage && stage !== "$default" ? `${proto}://${host}/${stage}` : `${proto}://${host}`;
+}
+
+/**
+ * The resource identifier clients ask for a token for.  `MCP_RESOURCE` is what the
+ * authorization server knows this API as; where it is not set the canonical MCP endpoint
+ * is used, which is what the identifier should be.
+ */
+export function resourceIdentifier(baseUrl: string): string {
+    const configured = process.env.MCP_RESOURCE;
+    if (configured) {
+        return configured;
+    }
+    const audience = process.env.AUTH0_AUDIENCE || "";
+    return /^https?:\/\//.test(audience) ? audience : `${baseUrl}/mcp`;
+}
+
+export function protectedResourceMetadata(baseUrl = "") {
+    const resource = resourceIdentifier(baseUrl);
     return {
-        resource: process.env.AUTH0_AUDIENCE || "",
+        resource,
         authorization_servers: process.env.AUTH0_DOMAIN ? [`https://${process.env.AUTH0_DOMAIN}/`] : [],
         bearer_methods_supported: ["header"],
         scopes_supported: AUTHORITIES,
         resource_documentation: "https://github.com/plastic-io/graph-editor/tree/main/docs/polymorphic-application-plan",
     };
+}
+
+/** The challenge a 401 carries, naming this document where a client can fetch it. */
+export function bearerChallenge(baseUrl: string): string {
+    return `Bearer resource_metadata="${baseUrl}/.well-known/oauth-protected-resource"`;
 }
 
 export function protectedResourceMetadataHandler(event: any, context: any, callback: (err: any, response: any) => void) {
@@ -28,6 +71,6 @@ export function protectedResourceMetadataHandler(event: any, context: any, callb
             "Cache-Control": "public, max-age=300",
             "Access-Control-Allow-Origin": "*",
         },
-        body: JSON.stringify(protectedResourceMetadata()),
+        body: JSON.stringify(protectedResourceMetadata(baseUrlOf(event))),
     });
 }

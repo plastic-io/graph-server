@@ -1,5 +1,6 @@
 import { createMcpHandler, isLegacyRequest, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { Principal } from "../auth/principal";
+import { baseUrlOf, bearerChallenge } from "../auth/metadata";
 import { buildServer, McpDeps } from "./server";
 
 /**
@@ -64,7 +65,12 @@ export function makeMcpHandler(deps: McpDeps) {
             }
             const principal: Principal | undefined = event.principal;
             if (!principal) {
-                return callback(null, { statusCode: 401, headers: { ...corsHeaders, "WWW-Authenticate": 'Bearer resource_metadata="/.well-known/oauth-protected-resource"' }, body: JSON.stringify({ error: "unauthenticated" }) });
+                const base = baseUrlOf(event);
+                return callback(null, {
+                    statusCode: 401,
+                    headers: { ...corsHeaders, "WWW-Authenticate": bearerChallenge(base) },
+                    body: JSON.stringify({ error: "unauthenticated", resource_metadata: base + "/.well-known/oauth-protected-resource" }),
+                });
             }
             const ctx = event.requestContext || {};
             const host = (event.headers && (event.headers.Host || event.headers.host)) || ctx.domainName || "localhost";
