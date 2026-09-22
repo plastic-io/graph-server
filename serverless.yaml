@@ -565,6 +565,23 @@ functions:
           cors:
             origin: '*'
 
+  autonomy:
+    handler: src/handler.autonomy
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /policy/autonomy
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors:
+            origin: '*'
+      - http:
+          method: PUT
+          path: /policy/autonomy
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors:
+            origin: '*'
+
   tests:
     handler: src/handler.tests
     timeout: 30

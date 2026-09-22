@@ -17,6 +17,7 @@ import { DeliveryService } from "./runtime/deliveries";
 import { JourneyService } from "./journeys/service";
 import { MigrationService } from "./migrations/backfill";
 import { TestService } from "./tests/runner";
+import { AutonomyStore } from "./policy/autonomy";
 import { fromRuns } from "./gates/gates";
 import { SYSTEM_PRINCIPAL } from "./revisions/service";
 import { validatorFor_ } from "./runtime/contracts";
@@ -59,6 +60,7 @@ export default class EventSourceService {
     journeys: JourneyService;
     migrations: MigrationService;
     tests: TestService;
+    autonomy: AutonomyStore;
     delegations: DelegationStore;
     store: S3Service;
     broadcastService: BroadcastService;
@@ -108,6 +110,7 @@ export default class EventSourceService {
             fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
         });
         // Whether each component still keeps its word (plan §8.1.2).
+        this.autonomy = new AutonomyStore(this.crdtStore.store as any);
         this.tests = new TestService(this.crdtStore.store as any, this.crdtStore, {
             runner: (live) => new ExecutionRunner(this.crdtStore.store as any, { live }),
             validator: validatorFor_,
@@ -121,6 +124,7 @@ export default class EventSourceService {
         this.proposals = new ProposalService(this.crdtStore, this.crdtService.admission, this.revisions, this.summaries, {
             fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
             notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
+            autonomy: this.autonomy,
         });
         this.okResponse = {
             statusCode: 200

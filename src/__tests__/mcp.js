@@ -37,7 +37,9 @@ async function setup() {
     const delegations = new DelegationStore(s3);
     crdt.admission.resolvePrincipal = (p, g) => delegations.resolve(p, g);
     const notified = [];
-    const proposals = new ProposalService(store, crdt.admission, revisions, summaries, { fanOut: (g, u) => crdt.fanOutUpdate(g, u), notify: async (g, e) => notified.push(e) });
+    const { AutonomyStore } = require("../policy/autonomy");
+    const autonomy = new AutonomyStore(s3);
+    const proposals = new ProposalService(store, crdt.admission, revisions, summaries, { fanOut: (g, u) => crdt.fanOutUpdate(g, u), notify: async (g, e) => notified.push(e), autonomy });
     const doc = fromJSON(graphJson());
     await store.appendUpdate("g1", encodeState(doc), "seed", "system");
     await listGraph(tocStore, broadcast, graphJson(), "system");
@@ -68,7 +70,7 @@ async function setup() {
             return { executionId, requested: true, reason };
         },
     });
-    return { s3, store, crdt, revisions, components, summaries, proposals, delegations, journeys, doc, mcp, notified, broadcast, invoked, cancelled };
+    return { s3, store, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, autonomy, doc, mcp, notified, broadcast, invoked, cancelled };
 }
 
 /** a real MCP client whose fetch goes straight into the handler, as the Lambda would */
@@ -328,9 +330,11 @@ describe("MCP over the Lambda handler", () => {
     });
 
     test("an agent the owner trusted with commit may commit what it proposed; one without that grant may not", async () => {
-        const { mcp, delegations, proposals, store } = await setup();
-        // the owner delegates commit for this graph, and only this graph
+        const { mcp, delegations, proposals, autonomy, store } = await setup();
+        // the owner delegates commit for this graph, and says they do not need
+        // to see this work first
         await delegations.put({ agentSub: "agent|a1", graphId: "g1", delegatedBy: "auth0|u1", scopes: ["graph:read", "graph:propose", "graph:commit"], expiresAt: null, createdAt: new Date().toISOString() });
+        await autonomy.put("auth0|u1", owner, { autonomy: "auto", note: "the journeys watch this graph" });
         let client = await connect(mcp, agent);
         const rev = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } })).envelope.resultRevision;
         const created = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.trim();" }], description: "Trim", idempotencyKey: ULID } }));
@@ -342,7 +346,7 @@ describe("MCP over the Lambda handler", () => {
         const stored = await proposals.get("g1", created.result.proposalId);
         expect(stored.decisions.map((d) => [d.by, d.decision])).toEqual([["agent|a1", "commit"]]);
         await client.close();
-        // the same agent without that grant leaves the proposal waiting for a person
+        // the same agent without that grant leaves the proposal waiting for a person, even in auto
         await delegations.put({ agentSub: "agent|a2", graphId: "g1", delegatedBy: "auth0|u1", scopes: ["graph:read", "graph:propose"], expiresAt: null, createdAt: new Date().toISOString() });
         client = await connect(mcp, { ...agent, sub: "agent|a2" });
         const head = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } })).envelope.resultRevision;

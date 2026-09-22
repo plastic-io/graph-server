@@ -116,6 +116,10 @@ function _proposalValidate(event: any, context: any, callback: (err: any, respon
 function _migrations(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.migrations.route(event, context, callback);
 }
+/** How much of an agent's work a person wants to see first (plan §4.4.5). */
+function _autonomy(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.autonomy.route(event, context, callback);
+}
 /** Component tests: whether each part still keeps its word (plan §8.1.2). */
 function _tests(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.tests.listRoute(event, context, callback);
@@ -324,6 +328,7 @@ const publishNodeWs = withPrincipal(broadcastService.store, _publishNodeWs);
 const executionIngest = withPrincipal(broadcastService.store, _executionIngest);
 const executionsList = withPrincipal(broadcastService.store, _executionsList);
 const migrations = withPrincipal(broadcastService.store, _migrations);
+const autonomy = withPrincipal(broadcastService.store, _autonomy);
 const tests = withPrincipal(broadcastService.store, _tests);
 const test = withPrincipal(broadcastService.store, _test);
 const journeys = withPrincipal(broadcastService.store, _journeys);
@@ -415,6 +420,7 @@ export {
     executionIngest,
     executionsList,
     migrations,
+    autonomy,
     tests,
     test,
     journeys,

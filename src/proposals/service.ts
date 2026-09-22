@@ -8,6 +8,7 @@ import { AdmissionService, AdmissionResult, compactDiff, DiffSummaryCompact } fr
 import { RevisionService } from "../revisions/service";
 import { SummaryService, revRef, revId, digestRef } from "../summary/service";
 import CrdtStore from "../crdtStore";
+import { Autonomy, AutonomyStore } from "../policy/autonomy";
 
 /**
  * Proposals (plan §4.7.2, §5.3 proposal.create/validate): an agent's change,
@@ -66,7 +67,12 @@ export class ProposalService {
         readonly admission: AdmissionService,
         readonly revisions: RevisionService,
         readonly summaries: SummaryService,
-        private hooks: { fanOut?: (graphId: string, update: Uint8Array) => Promise<void>; notify?: (graphId: string, event: any) => Promise<void> } = {},
+        private hooks: {
+            fanOut?: (graphId: string, update: Uint8Array) => Promise<void>;
+            notify?: (graphId: string, event: any) => Promise<void>;
+            /** How much a person wants to see before an agent's work takes effect. */
+            autonomy?: AutonomyStore;
+        } = {},
     ) {
         this.store = crdtStore.store as any;
     }
@@ -145,20 +151,37 @@ export class ProposalService {
         return { update: update as Uint8Array, diff: staged.diff, after: staged.after, touched: applied.touched, projection: applied.projection };
     }
 
-    /** What a proposal still needs before it can be committed, given who proposed it. */
-    private decisionsFor(diff: DiffSummary, principal: Principal | undefined): Proposal["requiredDecisions"] {
+    /**
+     * What a proposal still needs before it can be committed.
+     *
+     * Two questions, kept apart: the delegation says what this principal may
+     * do, and the graph's autonomy says whether a person reviews it first.  An
+     * agent with no commit delegation cannot commit in either mode; an agent
+     * with one commits alone where the owner asked for that, and waits for a
+     * person where they did not.
+     */
+    private decisionsFor(diff: DiffSummary, principal: Principal | undefined, autonomy: Autonomy = "supervised"): Proposal["requiredDecisions"] {
         const required = requiredAuthorities(diff);
         const held = (a: Authority) => decide(principal, [a]).allow;
         const out: Proposal["requiredDecisions"] = [];
-        // The graph's owner decides who may commit: an agent commits a proposal
-        // it made only where a human delegated `graph:commit` to it for this
-        // graph, and without that grant a person still has to say yes.  The
-        // delegation is the control, and it is per graph, expiring and
-        // revocable (plan D-18, revisited in M3 at the owner's direction).
-        if (!principal || (principal.kind !== "human" && !held("graph:commit"))) out.push("approve");
+        if (!principal || (principal.kind !== "human" && (autonomy !== "auto" || !held("graph:commit")))) out.push("approve");
         if (required.includes("graph:connect-privileged") && !held("graph:connect-privileged")) out.push("privileged-connect");
         if (required.includes("iac:approve") && !held("iac:approve")) out.push("iac-approve");
         return Array.from(new Set(out));
+    }
+
+    /**
+     * The mode that applies here: what this graph says, else what the person
+     * who delegated to this principal said, else supervised.
+     */
+    private async autonomyFor(graphId: string, principal: Principal | undefined): Promise<Autonomy> {
+        if (!this.hooks.autonomy) {
+            return "supervised";
+        }
+        const graph = await this.crdtStore.projectGraph(graphId).catch(() => null);
+        const delegatedBy = (principal as any) && (principal as any).delegatedBy;
+        const resolved = await this.hooks.autonomy.resolve(graph, delegatedBy || (principal && principal.kind === "human" ? principal.sub : undefined));
+        return resolved.autonomy;
     }
 
     private impactOf(after: any, touched: string[], diff: DiffSummary) {
@@ -196,7 +219,7 @@ export class ProposalService {
             return m;
         }
         const now = new Date();
-        const requiredDecisions = this.decisionsFor(m.diff, principal);
+        const requiredDecisions = this.decisionsFor(m.diff, principal, await this.autonomyFor(graphId, principal));
         const proposal: Proposal = {
             proposalId: ulid(),
             graphId,
@@ -277,7 +300,7 @@ export class ProposalService {
         proposal.diffSummary = compactDiff(m.diff);
         proposal.validation = { ok: true, errors: [] };
         proposal.impact = this.impactOf(m.after, m.touched, m.diff);
-        proposal.requiredDecisions = this.decisionsFor(m.diff, proposer);
+        proposal.requiredDecisions = this.decisionsFor(m.diff, proposer, await this.autonomyFor(graphId, proposer));
         proposal.state = proposal.requiredDecisions.length ? "awaiting-review" : "validated";
         proposal.updatedAt = new Date().toISOString();
         await this.putJson(ProposalService.key(graphId, proposalId), proposal);
