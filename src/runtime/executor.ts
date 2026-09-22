@@ -179,6 +179,17 @@ export class ExecutionRunner {
         const recorder = new ObservationRecorder({ graphId: graph.id, revisionId, executionId, correlationId: req.correlationId, owner, defaultCapture: req.defaultCapture, maxObservations: req.maxObservations, live: this.deps.live });
         recorder.learn(graph);
         flattened.warnings.forEach((warning: any) => {
+            /**
+             * A graph that contains itself is not an unresolved component: it is
+             * a call, and the scheduler makes one of it when a value arrives.
+             * Recording it as `component.unresolved` — which means "nothing here
+             * will run" — put an error on every healthy recursion.  If the call
+             * cannot load when it is made, the loader records that, then, with
+             * the path it asked for.
+             */
+            if (warning.code === "LINKED_GRAPH_CYCLE") {
+                return;
+            }
             recorder.record({ kind: "component.unresolved", nodeId: warning.nodeId, payload: { message: warning.message, code: warning.code, graphId: warning.graphId, path: warning.path } });
         });
         const kvKey = (key: string) => `kv/${req.kvPrefix ? `${req.kvPrefix}/` : ""}${key}.json`;
