@@ -34,13 +34,6 @@ module.exports = {
       {
         test: /\.ts(x?)$/,
         loader: 'ts-loader',
-        options: {
-          // The shared CRDT package is linked in from the editor repository as
-          // TypeScript source, and it lives under node_modules, which ts-loader
-          // skips by default.  Without this it emits nothing for those files
-          // and the bundle is silently missing them.
-          allowTsInNodeModules: true,
-        },
       },
     ],
   },

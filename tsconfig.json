@@ -14,11 +14,10 @@
       "esnext.asynciterable"
     ]
   },
-  // The shared CRDT package is linked in as TypeScript source under
-  // node_modules, so it has to be named here or it falls outside the program
-  // and ts-loader produces no output for it.
+  // The shared CRDT package ships compiled JavaScript and its own types now
+  // (PB-120), so it is an ordinary dependency rather than sources this project
+  // has to compile for it.
   "include": [
-    "src/**/*.ts",
-    "node_modules/@plastic-io/graph-crdt/*.ts"
+    "src/**/*.ts"
   ]
 }

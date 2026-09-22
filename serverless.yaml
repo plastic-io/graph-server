@@ -508,6 +508,25 @@ functions:
           cors:
             origin: '*'
 
+  # Who carries this component, and what publishing a version would mean for
+  # them (PB-044).  A literal segment beats the {version} parameter below, so
+  # /components/{id}/consumers reaches this rather than asking for a version
+  # called "consumers".
+  componentConsumers:
+    handler: src/handler.componentConsumers
+    timeout: 60
+    events:
+      - http:
+          method: GET
+          path: /components/{id}/consumers
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
   componentGet:
     handler: src/handler.componentGet
     timeout: 60

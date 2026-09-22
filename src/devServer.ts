@@ -438,6 +438,13 @@ const server = http.createServer(async (request, response) => {
     if (parts[0] === "components" && parts.length === 2) {
       return eventSourceService.components.listRoute({ pathParameters: { id: parts[1] } }, {}, send);
     }
+    if (parts[0] === "components" && parts[2] === "consumers") {
+      return eventSourceService.consumers.route({
+        pathParameters: { id: parts[1] },
+        queryStringParameters: searchParamsToObject(url.searchParams),
+        principal: DEV_PRINCIPAL,
+      }, {}, send);
+    }
     if (parts[0] === "components" && parts.length === 3) {
       return eventSourceService.components.getRoute({ pathParameters: { id: parts[1], version: parts[2] } }, {}, send);
     }

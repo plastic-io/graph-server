@@ -19,6 +19,8 @@ const eventSourceService = new EventSourceService();
 const crdtService = new CrdtService();
 // the CRDT service the revision routes use shares its admission gate with the event source service's integrity hook
 crdtService.admission.integrity = (after, diff) => eventSourceService.components.integrityCheck(after, diff);
+// who uses which published component, kept as changes are accepted (PB-044)
+crdtService.admission.admitted = async (after: any) => { await eventSourceService.consumers.record(after); };
 const revisionService = new RevisionService(crdtService.store, crdtService.admission, {
     fanOut: (graphId, update) => crdtService.fanOutUpdate(graphId, update),
     notify: (graphId, event) => crdtService.notifyGraph(graphId, event),
@@ -353,6 +355,9 @@ function _getArtifact(event: any, context: any, callback: (err: any, response: a
 function _publish(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.components.publishRoute(event, context, callback);
 }
+function _componentConsumers(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.consumers.route(event, context, callback);
+}
 function _componentsList(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.components.listRoute(event, context, callback);
 }
@@ -437,6 +442,7 @@ const delegationsList = withPrincipal(broadcastService.store, _delegationsList);
 const delegationPut = withPrincipal(broadcastService.store, _delegationPut);
 const delegationDelete = withPrincipal(broadcastService.store, _delegationDelete);
 const componentsList = withPrincipal(broadcastService.store, _componentsList);
+const componentConsumers = withPrincipal(broadcastService.store, _componentConsumers);
 const componentGet = withPrincipal(broadcastService.store, _componentGet);
 const crdtSync = withPrincipal(broadcastService.store, _crdtSync);
 const crdtState = withPrincipal(broadcastService.store, _crdtState);
@@ -488,6 +494,7 @@ export {
     delegationPut,
     delegationDelete,
     componentsList,
+    componentConsumers,
     componentGet,
     publishGraphWs,
     publishNodeWs,

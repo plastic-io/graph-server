@@ -10,6 +10,7 @@ import CrdtStore from "./crdtStore";
 import TocStore from "./tocStore";
 import { RevisionService } from "./revisions/service";
 import { ComponentService } from "./components/service";
+import { ConsumerIndex } from "./components/consumers";
 import { SummaryService } from "./summary/service";
 import { ProposalService } from "./proposals/service";
 import { SimulationService } from "./proposals/simulate";
@@ -74,6 +75,7 @@ async function dispatchTask(task: TaskRecord): Promise<void> {
 export default class EventSourceService {
     revisions: RevisionService;
     components: ComponentService;
+    consumers: ConsumerIndex;
     summaries: SummaryService;
     proposals: ProposalService;
     simulations: SimulationService;
@@ -112,6 +114,13 @@ export default class EventSourceService {
             notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
         });
         this.crdtService.admission.integrity = (after, diff) => this.components.integrityCheck(after, diff);
+        // Who uses which published component, kept as a change is accepted
+        // rather than worked out by reading every graph when someone asks
+        // (PB-044).
+        // the store the CRDT store resolved, not the argument: the Lambda passes
+        // none and lets it make its own, which is the trap the note above warns of
+        this.consumers = new ConsumerIndex((this.crdtStore as any).store);
+        this.crdtService.admission.admitted = async (after: any) => { await this.consumers.record(after); };
         /**
          * What the gates ask of a version before it may be published or run
          * (plan §8.1.8): every test of this graph, against that version rather

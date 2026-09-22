@@ -99,6 +99,13 @@ export class AdmissionService {
     readonly rate: RateLimiter;
     /** Set by the component service once it exists; absent in stand-alone use. */
     integrity: IntegrityCheck | null;
+    /**
+     * What to do with a graph once a change to it has been **accepted**.
+     * Derived data lives here — the consumers index (PB-044) — and it is
+     * deliberately not a gate: an index that can refuse an edit is a worse
+     * index than a stale one, and it can be rebuilt from the projections.
+     */
+    admitted: ((after: any, diff: DiffSummary) => Promise<void>) | null;
     /** Resolves an agent's delegated scopes for a graph before policy runs (policy/delegation.ts). */
     resolvePrincipal: ((principal: Principal | undefined, graphId: string) => Promise<Principal | undefined>) | null;
     constructor(crdtStore: any, store?: Store, options: { rate?: RateLimiter; integrity?: IntegrityCheck } = {}) {
@@ -107,6 +114,7 @@ export class AdmissionService {
         this.chain = new AuditChain(this.store);
         this.rate = options.rate || new RateLimiter();
         this.integrity = options.integrity || null;
+        this.admitted = null;
         this.resolvePrincipal = null;
     }
 
@@ -255,6 +263,16 @@ export class AdmissionService {
         // 6. append the exact bytes that were staged
         const updateId = await this.crdtStore.appendUpdate(req.graphId, req.content, req.description, req.principal ? req.principal.sub : "Unknown");
         const result: AdmissionResult = { ...base, decision: "accepted", updateId, policyVersion: decision.policyVersion, diffSummary, headStateVector, ...(warnings ? { warnings } : {}) };
+
+        // 6b. what follows from the change now that it is the graph's: nothing
+        // here may fail the mutation, which has already happened.
+        if (this.admitted) {
+            try {
+                await this.admitted(staged.after, staged.diff);
+            } catch (err) {
+                console.error("Cannot follow up an accepted change", err);
+            }
+        }
 
         // 7. record + audit
         try {
