@@ -40,6 +40,8 @@ export interface McpDeps {
     cancel?: (graphId: string, principal: Principal | undefined, executionId: string, reason: string) => Promise<any>;
     /** Work that outlives one call (plan §5.0, PB-084). */
     tasks?: TaskService;
+    /** What a proposal would do, before anyone lives with it (plan §4.7.5). */
+    simulations?: { run(graphId: string, proposalId: string, principal: Principal | undefined, options: any): Promise<any> };
     rate?: { reads: RateLimiter; writes: RateLimiter };
 }
 
@@ -428,6 +430,30 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
         }
         return ok(principal, taskAnswer(task), { graphId });
     };
+
+    server.registerTool("proposal.simulate", {
+        title: "What would this proposal do",
+        description: "Ask what a proposal changes and, with mode 'shadow', what it would have done to the work this graph has already handled: the proposed graph is run against the inputs of recent executions with every effect refused, and what it produced is compared with what actually happened. Answers with a task. Nothing is ever performed; effects that nothing can stand in for are listed rather than guessed at.",
+        inputSchema: z.object({
+            schemaVersion: z.literal(1), graphId: ID, proposalId: z.string().min(1).max(64),
+            mode: z.enum(["structural", "shadow", "replay"]).optional(),
+            executionSample: z.object({ sinceMinutes: z.number().int().min(1).max(1440).optional(), max: z.number().int().min(1).max(50).optional() }).strict().optional(),
+            budget: z.object({ wallMs: z.number().int().min(100).max(60000).optional(), hops: z.number().int().min(1).max(100000).optional() }).strict().optional(),
+            async: z.boolean().optional(),
+        }).strict(),
+        annotations: { readOnlyHint: true },
+    }, guarded("proposal.simulate", "read", (a) => a.graphId, ["graph:simulate"], async (args, principal) => {
+        if (!deps.simulations) return fail("INTERNAL", "this server cannot simulate proposals");
+        const input = { proposalId: args.proposalId, mode: args.mode, executionSample: args.executionSample, budget: args.budget };
+        // Shadow runs take as long as the work they are re-running, so unless
+        // the caller insists on waiting, the answer is something to poll.
+        if (args.async !== false && (args.mode === "shadow" || args.mode === "replay") && deps.tasks) {
+            return startTask("proposal.simulate", args.graphId, principal, input);
+        }
+        const r: any = await deps.simulations.run(args.graphId, args.proposalId, principal, input);
+        if (r.error) return fail(r.code, r.error, retryFor(r.code));
+        return ok(principal, r, { graphId: args.graphId });
+    }));
 
     server.registerTool("tasks.get", {
         title: "How is that work going",

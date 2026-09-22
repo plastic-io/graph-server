@@ -10,6 +10,7 @@ const { ProposalService } = require("../proposals/service");
 const { DelegationStore } = require("../policy/delegation");
 const { makeMcpHandler } = require("../mcp/handler");
 const { TaskService } = require("../mcp/tasks");
+const { SimulationService } = require("../proposals/simulate");
 const { Client } = require("@modelcontextprotocol/client");
 const { StreamableHTTPClientTransport } = require("@modelcontextprotocol/client");
 const { listGraph } = require("../tocService");
@@ -57,8 +58,12 @@ async function setup() {
     // when the test decides to, so a task can be watched half way through.
     const dispatched = [];
     const tasks = new TaskService(s3, { dispatch: async (task) => { dispatched.push(task.taskId); } });
+    const simulations = new SimulationService(s3, store, {
+        proposals: { get: (g, p) => proposals.get(g, p), projection: (g, p) => proposals.projection(g, p) },
+        runner: (live) => new ExecutionRunner(s3, { live }),
+    });
     const mcp = makeMcpHandler({
-        crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys, tests, tasks,
+        crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys, tests, tasks, simulations, simulations,
         // the brake is tested in its own suite; here it would only stop the test
         rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: 1000 }) },
         invoke: async (graphId, principal, request) => {
@@ -75,7 +80,7 @@ async function setup() {
             return { executionId, requested: true, reason };
         },
     });
-    return { s3, store, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled };
+    return { s3, store, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, simulations, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled };
 }
 
 /** a real MCP client whose fetch goes straight into the handler, as the Lambda would */
@@ -98,7 +103,7 @@ describe("MCP over the Lambda handler", () => {
         const tools = (await client.listTools()).tools.map((t) => t.name).sort();
         expect(tools).toEqual([
             "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
-            "journey.run", "observations.query", "proposal.commit", "proposal.create", "proposal.decide", "proposal.validate",
+            "journey.run", "observations.query", "proposal.commit", "proposal.create", "proposal.decide", "proposal.simulate", "proposal.validate",
             "revision.activate", "revision.cut", "revision.rollback", "tasks.cancel", "tasks.get", "tasks.list", "tests.run",
         ]);
         const r = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
@@ -500,5 +505,48 @@ describe("work that outlives one call", () => {
         const answer = await client.callTool({ name: "tests.run", arguments: { schemaVersion: 1, graphId: "g1", async: true } });
         expect(answer.isError).toBe(true);
         expect(parse(answer).error.message).toContain("background");
+    });
+});
+
+/**
+ * What a proposal would do, over the protocol (plan §4.7.5).  A review needs
+ * to know what a change touches and, where it can be shown, what it would have
+ * done to work this graph has already handled.
+ */
+describe("asking what a proposal would do", () => {
+    test("structural comes back at once; a shadow run is a task", async () => {
+        const { mcp, tasks } = await setup();
+        const client = await connect(mcp, owner);
+        const summary = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
+        const created = parse(await client.callTool({ name: "proposal.create", arguments: {
+            schemaVersion: 1, graphId: "g1", baseRevision: summary.envelope.resultRevision,
+            ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.trim();" }],
+            description: "Trim only whitespace", idempotencyKey: "01J8ZK5K0B1C2D3E4F5G6H7J8B",
+        } }));
+        const proposalId = created.result.proposalId;
+
+        const structural = parse(await client.callTool({ name: "proposal.simulate", arguments: { schemaVersion: 1, graphId: "g1", proposalId } }));
+        expect(structural.result).toMatchObject({ mode: "structural", required: true, namespaces: ["code"], verdict: "unproven" });
+
+        const shadow = parse(await client.callTool({ name: "proposal.simulate", arguments: { schemaVersion: 1, graphId: "g1", proposalId, mode: "shadow" } }));
+        expect(shadow.result).toMatchObject({ resultType: "task", task: { kind: "proposal.simulate", status: "working" } });
+        // and the work, when it runs, answers with a simulation
+        const done = await tasks.work(shadow.result.task.taskId, async (task) => ({ proposalId: task.input.proposalId, mode: "shadow", verdict: "unproven" }));
+        expect(done.status).toBe("completed");
+        expect(done.result.proposalId).toBe(proposalId);
+    });
+
+    test("a replay says why it cannot be given, rather than guessing", async () => {
+        const { mcp } = await setup();
+        const client = await connect(mcp, owner);
+        const summary = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
+        const created = parse(await client.callTool({ name: "proposal.create", arguments: {
+            schemaVersion: 1, graphId: "g1", baseRevision: summary.envelope.resultRevision,
+            ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.trim();" }],
+            description: "Trim only whitespace", idempotencyKey: "01J8ZK5K0B1C2D3E4F5G6H7J8C",
+        } }));
+        const answer = await client.callTool({ name: "proposal.simulate", arguments: { schemaVersion: 1, graphId: "g1", proposalId: created.result.proposalId, mode: "replay", async: false } });
+        expect(answer.isError).toBe(true);
+        expect(parse(answer).error.code).toBe("UNSUPPORTED");
     });
 });

@@ -95,6 +95,7 @@ const mcp = makeMcpHandler({
     summaries: eventSourceService.summaries,
     delegations: eventSourceService.delegations,
     tasks: eventSourceService.tasks,
+    simulations: eventSourceService.simulations,
 });
 const corsJson = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": true };
 function _mcp(event: any, context: any, callback: (err: any, response: any) => void) {
@@ -192,6 +193,11 @@ async function runTask(task: any, cancelled: () => Promise<boolean>): Promise<an
     if (task.kind === "graph.invoke") {
         const answer: any = await invokeForAgent(task.graphId, principal, task.input || {});
         return answer && answer.error ? answer : answer.summary;
+    }
+    if (task.kind === "proposal.simulate") {
+        return await eventSourceService.simulations.run(task.graphId, task.input.proposalId, principal, {
+            mode: task.input.mode, executionSample: task.input.executionSample, budget: task.input.budget,
+        });
     }
     if (task.kind === "journey.run") {
         return await eventSourceService.journeys.run(task.graphId, task.input.journeyId, "request", principal);

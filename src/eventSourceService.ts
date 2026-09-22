@@ -12,6 +12,7 @@ import { RevisionService } from "./revisions/service";
 import { ComponentService } from "./components/service";
 import { SummaryService } from "./summary/service";
 import { ProposalService } from "./proposals/service";
+import { SimulationService } from "./proposals/simulate";
 import { ExecutionIngest } from "./runtime/ingest";
 import { DeliveryService } from "./runtime/deliveries";
 import { ParkingService } from "./runtime/parking";
@@ -75,6 +76,7 @@ export default class EventSourceService {
     components: ComponentService;
     summaries: SummaryService;
     proposals: ProposalService;
+    simulations: SimulationService;
     executions: ExecutionIngest;
     deliveries: DeliveryService;
     parking: ParkingService;
@@ -163,6 +165,14 @@ export default class EventSourceService {
             fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
             notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
             autonomy: this.autonomy,
+        });
+        // What a proposal would do, before anyone lives with it (plan §4.7.5).
+        this.simulations = new SimulationService(this.crdtStore.store as any, this.crdtStore, {
+            proposals: {
+                get: (graphId, proposalId) => this.proposals.get(graphId, proposalId) as any,
+                projection: (graphId, proposalId) => this.proposals.projection(graphId, proposalId),
+            },
+            runner: (live) => new ExecutionRunner(this.crdtStore.store as any, { live }),
         });
         this.okResponse = {
             statusCode: 200
