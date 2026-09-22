@@ -177,3 +177,47 @@ describe("a browser-owned execution reaching a server node", () => {
         expect(r.outputs).toEqual([]);
     });
 });
+
+/**
+ * A graph that contains itself (plastic-io 2.3).  Flattening cannot make this
+ * — there is no flat set of nodes for an unbounded recursion — so it is left
+ * for the scheduler, which makes a call of it when a value arrives: one
+ * instance per turn, each with its own state.
+ */
+describe("a graph that contains itself", () => {
+    const recursive = () => {
+        const g = graphOf([
+            node("step", "state.trace = state.trace || []; state.trace.push({n: value.n, depth: instance ? instance.depth : 0}); if (value.n > 0) { edges.out = {n: value.n - 1}; }"),
+            node("self", ""),
+        ], [["step", "self"]]);
+        g.nodes[1].linkedGraph = {
+            id: "g1", version: 0, loaded: false, graph: g, data: {}, properties: {},
+            fields: { inputs: { in: { id: "step", field: "in" } }, outputs: {} },
+        };
+        return g;
+    };
+
+    test("runs one level at a time, each knowing which turn it is", async () => {
+        const s3 = new FakeS3Service();
+        const runner = new ExecutionRunner(s3);
+        const state = {};
+        const summary = await runner.run({ graph: recursive(), nodeUrl: "step", field: "in", value: { n: 3 }, principal: owner, state });
+        expect(summary.state).toBe("completed");
+        expect(state.trace.map((t) => t.n)).toEqual([3, 2, 1, 0]);
+        expect(state.trace.map((t) => t.depth)).toEqual([0, 1, 2, 3]);
+    });
+
+    test("a recursion that does not stop itself is stopped, and the execution says so", async () => {
+        const s3 = new FakeS3Service();
+        const runner = new ExecutionRunner(s3);
+        const g = recursive();
+        g.nodes[0].template.set = "edges.out = {n: value.n + 1};";       // no base case
+        g.properties.linkedGraphDepth = 4;
+        const summary = await runner.run({ graph: g, nodeUrl: "step", field: "in", value: { n: 0 }, principal: owner });
+        const observations = await readObservations(s3, readJson(s3, `executions/${summary.executionId}.json`));
+        const stopped = observations.find((o) => o.kind === "exec.error" && /Linked graphs went/.test((o.payload || {}).message || ""));
+        expect(stopped).toBeTruthy();
+        expect(stopped.payload.message).toContain("limit 4");
+        expect(summary.errors).toBeGreaterThan(0);
+    });
+});

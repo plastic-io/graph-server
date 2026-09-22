@@ -139,6 +139,10 @@ export class ExecutionRunner {
          * that will not load — is observed rather than guessed at.
          */
         const flattened = await flattenLinkedGraphs(req.graph, {
+            // What flattening cannot resolve — a graph that contains itself —
+            // is left for the scheduler, which makes a call of it when a value
+            // arrives, one instance per turn (plastic-io 2.3).
+            leaveForRuntime: true,
             resolve: async (node: any) => {
                 const linked = node && node.linkedGraph;
                 if (!linked) {
@@ -223,7 +227,9 @@ export class ExecutionRunner {
                 field: nodeInterface.field,
                 value: wire.value,
                 seq: deliverySeq,
-                instancePath: [],
+                // Which use of a linked graph this hop belongs to, so the
+                // browser answering it knows which call it is answering.
+                instancePath: (nodeInterface.instance && nodeInterface.instance.path) || [],
                 target: deliveryTarget(node),
                 budgetSlice: { wallMs: (req.budget && req.budget.wallMs) || 30000 },
                 initiator: req.initiator,
@@ -232,6 +238,7 @@ export class ExecutionRunner {
                 kind: "route",
                 nodeId: node.id,
                 edgeField: nodeInterface.field,
+                instancePath: delivery.instancePath,
                 payload: { deferred: "browser", target: delivery.target, seq: delivery.seq, bytes: wire.bytes },
             });
             if (req.deliver) {
@@ -252,8 +259,30 @@ export class ExecutionRunner {
             return asked === "isolate" ? "isolate" : "worker";
         };
         const limits = req.isolateLimits || { timeoutMs: 10000, memoryMb: 128 };
+        /**
+         * Where a node inside a linked graph runs.  The instance is a call, so
+         * the graph it came from is not in the flat set any more: the node's
+         * own answer wins, and where it has none it takes the placement of the
+         * host it was called through (plan §4.8.1 — an instance may narrow
+         * placement, never widen it).
+         */
+        const placementWithin = (node: any, instance: any): any => {
+            if (!instance || !instance.path || !instance.path.length) {
+                return node;
+            }
+            if (node && node.properties && node.properties.placement) {
+                return node;
+            }
+            const hostId = instance.path[instance.path.length - 1];
+            const host = (graph.nodes || []).find((n: any) => n.id === hostId || (n.id || "").endsWith(`/${hostId}`));
+            const placement = host && host.properties && host.properties.placement;
+            if (!placement || placement === "portable") {
+                return node;
+            }
+            return { ...node, properties: { ...(node.properties || {}), placement } };
+        };
         const executeNode = async ({ code, nodeInterface, execution, runInProcess }: any) => {
-            const node = nodeInterface.node;
+            const node = placementWithin(nodeInterface.node, nodeInterface.instance);
             if (!runsHere(node, "server")) {
                 return deliverToBrowser(nodeInterface, execution);
             }
@@ -342,6 +371,13 @@ export class ExecutionRunner {
             onInput: hooks.onInput,
             onOutput,
             contractMode: (graph.properties && graph.properties.contractMode === "reject") ? "reject" : "warn",
+            /**
+             * How deep a graph that contains itself may go before the
+             * scheduler calls it a runaway.  When it stops is the graph's
+             * business; this is the ceiling for one that does not, and it
+             * fails naming the path it took.
+             */
+            linkedGraphDepth: (graph.properties && (graph.properties as any).linkedGraphDepth) || 24,
         } as any);
         recorder.attach(scheduler);
         /**
