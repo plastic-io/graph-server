@@ -130,13 +130,33 @@ export class ParkingService {
         const deliveries: ParkedDelivery[] = [];
         for (const objectKey of keys.slice(0, Math.min(500, options.limit || 200))) {
             const record: ParkedDelivery = await this.getJson(objectKey);
-            if (!record || record.state !== "pending") {
+            if (!record || record.state === "expired") {
                 continue;
             }
             if (new Date(record.expiresAt).getTime() <= now) {
                 continue;                                   // the sweep will say so; it is not this session's to run
             }
-            if (options.session && !shouldRunDelivery(record.delivery || {}, options.session)) {
+            if (!options.session) {
+                // Nobody in particular is asking: this is "what is still
+                // waiting for a browser", so a hop somebody has taken is not.
+                if (record.state !== "pending") {
+                    continue;
+                }
+                deliveries.push(record);
+                continue;
+            }
+            if (!shouldRunDelivery(record.delivery || {}, options.session)) {
+                continue;
+            }
+            if ((record.runs || []).some((run) => run.session === options.session)) {
+                continue;                                   // this session has already run it
+            }
+            /**
+             * A node that only draws is drawn by every viewer, so one viewer
+             * taking it does not take it from the others; a node that acts
+             * happens once, so a claim ends it (plan §4.8.2).
+             */
+            if (record.delivery && record.delivery.target === "initiator" && record.state === "claimed") {
                 continue;
             }
             deliveries.push(record);

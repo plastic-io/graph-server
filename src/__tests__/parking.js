@@ -270,3 +270,30 @@ describe("asking what crossed a connector", () => {
         expect((await ingest.query("g1", { ...agent, scopes: ["graph:read"] }, {})).code).toBe("ADMISSION_DENIED");
     });
 });
+
+/**
+ * Who is still owed a hop (plan §4.8.2).  A node that only draws is drawn by
+ * every viewer, so one viewer taking it does not take it from the others; a
+ * node that acts happens once.  Found by the two-browser suite.
+ */
+describe("what a viewer is still owed", () => {
+    test("a node every viewer draws is offered to a second viewer after the first has run it", async () => {
+        const ctx = make();
+        await ctx.parking.park("g1", delivery());
+        await ctx.parking.claim("g1", owner, { executionId: EXECUTION, key: "render-1", session: "session-a" });
+        expect((await ctx.parking.pending("g1", owner, { session: "session-b" })).parked).toBe(1);
+        // but not to the one that has already run it
+        expect((await ctx.parking.pending("g1", owner, { session: "session-a" })).parked).toBe(0);
+        // and "is anything still waiting for a browser" is answered by the claim
+        expect((await ctx.parking.pending("g1", owner)).parked).toBe(0);
+    });
+
+    test("a node that acts is offered to nobody once it has been taken", async () => {
+        const ctx = make();
+        await ctx.parking.park("g1", delivery({ nodeId: "charge", seq: 2, target: "initiator", initiator: "session-a" }));
+        expect((await ctx.parking.pending("g1", owner, { session: "session-a" })).parked).toBe(1);
+        await ctx.parking.claim("g1", owner, { executionId: EXECUTION, key: "charge-2", session: "session-a" });
+        expect((await ctx.parking.pending("g1", owner, { session: "session-a" })).parked).toBe(0);
+        expect((await ctx.parking.pending("g1", owner, { session: "session-b" })).parked).toBe(0);
+    });
+});

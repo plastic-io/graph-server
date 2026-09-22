@@ -205,6 +205,13 @@ const server = http.createServer(async (request, response) => {
       response.writeHead(200, { "Content-Type": "application/json", ...CORS });
       return response.end(JSON.stringify([...store.objects.keys()], null, 1));
     }
+    if (path === "debug/object") {
+      // One object, for a test or a person asking what the store actually holds.
+      const key = url.searchParams.get("key") || "";
+      const body = store.objects.get(key);
+      response.writeHead(body ? 200 : 404, { "Content-Type": "application/json", ...CORS });
+      return response.end(body ? body.toString() : "{}");
+    }
     if (path === "debug/park" && request.method === "POST") {
       // Staging a hop handed to the browsers, without a server-owned
       // execution to produce one: what the deployed server does inside
