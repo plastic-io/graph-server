@@ -81,22 +81,37 @@ describe("a linked graph", () => {
         const s3 = new FakeS3Service();
         const runner = new ExecutionRunner(s3);
         const delivered = [];
+        // one way in to each inner node, so both are reachable from outside
         const inner = {
             id: "inner-1", url: "inner-1", version: 1, properties: { name: "inner" },
-            nodes: [node("innerA", "state.innerRan = true; edges.out = value;"), serverNode("innerB", "state.innerBRan = true;")],
+            nodes: [node("innerA", "state.innerRan = true;"), serverNode("innerB", "state.innerBRan = true; edges.out = value;"), serverNode("innerC", "state.innerCRan = true;")],
         };
-        inner.nodes[0].edges[0].connectors.push({ id: "ic1", nodeId: "innerB", field: "in", graphId: "inner-1", version: 1 });
-        const carrier = browserNode("carrier", "edges.out = value;");
-        carrier.linkedGraph = { id: "inner-1", version: 1, graph: inner, data: {}, properties: {}, fields: { inputs: { in: { id: "innerA", field: "in" } }, outputs: {} } };
-        const g = graphOf([node("entry", "edges.out = value;"), carrier], [["entry", "carrier"]]);
+        // a connector inside the subgraph, which used to send the scheduler off
+        // to load that graph by name
+        inner.nodes[1].edges[0].connectors.push({ id: "ic1", nodeId: "innerC", field: "in", graphId: "inner-1", version: 1 });
+        const carrier = browserNode("carrier", "edges.out = value;", { fields: ["toA", "toB"] });
+        carrier.linkedGraph = {
+            id: "inner-1", version: 1, graph: inner, data: {}, properties: {},
+            fields: { inputs: { toA: { id: "innerA", field: "in" }, toB: { id: "innerB", field: "in" } }, outputs: {} },
+        };
+        const g = graphOf([node("entry", "edges.out = value;", { fields: ["toA", "toB"] }), carrier],
+            [["entry", "carrier", "toA"], ["entry", "carrier", "toB"]]);
+        g.nodes[0].edges[1] = { field: "toB", connectors: [{ id: "c2", nodeId: "carrier", field: "toB", graphId: "g1", version: 0 }] };
+        g.nodes[0].template.set = "edges.toA = value; edges.toB = value;";
         const state = {};
         const summary = await runner.run({ graph: g, nodeUrl: "entry", value: 1, principal: owner, state, deliver: (d) => delivered.push(d) });
         expect(summary.state).toBe("completed");
+        // A node inside a linked graph is named by the host it came through, so
+        // two uses of one subgraph are two sets of nodes (plan §4.2, PB-046).
+        expect(delivered.map((d) => d.nodeId)).toEqual(["carrier/innerA"]);
         // the carrier is placed in the browser, so its inner node went there too
         expect(state.innerRan).toBeUndefined();
-        expect(delivered.map((d) => d.nodeId)).toEqual(["innerA"]);
-        // and an inner node that says "server" is still the server's to run
-        expect(inner.nodes[0].properties.placement).toBe("browser");
+        // and an inner node that says "server" is still the server's to run,
+        // as is what it routes to inside the same subgraph
+        expect(state.innerBRan).toBe(true);
+        expect(state.innerCRan).toBe(true);
+        // the graph the caller passed in is not touched by any of this
+        expect(inner.nodes[0].properties.placement).toBeUndefined();
         expect(inner.nodes[1].properties.placement).toBe("server");
     });
 });

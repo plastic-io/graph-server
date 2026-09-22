@@ -6,7 +6,7 @@ import { effectiveCapabilities, parseCapabilities } from "./capabilities";
 import { makeContractHooks } from "./contracts";
 import { AuditChain } from "../audit/chain";
 import { runInIsolate, isolationAvailable, isolationLoadError } from "./isolate";
-import { placementOf, runsHere, deliveryTarget, wireValue, EdgeDelivery } from "@plastic-io/graph-crdt";
+import { placementOf, runsHere, deliveryTarget, wireValue, EdgeDelivery, flattenLinkedGraphs } from "@plastic-io/graph-crdt";
 
 /**
  * Runs one execution on the server (plan §4.6, §4.5): scheduler 2.1 with a
@@ -127,13 +127,56 @@ export class ExecutionRunner {
     static byGraphKey(graphId: string, executionId: string) { return `executions/by-graph/${graphId}/${executionId}.json`; }
 
     async run(req: RunRequest): Promise<ExecutionSummary> {
-        const graph = req.graph;
         const executionId = req.executionId || ulid();
         const revisionId = req.revisionId || "live";
         const owner = req.principal || { sub: "anonymous", kind: "human", tenant: "none" };
         const startedAt = Date.now();
+        /**
+         * A node that carries another graph becomes that graph's nodes before
+         * anything runs (plan §4.2, PB-046).  The rules are the shared ones, so
+         * the arrangement a person drew in the editor is the arrangement that
+         * runs here; what cannot be flattened — a graph containing itself, one
+         * that will not load — is observed rather than guessed at.
+         */
+        const flattened = await flattenLinkedGraphs(req.graph, {
+            resolve: async (node: any) => {
+                const linked = node && node.linkedGraph;
+                if (!linked) {
+                    return null;
+                }
+                let inner = linked.graph;
+                if (!inner && linked.id && req.resolve) {
+                    const version = linked.version === undefined ? node.version : linked.version;
+                    inner = await req.resolve(`artifacts/graph/${linked.id}.${version}`);
+                }
+                if (!inner) {
+                    return null;
+                }
+                /**
+                 * A linked graph is part of the node that carries it, so where
+                 * that node runs is where its inner nodes run too (plan §4.8.1:
+                 * an instance may narrow placement, never widen it).  An inner
+                 * node that says nothing inherits; one with an answer of its
+                 * own keeps it and is handed back across the boundary.
+                 */
+                const placement = node.properties && node.properties.placement;
+                if (placement && placement !== "portable") {
+                    inner = {
+                        ...inner,
+                        nodes: (inner.nodes || []).map((n: any) => (n.properties && n.properties.placement
+                            ? n
+                            : { ...n, properties: { ...(n.properties || {}), placement } })),
+                    };
+                }
+                return inner;
+            },
+        });
+        const graph = flattened.graph;
         const recorder = new ObservationRecorder({ graphId: graph.id, revisionId, executionId, correlationId: req.correlationId, owner, defaultCapture: req.defaultCapture, maxObservations: req.maxObservations, live: this.deps.live });
         recorder.learn(graph);
+        flattened.warnings.forEach((warning: any) => {
+            recorder.record({ kind: "component.unresolved", nodeId: warning.nodeId, payload: { message: warning.message, code: warning.code, graphId: warning.graphId, path: warning.path } });
+        });
         const kvKey = (key: string) => `kv/${req.kvPrefix ? `${req.kvPrefix}/` : ""}${key}.json`;
         const hostDeps: HostDeps = {
             fetchImpl: this.deps.fetchImpl,
