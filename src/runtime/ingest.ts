@@ -222,6 +222,62 @@ export class ExecutionIngest {
         };
     }
 
+    /**
+     * What crossed one wire, or one node, across the executions this graph has
+     * kept (plan §4.5.3, PB-114).  The editor asks this when someone selects a
+     * connector: the values that went through it are evidence the browser that
+     * is open now never saw, because they happened on the server, in another
+     * session, or an hour ago.
+     *
+     * Executions are read newest first and the walk stops as soon as there is
+     * enough, so asking about a quiet connector costs the few executions it
+     * takes to find its traffic rather than the whole history.
+     */
+    async query(graphId: string, principal: Principal | undefined, filter: { connectorId?: string; nodeId?: string; kind?: string; executionId?: string; limit?: number } = {}): Promise<any> {
+        const allowed = decide(principal, ["graph:observe"]);
+        if (!allowed.allow) {
+            return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
+        }
+        const limit = Math.min(200, Math.max(1, filter.limit || 50));
+        const payloads = decide(principal, ["graph:inspect-payloads"]).allow;
+        let records: any[] = [];
+        if (filter.executionId) {
+            const one = await this.getJson(ExecutionRunner.executionKey(filter.executionId));
+            records = one && one.graphId === graphId ? [one] : [];
+        } else {
+            const keys = (await this.list_(`executions/by-graph/${graphId}/`)).sort().reverse().slice(0, 50);
+            for (const key of keys) {
+                const record = await this.getJson(key);
+                if (record) {
+                    records.push(record);
+                }
+            }
+        }
+        const matches: any[] = [];
+        let read = 0;
+        for (const record of records) {
+            read += 1;
+            const observations = await this.allObservations(record);
+            observations.forEach((o: any) => {
+                if (filter.connectorId && o.connectorId !== filter.connectorId) return;
+                if (filter.nodeId && o.nodeId !== filter.nodeId) return;
+                if (filter.kind && !String(o.kind).startsWith(filter.kind)) return;
+                matches.push(o);
+            });
+            if (matches.length >= limit) {
+                break;
+            }
+        }
+        matches.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+        const page = matches.slice(0, limit);
+        return {
+            graphId,
+            observations: payloads ? page : page.map((o: any) => (o.payload && o.payload.value !== undefined ? { ...o, payload: { meta: o.payload.meta, redacted: "payload" } } : o)),
+            executionsRead: read,
+            more: matches.length > limit,
+        };
+    }
+
     /** The owner's observations plus every half another domain contributed. */
     private async allObservations(record: any): Promise<any[]> {
         const own = await readObservations(this.store as any, record);
@@ -241,6 +297,18 @@ export class ExecutionIngest {
 
     private list_(prefix: string): Promise<string[]> {
         return new Promise((resolve) => (this.store as any).list(prefix, (err: any, items: any[]) => resolve(err ? [] : (items || []).map((i: any) => i.Key))));
+    }
+
+    /** `GET /crdt/{id}/observations` */
+    queryRoute(event: any, context: any, callback: (err: any, r: any) => void) {
+        const headers = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": true };
+        const query = event.queryStringParameters || {};
+        this.query(event.pathParameters.id, event.principal, {
+            connectorId: query.connectorId, nodeId: query.nodeId, kind: query.kind,
+            executionId: query.executionId, limit: Number(query.limit) || undefined,
+        })
+            .then((r: any) => callback(null, { statusCode: r.error ? (r.code === "ADMISSION_DENIED" ? 403 : 400) : 200, body: JSON.stringify(r), headers }))
+            .catch((err) => { console.error("Cannot query observations.", err); callback(null, { statusCode: 500, headers }); });
     }
 
     /** `GET /crdt/{id}/executions` and `GET /crdt/{id}/executions/{executionId}` */

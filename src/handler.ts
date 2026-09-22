@@ -165,6 +165,10 @@ function _deliveryClaim(event: any, context: any, callback: (err: any, response:
 function _executionsList(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.executions.listRoute(event, context, callback);
 }
+/** What crossed one wire or one node, across this graph's executions (plan §4.5.3). */
+function _observationsQuery(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.executions.queryRoute(event, context, callback);
+}
 /** A browser-owned execution asks the server to run a server-placed node (plan §4.8.2). */
 function _edgeDeliver(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.deliveries.route(event, context, callback);
@@ -357,6 +361,7 @@ const test = withPrincipal(broadcastService.store, _test);
 const journeys = withPrincipal(broadcastService.store, _journeys);
 const journey = withPrincipal(broadcastService.store, _journey);
 const edgeDeliver = withPrincipal(broadcastService.store, _edgeDeliver);
+const observationsQuery = withPrincipal(broadcastService.store, _observationsQuery);
 const deliveriesPending = withPrincipal(broadcastService.store, _deliveriesPending);
 const deliveryClaim = withPrincipal(broadcastService.store, _deliveryClaim);
 const defaultRoute = withPrincipal(broadcastService.store, _defaultRoute);
@@ -452,6 +457,7 @@ export {
     journey,
     journeyTick,
     edgeDeliver,
+    observationsQuery,
     deliveriesPending,
     deliveryClaim,
     defaultRoute,

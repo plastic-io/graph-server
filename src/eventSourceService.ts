@@ -70,11 +70,17 @@ export default class EventSourceService {
     crdtStore: CrdtStore;
     tocStore: TocStore;
     okResponse: {statusCode: number};
-    constructor() {
+    /**
+     * Everything is built against one object store.  The Lambda takes S3; the
+     * local dev server passes its own, and has to pass it here rather than
+     * replacing a field afterwards — the services below hold the store they
+     * were given, so a late swap leaves half of them talking to S3.
+     */
+    constructor(store?: any, crdtStore?: CrdtStore) {
         this.broadcastService = new BroadcastService();
-        this.crdtService = new CrdtService();
-        this.crdtStore = new CrdtStore();
-        this.tocStore = new TocStore();
+        this.crdtStore = crdtStore || new CrdtStore(store);
+        this.crdtService = new CrdtService(this.crdtStore);
+        this.tocStore = new TocStore(store);
         this.revisions = new RevisionService(this.crdtStore, this.crdtService.admission, {
             fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
             notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
@@ -133,7 +139,7 @@ export default class EventSourceService {
         this.okResponse = {
             statusCode: 200
         };
-        this.store = new S3Service(process.env.S3_BUCKET);
+        this.store = store || new S3Service(process.env.S3_BUCKET);
     }
     getEvents(event: any, context: any, callback: (err: any, response: any) => void) {
         this.store.list(`graphs/${event.pathParameters.id}/events/`, (err, events) => {

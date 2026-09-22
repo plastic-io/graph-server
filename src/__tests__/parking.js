@@ -207,3 +207,66 @@ describe("a delivery nobody takes", () => {
             .toMatchObject({ claimed: true });
     });
 });
+
+/**
+ * What crossed one wire (plan §4.5.3, PB-114).  The editor asks this when
+ * someone selects a connector: the values that went through it are evidence
+ * the browser that is open now never saw.
+ */
+describe("asking what crossed a connector", () => {
+    const executionWith = (s3, executionId, observations) => {
+        const record = {
+            executionId, graphId: "g1", revisionId: "live", owner, domain: "server",
+            entry: { nodeUrl: "entry", field: "in" }, startedAt: "2026-09-21T12:00:00.000Z", endedAt: "2026-09-21T12:00:01.000Z",
+            state: "completed", duration: 1000, hops: 2, errors: 0, correlationId: executionId,
+            observations: { count: observations.length, key: `observations/g1/2026092112/${executionId}.ndjson`, sampled: false, capped: false },
+            effects: { allowed: 0, denied: 0 },
+        };
+        s3.set(`executions/${executionId}.json`, record, {}, () => undefined);
+        s3.set(`executions/by-graph/g1/${executionId}.json`, record, {}, () => undefined);
+        s3.setRaw(record.observations.key, Buffer.from(observations.map((o) => JSON.stringify(o)).join("\n") + "\n"), {}, () => undefined);
+        return record;
+    };
+    const observation = (id, over = {}) => ({
+        id, seq: 1, at: "2026-09-21T12:00:00.500Z", kind: "route", graphId: "g1", revisionId: "live",
+        instancePath: [], executionId: EXECUTION, correlationId: EXECUTION, domain: "server", owner,
+        connectorId: "c1", nodeId: "render", edgeField: "in", payload: { value: { price: 42 }, meta: { type: "object", bytes: 14 } },
+        ...over,
+    });
+
+    test("answers with what went through that connector, newest first, and says how far it looked", async () => {
+        const { s3 } = make();
+        executionWith(s3, EXECUTION, [
+            observation("01AAA", { connectorId: "c1" }),
+            observation("01AAB", { connectorId: "c2", nodeId: "other" }),
+            observation("01AAC", { connectorId: "c1", payload: { value: { price: 84 }, meta: { type: "object", bytes: 14 } } }),
+        ]);
+        const ingest = new ExecutionIngest(s3);
+        const answer = await ingest.query("g1", owner, { connectorId: "c1" });
+        expect(answer.observations.map((o) => o.id)).toEqual(["01AAC", "01AAA"]);
+        expect(answer.observations[0].payload.value).toEqual({ price: 84 });
+        expect(answer.executionsRead).toBe(1);
+    });
+
+    test("filters by node and by kind as well", async () => {
+        const { s3 } = make();
+        executionWith(s3, EXECUTION, [
+            observation("01AAA", { kind: "route", nodeId: "render" }),
+            observation("01AAB", { kind: "exec.error", nodeId: "render", connectorId: undefined }),
+            observation("01AAC", { kind: "route", nodeId: "compute", connectorId: "c9" }),
+        ]);
+        const ingest = new ExecutionIngest(s3);
+        expect((await ingest.query("g1", owner, { nodeId: "compute" })).observations.map((o) => o.id)).toEqual(["01AAC"]);
+        expect((await ingest.query("g1", owner, { kind: "exec." })).observations.map((o) => o.id)).toEqual(["01AAB"]);
+    });
+
+    test("hides payloads from a caller who may not read them, and refuses one who may not observe", async () => {
+        const { s3 } = make();
+        executionWith(s3, EXECUTION, [observation("01AAA")]);
+        const ingest = new ExecutionIngest(s3);
+        const agent = { sub: "auth0|a1", kind: "agent", tenant: "personal:auth0|u1", scopes: ["graph:read", "graph:observe"] };
+        const answer = await ingest.query("g1", agent, { connectorId: "c1" });
+        expect(answer.observations[0].payload).toEqual({ meta: { type: "object", bytes: 14 }, redacted: "payload" });
+        expect((await ingest.query("g1", { ...agent, scopes: ["graph:read"] }, {})).code).toBe("ADMISSION_DENIED");
+    });
+});

@@ -251,8 +251,8 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
 
     server.registerTool("observations.query", {
         title: "Query what happened to a graph",
-        description: "Observations of a graph's executions (edge inputs, routes, effects, denials, errors, budget, contracts), newest first, plus the audit trail (mutations, revisions, publications, proposals) when asked for those kinds. Filter by execution, node or kind; continue with the cursor. Payloads need graph:inspect-payloads.",
-        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, filter: z.object({ nodeId: ID.optional(), kind: z.string().max(64).optional(), executionId: z.string().max(64).optional(), since: z.string().max(64).optional() }).strict().optional(), limit: z.number().int().min(1).max(500).optional(), cursor: z.string().max(64).optional() }).strict(),
+        description: "Observations of a graph's executions (edge inputs, routes, effects, denials, errors, budget, contracts), newest first, plus the audit trail (mutations, revisions, publications, proposals) when asked for those kinds. Filter by execution, node, connector or kind; continue with the cursor. Payloads need graph:inspect-payloads.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, filter: z.object({ nodeId: ID.optional(), connectorId: ID.optional(), kind: z.string().max(64).optional(), executionId: z.string().max(64).optional(), since: z.string().max(64).optional() }).strict().optional(), limit: z.number().int().min(1).max(500).optional(), cursor: z.string().max(64).optional() }).strict(),
         annotations: { readOnlyHint: true },
     }, guarded("observations.query", "read", (a) => a.graphId, ["graph:observe"], async (args, principal) => {
         const filter = args.filter || {};
@@ -269,6 +269,7 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
                 observations.forEach((o: any) => {
                     if (filter.kind && !String(o.kind).startsWith(filter.kind)) return;
                     if (filter.nodeId && o.nodeId !== filter.nodeId) return;
+                    if (filter.connectorId && o.connectorId !== filter.connectorId) return;
                     items.push(redactFor(o, payloads));
                 });
                 if (items.length > limit * 4) break;

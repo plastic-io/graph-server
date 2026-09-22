@@ -22,6 +22,8 @@ import CrdtStore from "./crdtStore";
 import EventSourceService from "./eventSourceService";
 
 const PORT = Number(process.env.PORT || 3030);
+/** Nothing here authenticates; every request is the same local person. */
+const DEV_PRINCIPAL = { sub: "dev:http", kind: "human", tenant: "personal:dev", scopes: [] };
 
 /* ------------------------------------------------------------------ *
  * an object store that lives in memory
@@ -134,10 +136,11 @@ const store = new MemoryStore() as any;
 const broadcastService = new DevBroadcastService() as any;
 const crdtStore = new CrdtStore(store);
 const crdtService = new CrdtService(crdtStore, broadcastService);
-const eventSourceService = new EventSourceService();
-(eventSourceService as any).store = store;
+// The store goes in through the constructor: every service inside holds the
+// one it was given, so replacing the field afterwards left half of them
+// talking to S3 — which is why the runtime routes could not be served here.
+const eventSourceService = new EventSourceService(store, crdtStore);
 (eventSourceService as any).broadcastService = broadcastService;
-(eventSourceService as any).crdtStore = crdtStore;
 (eventSourceService as any).crdtService = crdtService;
 
 function apiEvent(connectionId: string, body: any) {
@@ -202,6 +205,22 @@ const server = http.createServer(async (request, response) => {
       response.writeHead(200, { "Content-Type": "application/json", ...CORS });
       return response.end(JSON.stringify([...store.objects.keys()], null, 1));
     }
+    if (path === "debug/park" && request.method === "POST") {
+      // Staging a hop handed to the browsers, without a server-owned
+      // execution to produce one: what the deployed server does inside
+      // `deliver`, asked for directly.
+      const body = JSON.parse((await readBody(request)) || "{}");
+      const parked = await eventSourceService.parking.park(body.graphId, body.delivery, body.ttlMs);
+      response.writeHead(parked ? 200 : 400, { "Content-Type": "application/json", ...CORS });
+      return response.end(JSON.stringify(parked || { error: "that is not a delivery" }));
+    }
+    if (path === "debug/sweep" && request.method === "POST") {
+      // The tick that would do this in production is EventBridge; here it is
+      // a request, so parking and its time limit can be exercised locally.
+      const swept = await eventSourceService.parking.sweep();
+      response.writeHead(200, { "Content-Type": "application/json", ...CORS });
+      return response.end(JSON.stringify(swept));
+    }
     if (path === "toc.json") {
       return eventSourceService.getToc({}, {}, send);
     }
@@ -237,6 +256,41 @@ const server = http.createServer(async (request, response) => {
       const body = await readBody(request);
       return eventSourceService.components.publishRoute(
         { pathParameters: { id: parts[1] }, body, principal: { sub: "dev:http", kind: "human", tenant: "personal:dev", scopes: [] } }, {}, send);
+    }
+    /* the runtime routes: what ran, what crossed a wire, and the hops handed
+       between the two domains (plan §4.5.3, §4.8.2) */
+    if (parts[0] === "crdt" && parts[2] === "executions" && request.method === "POST") {
+      const body = await readBody(request);
+      return eventSourceService.executions.route({ pathParameters: { id: parts[1] }, body, principal: DEV_PRINCIPAL }, {}, send);
+    }
+    if (parts[0] === "crdt" && parts[2] === "executions") {
+      return eventSourceService.executions.listRoute({
+        pathParameters: { id: parts[1], executionId: parts[3] },
+        queryStringParameters: searchParamsToObject(url.searchParams),
+        principal: DEV_PRINCIPAL,
+      }, {}, send);
+    }
+    if (parts[0] === "crdt" && parts[2] === "observations") {
+      return eventSourceService.executions.queryRoute({
+        pathParameters: { id: parts[1] },
+        queryStringParameters: searchParamsToObject(url.searchParams),
+        principal: DEV_PRINCIPAL,
+      }, {}, send);
+    }
+    if (parts[0] === "crdt" && parts[2] === "deliveries" && parts[3] === "pending") {
+      return eventSourceService.parking.pendingRoute({
+        pathParameters: { id: parts[1] },
+        queryStringParameters: searchParamsToObject(url.searchParams),
+        principal: DEV_PRINCIPAL,
+      }, {}, send);
+    }
+    if (parts[0] === "crdt" && parts[2] === "deliveries" && parts[3] === "claim" && request.method === "POST") {
+      const body = await readBody(request);
+      return eventSourceService.parking.claimRoute({ pathParameters: { id: parts[1] }, body, principal: DEV_PRINCIPAL }, {}, send);
+    }
+    if (parts[0] === "crdt" && parts[2] === "deliveries" && request.method === "POST") {
+      const body = await readBody(request);
+      return eventSourceService.deliveries.route({ pathParameters: { id: parts[1] }, body, principal: DEV_PRINCIPAL }, {}, send);
     }
     if (parts[0] === "components" && parts.length === 2) {
       return eventSourceService.components.listRoute({ pathParameters: { id: parts[1] } }, {}, send);

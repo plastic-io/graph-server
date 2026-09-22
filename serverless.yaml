@@ -548,6 +548,21 @@ functions:
           cors:
             origin: '*'
 
+  observationsQuery:
+    handler: src/handler.observationsQuery
+    # what crossed one wire, across the executions this graph kept (PB-114)
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/observations
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
   deliveriesPending:
     handler: src/handler.deliveriesPending
     # what is still waiting for a browser (plan §4.8.2, PB-073)
