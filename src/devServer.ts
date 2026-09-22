@@ -21,6 +21,7 @@ import CrdtService from "./crdtService";
 import CrdtStore from "./crdtStore";
 import EventSourceService from "./eventSourceService";
 import { makeMcpStreamHandler } from "./mcp/stream";
+import { ExecutionRunner } from "./runtime/executor";
 
 const PORT = Number(process.env.PORT || 3030);
 /** Nothing here authenticates; every request is the same local person. */
@@ -266,6 +267,62 @@ const server = http.createServer(async (request, response) => {
       const parked = await eventSourceService.parking.park(body.graphId, body.delivery, body.ttlMs);
       response.writeHead(parked ? 200 : 400, { "Content-Type": "application/json", ...CORS });
       return response.end(JSON.stringify(parked || { error: "that is not a delivery" }));
+    }
+    if (path === "debug/run" && request.method === "POST") {
+      // Running a graph *here*, the way the deployed server runs one.  The
+      // dev server could serve everything about an execution except starting
+      // one, which left the server half of a linked or published component
+      // testable only against AWS.
+      const body = JSON.parse((await readBody(request)) || "{}");
+      const graph = await crdtStore.projectGraph(body.graphId);
+      if (!graph || !Array.isArray(graph.nodes)) {
+        response.writeHead(404, { "Content-Type": "application/json", ...CORS });
+        return response.end(JSON.stringify({ error: "no such graph", graphId: body.graphId }));
+      }
+      const entry = graph.nodes.find((n: any) => n.url === body.nodeUrl || n.id === body.nodeUrl);
+      if (!entry) {
+        response.writeHead(404, { "Content-Type": "application/json", ...CORS });
+        return response.end(JSON.stringify({ error: "no such node", nodeUrl: body.nodeUrl }));
+      }
+      const runner = new ExecutionRunner(store);
+      const summary = await runner.run({
+        graph,
+        nodeUrl: entry.url,
+        field: body.field || "in",
+        value: body.value,
+        principal: DEV_PRINCIPAL,
+        revisionId: "live",
+        budget: { wallMs: 20000, hops: 10000, fanOut: 1000, depth: 64, ...(body.budget || {}) },
+        // What a linked node asks for by path: the published component first,
+        // then the 2.0 artifact, then the live document — the same order the
+        // deployed server answers in (graphService.resolveArtifact).
+        resolve: async (artifactPath: string) => {
+          const match = /^artifacts\/(graph|nodes)\/(.+)\.(\d+)$/.exec(String(artifactPath || ""));
+          if (!match) {
+            return null;
+          }
+          const [, kind, id, version] = match;
+          const get = (key: string) => new Promise<any | null>((res) => store.get(key, (err: any, data: any) => res(err ? null : data)));
+          const component: any = await get(`components/${id}/${version}/artifact.json`);
+          if (component) {
+            return component.artifact || component;
+          }
+          const legacy: any = await get(`graphs/projections/published/artifacts/${id}.${version}.json`);
+          if (legacy) {
+            return legacy.artifact || legacy;
+          }
+          if (kind === "graph") {
+            return await get(`graphs/projections/latest/${id}.json`);
+          }
+          return null;
+        },
+        deliver: async (d: any) => {
+          await eventSourceService.parking.park(body.graphId, d).catch(() => undefined);
+          broadcastService._sendToChannel("graph-notify-" + body.graphId, { ...d, eventType: "edge.deliver" }, () => undefined);
+        },
+      } as any);
+      response.writeHead(200, { "Content-Type": "application/json", ...CORS });
+      return response.end(JSON.stringify(summary));
     }
     if (path === "debug/sweep" && request.method === "POST") {
       // The tick that would do this in production is EventBridge; here it is
