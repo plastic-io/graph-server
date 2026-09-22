@@ -94,6 +94,7 @@ const mcp = makeMcpHandler({
     proposals: eventSourceService.proposals,
     summaries: eventSourceService.summaries,
     delegations: eventSourceService.delegations,
+    tasks: eventSourceService.tasks,
 });
 const corsJson = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": true };
 function _mcp(event: any, context: any, callback: (err: any, response: any) => void) {
@@ -149,9 +150,53 @@ function journeyTick(event: any, context: any, callback: (err: any, response: an
             if (swept.expired.length || swept.forgotten) {
                 console.log("Parked deliveries:", { expired: swept.expired, forgotten: swept.forgotten, considered: swept.considered });
             }
+            return eventSourceService.tasks.sweep();
+        })
+        .then((swept) => {
+            if (swept.forgotten) {
+                console.log("Tasks forgotten:", swept);
+            }
         })
         .catch((err) => console.error("Cannot sweep parked deliveries.", err))
         .then(() => eventSourceService.journeys.tickRoute(event, context, callback));
+}
+/**
+ * The other half of a task (plan §5.0, PB-084): the work itself, in an
+ * invocation with room to take its time.  EventBridge does not call this and
+ * neither does a person — the MCP handler does, asynchronously, and the task
+ * record is where the answer lands.
+ */
+function taskWorker(event: any, context: any, callback: (err: any, response: any) => void) {
+    const taskId = (event && event.taskId) || "";
+    eventSourceService.tasks.work(taskId, (task, cancelled) => runTask(task, cancelled))
+        .then((task: any) => {
+            console.log("Task:", { taskId, kind: task && task.kind, status: task && task.status });
+            callback(null, { taskId, status: task && task.status });
+        })
+        .catch((err) => { console.error("A task could not be run.", err); callback(null, { taskId, status: "failed" }); });
+}
+/** What each kind of task actually does.  A kind the worker does not know fails loudly. */
+async function runTask(task: any, cancelled: () => Promise<boolean>): Promise<any> {
+    const principal: any = task.principal;
+    if (await cancelled()) {
+        return { cancelled: true };
+    }
+    if (task.kind === "tests.run") {
+        if (task.input && task.input.testId) {
+            const run: any = await eventSourceService.tests.run(task.graphId, task.input.testId, principal, { by: "request" });
+            return run && run.error ? run : { runs: [run], failed: run.state === "passed" ? 0 : 1 };
+        }
+        const all: any = await eventSourceService.tests.runAll(task.graphId, principal, { by: "request" });
+        return { runs: all.runs, failed: all.failed.length };
+    }
+    if (task.kind === "graph.invoke") {
+        const answer: any = await invokeForAgent(task.graphId, principal, task.input || {});
+        return answer && answer.error ? answer : answer.summary;
+    }
+    if (task.kind === "journey.run") {
+        return await eventSourceService.journeys.run(task.graphId, task.input.journeyId, "request", principal);
+    }
+    return { error: `this server does not know how to do ${task.kind}`, code: "SCHEMA_INVALID" };
 }
 /** What is still waiting for a browser (plan §4.8.2, PB-073). */
 function _deliveriesPending(event: any, context: any, callback: (err: any, response: any) => void) {
@@ -456,6 +501,7 @@ export {
     journeys,
     journey,
     journeyTick,
+    taskWorker,
     edgeDeliver,
     observationsQuery,
     deliveriesPending,

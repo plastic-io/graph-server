@@ -140,6 +140,30 @@ const crdtService = new CrdtService(crdtStore, broadcastService);
 // one it was given, so replacing the field afterwards left half of them
 // talking to S3 — which is why the runtime routes could not be served here.
 const eventSourceService = new EventSourceService(store, crdtStore);
+// There is no second Lambda here, so a task's work happens in this process,
+// started and not waited for — which is what the worker does anyway.
+(eventSourceService as any).tasks.deps.dispatch = async (task: any) => {
+  setTimeout(() => {
+    (eventSourceService as any).tasks.work(task.taskId, (record: any, cancelled: any) => runTaskLocally(record, cancelled))
+      .catch((err: any) => console.error("A task could not be run.", err));
+  }, 0);
+};
+async function runTaskLocally(task: any, cancelled: () => Promise<boolean>): Promise<any> {
+  if (await cancelled()) {
+    return { cancelled: true };
+  }
+  if (task.kind === "tests.run") {
+    if (task.input && task.input.testId) {
+      return await eventSourceService.tests.run(task.graphId, task.input.testId, task.principal, { by: "request" });
+    }
+    const all: any = await eventSourceService.tests.runAll(task.graphId, task.principal, { by: "request" });
+    return { runs: all.runs, failed: all.failed.length };
+  }
+  if (task.kind === "journey.run") {
+    return await eventSourceService.journeys.run(task.graphId, task.input.journeyId, "request", task.principal);
+  }
+  return { error: `the dev server does not know how to do ${task.kind}`, code: "SCHEMA_INVALID" };
+}
 (eventSourceService as any).broadcastService = broadcastService;
 (eventSourceService as any).crdtService = crdtService;
 

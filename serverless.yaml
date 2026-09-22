@@ -32,6 +32,12 @@ provider:
         - "execute-api:ManageConnections"
       Resource:
         - "arn:aws:execute-api:*:*:**/@connections/*"
+    # Work that outlives one call is handed to the worker below (plan §5.0).
+    - Effect: Allow
+      Action:
+        - lambda:InvokeFunction
+      Resource:
+        - "arn:aws:lambda:${self:provider.region}:*:function:${self:service}-${self:provider.stage}-taskWorker"
     - Effect: Allow
       Action:
         - secretsmanager:GetSecretValue
@@ -49,6 +55,7 @@ provider:
     API_REGION: ${self:provider.region}
     S3_BUCKET: ${self:custom.s3Bucket}
     STAGE: ${self:provider.stage}
+    TASK_WORKER_FUNCTION: ${self:service}-${self:provider.stage}-taskWorker
     # How stale the JSON projection of a collaborative graph may get before an
     # edit refreshes it.  Graph execution and publishing read those files.
     CHECKPOINT_INTERVAL_MS: ${opt:checkpointInterval, '10000'}
@@ -547,6 +554,15 @@ functions:
                  id: true
           cors:
             origin: '*'
+
+  taskWorker:
+    handler: src/handler.taskWorker
+    # the work of a task (plan §5.0, PB-084): invoked by the MCP handler, never
+    # by a person, with room to take longer than a protocol call may
+    layers:
+      - !Ref IsolatedVmLambdaLayer
+    timeout: 300
+    memorySize: 1024
 
   observationsQuery:
     handler: src/handler.observationsQuery

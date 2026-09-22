@@ -6,6 +6,7 @@ import { semanticDiff } from "@plastic-io/graph-crdt";
 import { Principal } from "../auth/principal";
 import { decide, Authority, POLICY_VERSION } from "../policy/decide";
 import { DelegationStore } from "../policy/delegation";
+import { TaskService, taskAnswer, taskView } from "./tasks";
 import { RateLimiter } from "../admission/limits";
 import { AdmissionService } from "../admission/admit";
 import { RevisionService } from "../revisions/service";
@@ -37,6 +38,8 @@ export interface McpDeps {
     invoke?: (graphId: string, principal: Principal | undefined, request: { nodeUrl: string; field?: string; value?: any; budget?: any }) => Promise<any>;
     /** Ask a running execution to stop. */
     cancel?: (graphId: string, principal: Principal | undefined, executionId: string, reason: string) => Promise<any>;
+    /** Work that outlives one call (plan §5.0, PB-084). */
+    tasks?: TaskService;
     rate?: { reads: RateLimiter; writes: RateLimiter };
 }
 
@@ -396,13 +399,70 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
     server.registerTool("graph.invoke", {
         title: "Run a graph",
         description: "Run the graph from one of its nodes and answer with what the execution did: its id, state, hops, errors, effects allowed and refused, and where its observations are. Nodes placed in a browser are handed to whichever browsers are watching; the execution does not wait for them.",
-        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, nodeUrl: z.string().min(1).max(256), field: z.string().max(128).optional(), value: z.any().optional(), budget: z.object({ wallMs: z.number().int().min(100).max(60000).optional(), hops: z.number().int().min(1).max(100000).optional() }).strict().optional() }).strict(),
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, nodeUrl: z.string().min(1).max(256), field: z.string().max(128).optional(), value: z.any().optional(), budget: z.object({ wallMs: z.number().int().min(100).max(60000).optional(), hops: z.number().int().min(1).max(100000).optional() }).strict().optional(), async: z.boolean().optional() }).strict(),
         annotations: { readOnlyHint: false, idempotentHint: false },
     }, guarded("graph.invoke", "write", (a) => a.graphId, ["graph:execute"], async (args, principal) => {
         if (!deps.invoke) return fail("INTERNAL", "this server cannot run graphs");
+        if (args.async) {
+            return startTask("graph.invoke", args.graphId, principal, { nodeUrl: args.nodeUrl, field: args.field, value: args.value, budget: args.budget });
+        }
         const r: any = await deps.invoke(args.graphId, principal, { nodeUrl: args.nodeUrl, field: args.field, value: args.value, budget: args.budget });
         if (r.error) return fail(r.code, r.error, retryFor(r.code));
         return ok(principal, r.summary, { graphId: args.graphId, resultRevision: r.summary && r.summary.revisionId && r.summary.revisionId !== "live" ? revRef(r.summary.revisionId) : undefined });
+    }));
+
+    /**
+     * Work that will not fit in one call (plan §5.0, PB-084).  The answer is a
+     * task to poll rather than a result, and the work happens elsewhere.
+     */
+    const startTask = async (kind: string, graphId: string, principal: Principal | undefined, input: any): Promise<ToolResult> => {
+        if (!deps.tasks) {
+            return fail("INTERNAL", "this server cannot take work in the background");
+        }
+        const task: any = await deps.tasks.create(kind, principal, { graphId, input });
+        if (task.error) {
+            return fail(task.code, task.error);
+        }
+        if (task.status === "failed") {
+            return fail(task.error.code, task.error.message);
+        }
+        return ok(principal, taskAnswer(task), { graphId });
+    };
+
+    server.registerTool("tasks.get", {
+        title: "How is that work going",
+        description: "The state of a task started by another tool: working, completed, failed or cancelled, with its result when it has one and how long to wait before asking again. A task belongs to whoever started it.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), taskId: ULID }).strict(),
+        annotations: { readOnlyHint: true },
+    }, guarded("tasks.get", "read", () => undefined, [], async (args, principal) => {
+        if (!deps.tasks) return fail("INTERNAL", "this server has no tasks");
+        const task: any = await deps.tasks.get(args.taskId, principal);
+        if (task.error) return fail(task.code, task.error);
+        return ok(principal, taskView(task), { graphId: task.graphId });
+    }));
+
+    server.registerTool("tasks.list", {
+        title: "What work is outstanding",
+        description: "Tasks this caller started, newest first, optionally for one graph.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID.optional(), limit: z.number().int().min(1).max(100).optional() }).strict(),
+        annotations: { readOnlyHint: true },
+    }, guarded("tasks.list", "read", (a) => a.graphId, [], async (args, principal) => {
+        if (!deps.tasks) return fail("INTERNAL", "this server has no tasks");
+        const answer: any = await deps.tasks.list(principal, { graphId: args.graphId, limit: args.limit });
+        if (answer.error) return fail(answer.code, answer.error);
+        return ok(principal, { tasks: answer.tasks.map(taskView) }, { graphId: args.graphId });
+    }));
+
+    server.registerTool("tasks.cancel", {
+        title: "Stop that work",
+        description: "Ask a task to stop. It is cooperative: the work notices between steps, and what is already in flight is not taken back.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), taskId: ULID, reason: z.string().max(200).optional() }).strict(),
+        annotations: { readOnlyHint: false, idempotentHint: true },
+    }, guarded("tasks.cancel", "write", () => undefined, [], async (args, principal) => {
+        if (!deps.tasks) return fail("INTERNAL", "this server has no tasks");
+        const task: any = await deps.tasks.cancel(args.taskId, principal, args.reason);
+        if (task.error) return fail(task.code, task.error);
+        return ok(principal, taskView(task), { graphId: task.graphId });
     }));
 
     server.registerTool("execution.cancel", {
@@ -420,10 +480,13 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
     server.registerTool("tests.run", {
         title: "Check that a part still keeps its word",
         description: "Run one component test, or every test of a graph, and answer with what was expected and what happened. A test names its target by node or by capability, so it survives the graph being rebuilt.",
-        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, testId: z.string().min(1).max(64).optional() }).strict(),
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, testId: z.string().min(1).max(64).optional(), async: z.boolean().optional() }).strict(),
         annotations: { readOnlyHint: false, idempotentHint: false },
     }, guarded("tests.run", "write", (a) => a.graphId, ["graph:test"], async (args, principal) => {
         if (!deps.tests) return fail("INTERNAL", "this server has no tests");
+        if (args.async) {
+            return startTask("tests.run", args.graphId, principal, { testId: args.testId });
+        }
         if (args.testId) {
             const r: any = await deps.tests.run(args.graphId, args.testId, principal, { by: "request" });
             if (r.error) return fail(r.code, r.error, retryFor(r.code));

@@ -9,6 +9,7 @@ const { SummaryService } = require("../summary/service");
 const { ProposalService } = require("../proposals/service");
 const { DelegationStore } = require("../policy/delegation");
 const { makeMcpHandler } = require("../mcp/handler");
+const { TaskService } = require("../mcp/tasks");
 const { Client } = require("@modelcontextprotocol/client");
 const { StreamableHTTPClientTransport } = require("@modelcontextprotocol/client");
 const { listGraph } = require("../tocService");
@@ -52,8 +53,12 @@ async function setup() {
     const invoked = [];
     const cancelled = [];
     const { RateLimiter } = require("../admission/limits");
+    // Work that outlives one call: here the worker is this process, called
+    // when the test decides to, so a task can be watched half way through.
+    const dispatched = [];
+    const tasks = new TaskService(s3, { dispatch: async (task) => { dispatched.push(task.taskId); } });
     const mcp = makeMcpHandler({
-        crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys, tests,
+        crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys, tests, tasks,
         // the brake is tested in its own suite; here it would only stop the test
         rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: 1000 }) },
         invoke: async (graphId, principal, request) => {
@@ -70,7 +75,7 @@ async function setup() {
             return { executionId, requested: true, reason };
         },
     });
-    return { s3, store, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, autonomy, doc, mcp, notified, broadcast, invoked, cancelled };
+    return { s3, store, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled };
 }
 
 /** a real MCP client whose fetch goes straight into the handler, as the Lambda would */
@@ -94,7 +99,7 @@ describe("MCP over the Lambda handler", () => {
         expect(tools).toEqual([
             "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
             "journey.run", "observations.query", "proposal.commit", "proposal.create", "proposal.decide", "proposal.validate",
-            "revision.activate", "revision.cut", "revision.rollback", "tests.run",
+            "revision.activate", "revision.cut", "revision.rollback", "tasks.cancel", "tasks.get", "tasks.list", "tests.run",
         ]);
         const r = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
         expect(r.envelope).toMatchObject({ schemaVersion: "1", principal: { sub: "auth0|u1", kind: "human" }, graphId: "g1", policyVersion: "m1-diff", truncated: false });
@@ -421,5 +426,79 @@ describe("MCP over the Lambda handler", () => {
         expect(r.headers["Access-Control-Allow-Origin"]).toBe("*");
         const parsed = JSON.parse(r.body);
         expect(parsed.result.tools.map((t) => t.name)).toContain("graph.summary");
+    });
+});
+
+/**
+ * Work that outlives one call (plan §5.0, PB-084).  What matters over the
+ * protocol is that the answer is honest about being a promise, that polling it
+ * says something useful, and that the promise belongs to whoever made it.
+ */
+describe("work that outlives one call", () => {
+    test("asking for it in the background answers with a task, which the worker then finishes", async () => {
+        const { mcp, tasks, dispatched } = await setup();
+        const client = await connect(mcp, owner);
+        const started = parse(await client.callTool({ name: "tests.run", arguments: { schemaVersion: 1, graphId: "g1", async: true } }));
+        expect(started.result).toMatchObject({ resultType: "task", task: { kind: "tests.run", status: "working", pollIntervalMs: 2000 } });
+        const taskId = started.result.task.taskId;
+        expect(dispatched).toEqual([taskId]);
+
+        const working = parse(await client.callTool({ name: "tasks.get", arguments: { schemaVersion: 1, taskId } }));
+        expect(working.result).toMatchObject({ taskId, status: "working", by: owner.sub });
+        expect(working.result.principal).toBeUndefined();
+
+        // the worker, here in this process
+        await tasks.work(taskId, async () => ({ runs: [], failed: 0 }));
+        const done = parse(await client.callTool({ name: "tasks.get", arguments: { schemaVersion: 1, taskId } }));
+        expect(done.result).toMatchObject({ taskId, status: "completed", result: { failed: 0 } });
+
+        const listed = parse(await client.callTool({ name: "tasks.list", arguments: { schemaVersion: 1, graphId: "g1" } }));
+        expect(listed.result.tasks.map((task) => task.taskId)).toEqual([taskId]);
+    });
+
+    test("a task belongs to whoever started it: another tenant cannot read or stop it", async () => {
+        const { mcp } = await setup();
+        const mine = await connect(mcp, owner);
+        const started = parse(await mine.callTool({ name: "graph.invoke", arguments: { schemaVersion: 1, graphId: "g1", nodeUrl: "entry", async: true } }));
+        const taskId = started.result.task.taskId;
+        const theirs = await connect(mcp, { sub: "auth0|u9", kind: "human", tenant: "personal:auth0|u9", scopes: [] });
+        const read = await theirs.callTool({ name: "tasks.get", arguments: { schemaVersion: 1, taskId } });
+        expect(read.isError).toBe(true);
+        expect(parse(read).error.code).toBe("ADMISSION_DENIED");
+        const stop = await theirs.callTool({ name: "tasks.cancel", arguments: { schemaVersion: 1, taskId } });
+        expect(stop.isError).toBe(true);
+    });
+
+    test("asking it to stop reaches the work, and the record says how it ended", async () => {
+        const { mcp, tasks } = await setup();
+        const client = await connect(mcp, owner);
+        const started = parse(await client.callTool({ name: "tests.run", arguments: { schemaVersion: 1, graphId: "g1", async: true } }));
+        const taskId = started.result.task.taskId;
+        const cancelled = parse(await client.callTool({ name: "tasks.cancel", arguments: { schemaVersion: 1, taskId, reason: "not now" } }));
+        expect(cancelled.result.cancelRequested).toMatchObject({ reason: "not now" });
+        const steps = [];
+        await tasks.work(taskId, async (task, isCancelled) => {
+            if (await isCancelled()) { return { stopped: true }; }
+            steps.push("ran");
+            return { runs: [] };
+        });
+        expect(steps).toEqual([]);
+        const done = parse(await client.callTool({ name: "tasks.get", arguments: { schemaVersion: 1, taskId } }));
+        expect(done.result.status).toBe("cancelled");
+    });
+
+    test("without a worker behind it, a tool says so instead of promising", async () => {
+        const s = await setup();
+        const { RateLimiter } = require("../admission/limits");
+        // the same services, with nothing to take the work
+        const bare = makeMcpHandler({
+            crdtStore: s.store, tocStore: new TocStore(s.s3), admission: s.crdt.admission, revisions: s.revisions,
+            components: s.components, proposals: s.proposals, summaries: s.summaries, delegations: s.delegations, tests: s.tests,
+            rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: 1000 }) },
+        });
+        const client = await connect(bare, owner);
+        const answer = await client.callTool({ name: "tests.run", arguments: { schemaVersion: 1, graphId: "g1", async: true } });
+        expect(answer.isError).toBe(true);
+        expect(parse(answer).error.message).toContain("background");
     });
 });

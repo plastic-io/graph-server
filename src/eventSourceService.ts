@@ -15,6 +15,7 @@ import { ProposalService } from "./proposals/service";
 import { ExecutionIngest } from "./runtime/ingest";
 import { DeliveryService } from "./runtime/deliveries";
 import { ParkingService } from "./runtime/parking";
+import { TaskService, TaskRecord } from "./mcp/tasks";
 import { JourneyService } from "./journeys/service";
 import { MigrationService } from "./migrations/backfill";
 import { TestService } from "./tests/runner";
@@ -51,6 +52,24 @@ const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Credentials": true,
 };
+/**
+ * Hand a task to the worker.  In the Lambda that is an asynchronous
+ * invocation of a function with room to take its time; anywhere else (the
+ * local dev server, a test) the caller supplies its own way of running it.
+ */
+async function dispatchTask(task: TaskRecord): Promise<void> {
+    const name = process.env.TASK_WORKER_FUNCTION;
+    if (!name) {
+        throw new Error("no task worker is configured");
+    }
+    const AWS = require("aws-sdk");
+    await new AWS.Lambda().invoke({
+        FunctionName: name,
+        InvocationType: "Event",
+        Payload: JSON.stringify({ taskId: task.taskId }),
+    }).promise();
+}
+
 export default class EventSourceService {
     revisions: RevisionService;
     components: ComponentService;
@@ -59,6 +78,7 @@ export default class EventSourceService {
     executions: ExecutionIngest;
     deliveries: DeliveryService;
     parking: ParkingService;
+    tasks: TaskService;
     journeys: JourneyService;
     migrations: MigrationService;
     tests: TestService;
@@ -114,6 +134,14 @@ export default class EventSourceService {
         });
         // A delivery handed to the browsers waits here until one takes it.
         this.parking = new ParkingService(this.crdtStore.store as any);
+        /**
+         * Work that outlives one call (plan §5.0).  The record is written
+         * here; the work happens in another invocation, because this one has
+         * about twenty seconds before the gateway gives up.
+         */
+        this.tasks = new TaskService(this.crdtStore.store as any, {
+            dispatch: (task: TaskRecord) => dispatchTask(task),
+        });
         // Bringing the graphs that already exist into this world (plan §9.5).
         this.migrations = new MigrationService(this.crdtStore.store as any, this.crdtStore, this.tocStore, {
             revisions: this.revisions, components: this.components, admission: this.crdtService.admission,
