@@ -226,7 +226,9 @@ export class ExecutionIngest {
     private async allObservations(record: any): Promise<any[]> {
         const own = await readObservations(this.store as any, record);
         const sideKeys = (await this.list_(`executions/${record.executionId}/deliveries/`))
-            .concat(await this.list_(`executions/${record.executionId}/reports/`));
+            .concat(await this.list_(`executions/${record.executionId}/reports/`))
+            // a hop nobody took says so here (plan §4.8.2, PB-072)
+            .concat(await this.list_(`deliveries/pending/${record.graphId}/${record.executionId}/`));
         const rest: any[] = [];
         for (const key of sideKeys) {
             const side = await this.getJson(key);

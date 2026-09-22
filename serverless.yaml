@@ -548,6 +548,36 @@ functions:
           cors:
             origin: '*'
 
+  deliveriesPending:
+    handler: src/handler.deliveriesPending
+    # what is still waiting for a browser (plan §4.8.2, PB-073)
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/deliveries/pending
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  deliveryClaim:
+    handler: src/handler.deliveryClaim
+    # a browser says it has taken one
+    events:
+      - http:
+          method: POST
+          path: /crdt/{id}/deliveries/claim
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
   migrations:
     handler: src/handler.migrations
     timeout: 300

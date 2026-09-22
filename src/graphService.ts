@@ -18,6 +18,7 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 import { ulid } from "ulid";
 import { ExecutionRunner } from "./runtime/executor";
+import { ParkingService } from "./runtime/parking";
 import CrdtStore from "./crdtStore";
 
 /** Secret references node code may name through host.secret(ref): ref=SecretsManager name, comma separated. */
@@ -103,9 +104,11 @@ class GraphService {
     broadcastConnectors: string[];
     broadcastEvents: string[];
     broadcastService: BroadcastService;
+    parking: ParkingService;
     constructor() {
         this.state = {};
         this.store = new S3Service(process.env.S3_BUCKET);
+        this.parking = new ParkingService(this.store as any);
         this.broadcastService = new BroadcastService();
         this.logLevel = 0;
         this.graphEvents = [
@@ -568,7 +571,11 @@ class GraphService {
                     initiator: event.headers && (event.headers["x-session-id"] || event.headers["X-Session-Id"]),
                     deliver: async (delivery: any) => {
                         // the browsers watching this graph receive the value; the
-                        // one that matches the target runs the node (plan §4.8.2)
+                        // one that matches the target runs the node (plan §4.8.2).
+                        // It is parked first, so a delivery nobody takes is
+                        // recorded rather than lost (PB-072).
+                        await this.parking.park(graph.id, delivery, graph.properties && (graph.properties as any).deliveryTtlMs)
+                            .catch((err: any) => console.error("Cannot park a delivery.", err));
                         await this.send("edge.deliver")({ ...delivery });
                     },
                     defaultContainment: process.env.DEFAULT_CONTAINMENT === "isolate" ? "isolate" : "worker",

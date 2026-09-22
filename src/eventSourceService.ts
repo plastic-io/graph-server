@@ -14,6 +14,7 @@ import { SummaryService } from "./summary/service";
 import { ProposalService } from "./proposals/service";
 import { ExecutionIngest } from "./runtime/ingest";
 import { DeliveryService } from "./runtime/deliveries";
+import { ParkingService } from "./runtime/parking";
 import { JourneyService } from "./journeys/service";
 import { MigrationService } from "./migrations/backfill";
 import { TestService } from "./tests/runner";
@@ -57,6 +58,7 @@ export default class EventSourceService {
     proposals: ProposalService;
     executions: ExecutionIngest;
     deliveries: DeliveryService;
+    parking: ParkingService;
     journeys: JourneyService;
     migrations: MigrationService;
     tests: TestService;
@@ -104,6 +106,8 @@ export default class EventSourceService {
         this.deliveries = new DeliveryService(this.crdtStore.store as any, this.crdtStore, {
             runner: (live) => new ExecutionRunner(this.crdtStore.store as any, { live }),
         });
+        // A delivery handed to the browsers waits here until one takes it.
+        this.parking = new ParkingService(this.crdtStore.store as any);
         // Bringing the graphs that already exist into this world (plan §9.5).
         this.migrations = new MigrationService(this.crdtStore.store as any, this.crdtStore, this.tocStore, {
             revisions: this.revisions, components: this.components, admission: this.crdtService.admission,

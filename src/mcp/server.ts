@@ -224,7 +224,9 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined):
     const observationsForExecution = async (record: any): Promise<any[]> => {
         const own = await readObservations(deps.crdtStore.store as any, record);
         const sideKeys = (await storeList(`executions/${record.executionId}/deliveries/`))
-            .concat(await storeList(`executions/${record.executionId}/reports/`));
+            .concat(await storeList(`executions/${record.executionId}/reports/`))
+            // and a hop nobody took (plan §4.8.2, PB-072)
+            .concat(await storeList(`deliveries/pending/${record.graphId}/${record.executionId}/`));
         const fromOtherDomains: any[] = [];
         for (const key of sideKeys) {
             const side = await storeGet(key);

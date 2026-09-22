@@ -56,7 +56,12 @@ async function invokeForAgent(graphId: string, principal: any, request: { nodeUr
         revisionId: active && active.revisionId ? active.revisionId : "live",
         budget: { wallMs: 25000, hops: 10000, fanOut: 1000, depth: 64, ...(request.budget || {}) },
         defaultContainment: process.env.DEFAULT_CONTAINMENT === "isolate" ? "isolate" : "worker",
-        deliver: async (delivery: any) => { broadcastService._sendToChannel("graph-notify-" + graphId, { ...delivery, eventType: "edge.deliver" }, () => undefined); },
+        deliver: async (delivery: any) => {
+            // parked before it is broadcast: handing a delivery to nobody must
+            // not look like handing it to someone (plan §4.8.2, PB-072)
+            await eventSourceService.parking.park(graphId, delivery, graph.properties && graph.properties.deliveryTtlMs).catch((err: any) => console.error("Cannot park a delivery.", err));
+            broadcastService._sendToChannel("graph-notify-" + graphId, { ...delivery, eventType: "edge.deliver" }, () => undefined);
+        },
     } as any);
     return { summary };
 }
@@ -134,9 +139,27 @@ function _journeys(event: any, context: any, callback: (err: any, response: any)
 function _journey(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.journeys.journeyRoute(event, context, callback);
 }
-/** The scheduled tick; EventBridge calls this, not a person. */
+/**
+ * The scheduled tick; EventBridge calls this, not a person.  It also sweeps
+ * the deliveries nobody took, which is the only moment anything notices.
+ */
 function journeyTick(event: any, context: any, callback: (err: any, response: any) => void) {
-    eventSourceService.journeys.tickRoute(event, context, callback);
+    eventSourceService.parking.sweep()
+        .then((swept) => {
+            if (swept.expired.length || swept.forgotten) {
+                console.log("Parked deliveries:", { expired: swept.expired, forgotten: swept.forgotten, considered: swept.considered });
+            }
+        })
+        .catch((err) => console.error("Cannot sweep parked deliveries.", err))
+        .then(() => eventSourceService.journeys.tickRoute(event, context, callback));
+}
+/** What is still waiting for a browser (plan §4.8.2, PB-073). */
+function _deliveriesPending(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.parking.pendingRoute(event, context, callback);
+}
+/** A browser says it has taken one. */
+function _deliveryClaim(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.parking.claimRoute(event, context, callback);
 }
 /** What ran for a graph, and what one execution observed (the editor's executions panel). */
 function _executionsList(event: any, context: any, callback: (err: any, response: any) => void) {
@@ -334,6 +357,8 @@ const test = withPrincipal(broadcastService.store, _test);
 const journeys = withPrincipal(broadcastService.store, _journeys);
 const journey = withPrincipal(broadcastService.store, _journey);
 const edgeDeliver = withPrincipal(broadcastService.store, _edgeDeliver);
+const deliveriesPending = withPrincipal(broadcastService.store, _deliveriesPending);
+const deliveryClaim = withPrincipal(broadcastService.store, _deliveryClaim);
 const defaultRoute = withPrincipal(broadcastService.store, _defaultRoute);
 const getArtifact = withPrincipal(broadcastService.store, _getArtifact);
 const publish = withPrincipal(broadcastService.store, _publish);
@@ -427,6 +452,8 @@ export {
     journey,
     journeyTick,
     edgeDeliver,
+    deliveriesPending,
+    deliveryClaim,
     defaultRoute,
     panic,
 };
