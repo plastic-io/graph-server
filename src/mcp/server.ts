@@ -103,10 +103,28 @@ function observationOf(record: any) {
     };
 }
 
-export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined): McpServer {
+/**
+ * What one endpoint can do beyond answering a request.  Only the streaming
+ * endpoint can hold a `subscriptions/listen` open, so only it says it can:
+ * advertising `resources.subscribe` on the request/response route would be a
+ * promise nothing there could keep (plan PB-085).
+ */
+export interface ServerOptions {
+    subscriptions?: boolean;
+    /** Where a client goes to listen, when that is somewhere else. */
+    streamUrl?: string;
+}
+
+export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, options: ServerOptions = {}): McpServer {
+    const instructions = "Plastic-IO graph server. Read graphs with graph.summary and graph.expand at a named revision, then propose changes with proposal.create against that revision; a human commits proposals in the editor."
+        + (options.subscriptions
+            ? " This endpoint also serves subscriptions/listen: open one with the resource URIs you care about and re-read a resource when it says that resource changed."
+            : options.streamUrl
+                ? ` For change notifications, open a subscriptions/listen stream against ${options.streamUrl}.`
+                : "");
     const server = new McpServer(SERVER_INFO, {
-        capabilities: { tools: {}, resources: {} },
-        instructions: "Plastic-IO graph server. Read graphs with graph.summary and graph.expand at a named revision, then propose changes with proposal.create against that revision; a human commits proposals in the editor.",
+        capabilities: { tools: {}, resources: options.subscriptions ? { subscribe: true, listChanged: true } : {} },
+        instructions,
     });
     const rate = deps.rate || rates;
     const rateKey = rawPrincipal ? rawPrincipal.sub : "anonymous";

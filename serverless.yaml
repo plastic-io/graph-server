@@ -80,6 +80,14 @@ provider:
     ISOLATE_MEMORY_MB: ${opt:isolateMemoryMb, '128'}
     # browsers that may call /mcp directly (non-browser MCP clients send no Origin)
     MCP_ALLOWED_ORIGINS: ${opt:mcpAllowedOrigins, 'http://localhost:8080,http://localhost:5173,https://plastic-io.github.io'}
+    # Where subscriptions/listen is served.  It is set by hand after the first
+    # deploy (the stack output McpStreamUrl): reading it from the URL resource
+    # here would make every function depend on a resource that depends on them.
+    MCP_STREAM_URL: ${opt:mcpStreamUrl, ''}
+    # How long one subscription stream is held open before the client is asked
+    # to listen again, and how often the store is asked what changed.
+    MCP_STREAM_MAX_MS: ${opt:mcpStreamMaxMs, '840000'}
+    MCP_STREAM_POLL_MS: ${opt:mcpStreamPollMs, '2000'}
     NODE_OPTIONS: "--enable-source-maps --unhandled-rejections=warn"
 
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"
@@ -522,6 +530,11 @@ functions:
   mcpRoute:
     handler: src/handler.mcpRoute
     timeout: 29
+    environment:
+      # So a client that arrives here is told where to listen.  Only this
+      # function refers to the URL: putting it in the shared environment would
+      # make the streaming function depend on a resource that depends on it.
+      MCP_STREAM_URL: !GetAtt McpStreamUrl.FunctionUrl
     events:
       - http:
           method: POST
@@ -536,6 +549,17 @@ functions:
               - Mcp-Method
               - Mcp-Name
               - Mcp-Session-Id
+
+  # subscriptions/listen (plan PB-085, spike S-3): a long-lived stream cannot be
+  # served by API Gateway, which has 29 seconds and one response per request, so
+  # this function is reached through a Lambda Function URL invoked with response
+  # streaming (RESPONSE_STREAM, declared under resources: below because this
+  # Serverless version predates the property).  No authorizer stands in front of
+  # a Function URL: the handler verifies the same Auth0 bearer itself.
+  mcpStream:
+    handler: src/handler.mcpStream
+    timeout: 900
+    memorySize: 512
 
   edgeDeliver:
     handler: src/handler.edgeDeliver
@@ -1051,6 +1075,48 @@ resources:
                 NoncurrentDays: 30
               AbortIncompleteMultipartUpload:
                 DaysAfterInitiation: 7
+    # The streaming endpoint (plan PB-085).  Serverless 3.25 can declare a
+    # Function URL but not its invoke mode, and the invoke mode is the whole
+    # point: BUFFERED would hold every frame until the handler returned, which
+    # for a subscription is until it times out.  So the URL is declared here.
+    McpStreamUrl:
+      Type: AWS::Lambda::Url
+      Properties:
+        AuthType: NONE
+        InvokeMode: RESPONSE_STREAM
+        TargetFunctionArn: !GetAtt McpStreamLambdaFunction.Arn
+        # No Cors block: a Function URL that configures CORS adds the headers
+        # itself, and the handler adds them too (it has to — the dev server is
+        # the same code with no URL in front of it), which leaves a browser with
+        # two Access-Control-Allow-Origin headers and a refusal.  One place owns
+        # them, and it is the handler.  It answers the preflight as well.
+    # AuthType NONE means the URL is reachable; it does not mean the endpoint is
+    # open.  Every request must carry an Auth0 bearer, which the handler
+    # verifies before it serves anything (src/mcp/stream.ts).
+    #
+    # Two statements, not one: since October 2025 a function URL needs
+    # lambda:InvokeFunction as well as lambda:InvokeFunctionUrl, and a URL with
+    # only the second answers every request with 403 before the function is ever
+    # invoked.  InvokedViaFunctionUrl keeps the second statement to calls that
+    # came through the URL, so this does not quietly make the function callable
+    # by anyone through the Invoke API.
+    McpStreamUrlPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !GetAtt McpStreamLambdaFunction.Arn
+        Action: lambda:InvokeFunctionUrl
+        Principal: "*"
+        FunctionUrlAuthType: NONE
+    McpStreamInvokePermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !GetAtt McpStreamLambdaFunction.Arn
+        Action: lambda:InvokeFunction
+        Principal: "*"
+        InvokedViaFunctionUrl: true
   Outputs:
+    McpStreamUrl:
+      Description: MCP subscriptions/listen endpoint (response streaming)
+      Value: !GetAtt McpStreamUrl.FunctionUrl
     Prefix:
       Value: ${self:custom.prefix}

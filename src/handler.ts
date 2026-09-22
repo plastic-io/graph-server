@@ -7,6 +7,7 @@ import BroadcastService from './broadcastService';
 import CrdtService from './crdtService';
 import { RevisionService } from './revisions/service';
 import { makeMcpHandler } from './mcp/handler';
+import { makeMcpStreamHandler } from './mcp/stream';
 import { decide, Authority } from './policy/decide';
 import GraphService, {panic as _panic} from './graphService';
 import { withPrincipal } from './auth/principal';
@@ -81,7 +82,7 @@ async function cancelExecution(graphId: string, principal: any, executionId: str
     return { executionId, requested: true, reason };
 }
 
-const mcp = makeMcpHandler({
+const mcpDeps = {
     crdtStore: eventSourceService.crdtStore,
     tocStore: eventSourceService.tocStore,
     admission: eventSourceService.crdtService.admission,
@@ -96,7 +97,13 @@ const mcp = makeMcpHandler({
     delegations: eventSourceService.delegations,
     tasks: eventSourceService.tasks,
     simulations: eventSourceService.simulations,
-});
+};
+const mcp = makeMcpHandler(mcpDeps);
+// The one endpoint that can hold a stream open (plan PB-085): a Lambda
+// Function URL, invoked with response streaming, verifying the bearer itself
+// because no authorizer stands in front of a Function URL.
+const mcpStreaming = makeMcpStreamHandler(mcpDeps);
+const mcpStream = mcpStreaming.lambda;
 const corsJson = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": true };
 function _mcp(event: any, context: any, callback: (err: any, response: any) => void) {
     mcp.lambda(event, context, callback);
@@ -469,6 +476,7 @@ export {
     getArtifact,
     publish,
     mcpRoute,
+    mcpStream,
     proposalsList,
     proposalGet,
     proposalCreate,

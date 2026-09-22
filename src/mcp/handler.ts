@@ -21,7 +21,9 @@ export function allowedOrigin(origin: string | undefined): boolean {
 }
 
 export function makeMcpHandler(deps: McpDeps) {
-    const handler = createMcpHandler((ctx) => buildServer(deps, (ctx.authInfo && ctx.authInfo.extra && (ctx.authInfo.extra as any).principal) || undefined), {
+    /** Where a client goes to listen, so a read tool can say so (plan PB-085). */
+    const streamUrl = () => process.env.MCP_STREAM_URL || undefined;
+    const handler = createMcpHandler((ctx) => buildServer(deps, (ctx.authInfo && ctx.authInfo.extra && (ctx.authInfo.extra as any).principal) || undefined, { streamUrl: streamUrl() }), {
         responseMode: "json",
         legacy: "reject",   // 2025-era clients are served below, as JSON, one instance per request
         onerror: (err) => console.error("MCP handler error", err),
@@ -29,7 +31,7 @@ export function makeMcpHandler(deps: McpDeps) {
 
     /** A 2025-era (sessionless, non-envelope) request: one server, one transport, one JSON answer. */
     async function serveLegacy(request: Request, principal: Principal | undefined): Promise<Response> {
-        const server = buildServer(deps, principal);
+        const server = buildServer(deps, principal, { streamUrl: streamUrl() });
         const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
         await server.connect(transport);
         try {

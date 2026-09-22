@@ -20,6 +20,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import CrdtService from "./crdtService";
 import CrdtStore from "./crdtStore";
 import EventSourceService from "./eventSourceService";
+import { makeMcpStreamHandler } from "./mcp/stream";
 
 const PORT = Number(process.env.PORT || 3030);
 /** Nothing here authenticates; every request is the same local person. */
@@ -167,6 +168,27 @@ async function runTaskLocally(task: any, cancelled: () => Promise<boolean>): Pro
 (eventSourceService as any).broadcastService = broadcastService;
 (eventSourceService as any).crdtService = crdtService;
 
+/**
+ * MCP, including the one thing only the streaming endpoint can do: hold a
+ * subscriptions/listen open (plan PB-085).  Deployed, that endpoint is a Lambda
+ * Function URL; here it is this process, so a client can be pointed at
+ * http://localhost:PORT/mcp and watch a graph change while it edits it.
+ */
+const mcp = makeMcpStreamHandler({
+  crdtStore,
+  tocStore: (eventSourceService as any).tocStore,
+  admission: crdtService.admission,
+  revisions: (eventSourceService as any).revisions,
+  components: (eventSourceService as any).components,
+  proposals: (eventSourceService as any).proposals,
+  summaries: (eventSourceService as any).summaries,
+  delegations: (eventSourceService as any).delegations,
+  journeys: (eventSourceService as any).journeys,
+  tests: (eventSourceService as any).tests,
+  tasks: (eventSourceService as any).tasks,
+  simulations: (eventSourceService as any).simulations,
+} as any, { store, pollMs: 500 });
+
 function apiEvent(connectionId: string, body: any) {
   return {
     body: JSON.stringify(body),
@@ -251,6 +273,39 @@ const server = http.createServer(async (request, response) => {
       const swept = await eventSourceService.parking.sweep();
       response.writeHead(200, { "Content-Type": "application/json", ...CORS });
       return response.end(JSON.stringify(swept));
+    }
+    if (path === "mcp" || path === "mcp/stream") {
+      // Served by the streaming handler whichever path it came in on: one
+      // endpoint that answers requests and holds subscriptions open.
+      const body = await readBody(request);
+      const headers = new Headers();
+      Object.keys(request.headers).forEach((k) => {
+        const value = request.headers[k];
+        if (typeof value === "string") {
+          headers.set(k, value);
+        }
+      });
+      headers.delete("authorization");            // nothing here authenticates
+      const served = await mcp.serve(
+        new Request(`http://localhost:${PORT}/${path}`, { method: request.method || "POST", headers, body: body || undefined }),
+        DEV_PRINCIPAL as any,
+      );
+      const outHeaders: Record<string, string> = { ...CORS };
+      served.headers.forEach((value, key) => { outHeaders[key] = value; });
+      response.writeHead(served.status, outHeaders);
+      if (!served.body) {
+        return response.end(await served.text());
+      }
+      const reader = (served.body as any).getReader();
+      request.on("close", () => reader.cancel().catch(() => undefined));
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        response.write(Buffer.from(value));
+      }
+      return response.end();
     }
     if (path === "toc.json") {
       return eventSourceService.getToc({}, {}, send);
