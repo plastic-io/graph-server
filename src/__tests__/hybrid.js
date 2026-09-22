@@ -101,9 +101,11 @@ describe("a linked graph", () => {
         const state = {};
         const summary = await runner.run({ graph: g, nodeUrl: "entry", value: 1, principal: owner, state, deliver: (d) => delivered.push(d) });
         expect(summary.state).toBe("completed");
-        // A node inside a linked graph is named by the host it came through, so
-        // two uses of one subgraph are two sets of nodes (plan §4.2, PB-046).
-        expect(delivered.map((d) => d.nodeId)).toEqual(["carrier/innerA"]);
+        // A linked graph is a call, so a node inside it keeps its own id and the
+        // hop says which call it belongs to — that pair is what the other domain
+        // needs to answer it in the same call (D-38).
+        expect(delivered.map((d) => d.nodeId)).toEqual(["innerA"]);
+        expect(delivered.map((d) => d.instancePath)).toEqual([["carrier"]]);
         // the carrier is placed in the browser, so its inner node went there too
         expect(state.innerRan).toBeUndefined();
         // and an inner node that says "server" is still the server's to run,

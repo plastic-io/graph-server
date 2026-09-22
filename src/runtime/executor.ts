@@ -277,6 +277,13 @@ export class ExecutionRunner {
          * host it was called through (plan §4.8.1 — an instance may narrow
          * placement, never widen it).
          */
+        /**
+         * Where a node inside a call runs (plan §4.8.1: an instance may narrow
+         * placement, never widen it).  A node with an answer of its own keeps
+         * it; otherwise the nearest host that has one decides, walking outwards
+         * along the path the call was reached through — every host, not just
+         * the innermost, because a component two calls deep is inside both.
+         */
         const placementWithin = (node: any, instance: any): any => {
             if (!instance || !instance.path || !instance.path.length) {
                 return node;
@@ -284,13 +291,18 @@ export class ExecutionRunner {
             if (node && node.properties && node.properties.placement) {
                 return node;
             }
-            const hostId = instance.path[instance.path.length - 1];
-            const host = (graph.nodes || []).find((n: any) => n.id === hostId || (n.id || "").endsWith(`/${hostId}`));
-            const placement = host && host.properties && host.properties.placement;
-            if (!placement || placement === "portable") {
-                return node;
+            const path: string[] = instance.path;
+            for (let depth = path.length; depth > 0; depth -= 1) {
+                const hostId = path[depth - 1];
+                const within = scheduler.instances[path.slice(0, depth).join("/")];
+                const from = within && within.parent ? within.parent : graph;
+                const host = (from.nodes || []).find((n: any) => n.id === hostId || (n.id || "").endsWith(`/${hostId}`));
+                const placement = host && host.properties && host.properties.placement;
+                if (placement && placement !== "portable") {
+                    return { ...node, properties: { ...(node.properties || {}), placement } };
+                }
             }
-            return { ...node, properties: { ...(node.properties || {}), placement } };
+            return node;
         };
         const executeNode = async ({ code, nodeInterface, execution, runInProcess }: any) => {
             const node = placementWithin(nodeInterface.node, nodeInterface.instance);
@@ -400,6 +412,14 @@ export class ExecutionRunner {
          * inner graph in scope and its connectors still name the outer one,
          * and every linked graph a node carries.
          */
+        /**
+         * Warm the loader's cache with the graphs this document links, so the
+         * first call does not wait on a fetch.  It used to stamp placement onto
+         * the inner nodes as well, **in place** — which wrote into the caller's
+         * own document and into whatever the loader had cached.  Where a node
+         * inside a call runs is decided when it runs, on a copy, along the whole
+         * chain of hosts it was reached through (`placementWithin`).
+         */
         const prime = async () => {
             const seen = new Set<string>();
             const seed = async (id: any, version: any, value?: any): Promise<any | null> => {
@@ -416,21 +436,6 @@ export class ExecutionRunner {
                 }
                 return resolved;
             };
-            /**
-             * A linked graph is part of the node that carries it, so where that
-             * node runs is where its inner nodes run too (plan §4.8.1: an
-             * instance may narrow placement, never widen it).  Inner nodes that
-             * say nothing inherit; one that says `server` inside a node placed
-             * in the browser keeps its own answer and is handed back.
-             */
-            const inherit = (inner: any, placement: string) => {
-                (inner && inner.nodes ? inner.nodes : []).forEach((n: any) => {
-                    n.properties = n.properties || {};
-                    if (!n.properties.placement) {
-                        n.properties.placement = placement;
-                    }
-                });
-            };
             const walk = async (current: any, depth: number) => {
                 if (!current || depth > 8 || seen.has(String(current.id))) {
                     return;
@@ -443,11 +448,6 @@ export class ExecutionRunner {
                         continue;
                     }
                     const inner = await seed(linked.id, linked.version === undefined ? node.version : linked.version, linked.graph);
-                    const placement = node.properties && node.properties.placement;
-                    if (inner && placement && placement !== "portable") {
-                        inherit(inner, placement);
-                        inherit(linked.graph, placement);
-                    }
                     await walk(inner, depth + 1);
                     await walk(linked.graph, depth + 1);
                 }
