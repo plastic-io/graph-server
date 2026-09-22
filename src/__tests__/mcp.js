@@ -81,6 +81,8 @@ async function connect(mcp, principal) {
     return client;
 }
 const parse = (r) => r.structuredContent || JSON.parse(r.content[0].text);
+/** the proposal service behind a handler, for checking what was recorded */
+const proposalsOf = (mcp) => (mcp.deps ? mcp.deps.proposals : mcp.proposals);
 
 describe("MCP over the Lambda handler", () => {
     test("tools and resources are listed; graph.summary returns the envelope, a named revision and a bounded summary", async () => {
@@ -301,7 +303,7 @@ describe("MCP over the Lambda handler", () => {
             expect(refused.isError).toBe(true);
             expect(parse(refused).error).toMatchObject({ code: "ADMISSION_DENIED", message: expect.stringMatching(/lacks/) });
         }
-        // an agent still cannot commit its own proposal: a human's approval is a separate act
+        // an agent without a commit delegation cannot commit its own proposal
         const rev = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } })).envelope.resultRevision;
         const created = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.trim();" }], description: "Trim", idempotencyKey: ULID } }));
         expect(created.result.requiredDecisions).toEqual(["approve"]);
@@ -322,6 +324,33 @@ describe("MCP over the Lambda handler", () => {
         expect(activated.result.active).toMatchObject({ revision: cut.result.revision });
         const rolledBack = parse(await client.callTool({ name: "revision.rollback", arguments: { schemaVersion: 1, graphId: "g1", revisionId: rev } }));
         expect(rolledBack.result.decision).toBe("accepted");
+        await client.close();
+    });
+
+    test("an agent the owner trusted with commit may commit what it proposed; one without that grant may not", async () => {
+        const { mcp, delegations, proposals, store } = await setup();
+        // the owner delegates commit for this graph, and only this graph
+        await delegations.put({ agentSub: "agent|a1", graphId: "g1", delegatedBy: "auth0|u1", scopes: ["graph:read", "graph:propose", "graph:commit"], expiresAt: null, createdAt: new Date().toISOString() });
+        let client = await connect(mcp, agent);
+        const rev = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } })).envelope.resultRevision;
+        const created = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: rev, ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = value.trim();" }], description: "Trim", idempotencyKey: ULID } }));
+        expect(created.result.requiredDecisions).toEqual([]);          // nobody else has to say yes
+        const committed = parse(await client.callTool({ name: "proposal.commit", arguments: { schemaVersion: 1, graphId: "g1", proposalId: created.result.proposalId } }));
+        expect(committed.result).toMatchObject({ state: "committed", resultRevision: expect.stringMatching(/^rev_/) });
+        expect((await store.projectGraph("g1")).nodes.find((n) => n.id === "normalize").template.set).toBe("edges.out = value.trim();");
+        // who committed it is in the record, and nobody else is named there
+        const stored = await proposals.get("g1", created.result.proposalId);
+        expect(stored.decisions.map((d) => [d.by, d.decision])).toEqual([["agent|a1", "commit"]]);
+        await client.close();
+        // the same agent without that grant leaves the proposal waiting for a person
+        await delegations.put({ agentSub: "agent|a2", graphId: "g1", delegatedBy: "auth0|u1", scopes: ["graph:read", "graph:propose"], expiresAt: null, createdAt: new Date().toISOString() });
+        client = await connect(mcp, { ...agent, sub: "agent|a2" });
+        const head = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } })).envelope.resultRevision;
+        const second = parse(await client.callTool({ name: "proposal.create", arguments: { schemaVersion: 1, graphId: "g1", baseRevision: head, ops: [{ op: "set-node-props", nodeId: "normalize", patch: { description: "from an agent without commit" } }], description: "Describe", idempotencyKey: "01J8ZK5K0B1C2D3E4F5G6H7J9Z" } }));
+        expect(second.result.requiredDecisions).toEqual(["approve"]);
+        const refused = await client.callTool({ name: "proposal.commit", arguments: { schemaVersion: 1, graphId: "g1", proposalId: second.result.proposalId } });
+        expect(refused.isError).toBe(true);
+        expect(parse(refused).error).toMatchObject({ code: "ADMISSION_DENIED" });
         await client.close();
     });
 

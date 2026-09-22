@@ -150,7 +150,12 @@ export class ProposalService {
         const required = requiredAuthorities(diff);
         const held = (a: Authority) => decide(principal, [a]).allow;
         const out: Proposal["requiredDecisions"] = [];
-        if (!principal || principal.kind === "agent") out.push("approve");   // agents do not commit in this release (plan M2)
+        // The graph's owner decides who may commit: an agent commits a proposal
+        // it made only where a human delegated `graph:commit` to it for this
+        // graph, and without that grant a person still has to say yes.  The
+        // delegation is the control, and it is per graph, expiring and
+        // revocable (plan D-18, revisited in M3 at the owner's direction).
+        if (!principal || (principal.kind !== "human" && !held("graph:commit"))) out.push("approve");
         if (required.includes("graph:connect-privileged") && !held("graph:connect-privileged")) out.push("privileged-connect");
         if (required.includes("iac:approve") && !held("iac:approve")) out.push("iac-approve");
         return Array.from(new Set(out));
