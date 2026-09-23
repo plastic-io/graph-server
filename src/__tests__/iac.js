@@ -292,3 +292,88 @@ describe("a revision carrying infrastructure", () => {
         expect(cut.revision.iac).toBeUndefined();
     });
 });
+
+describe("a node asking for it, all the way down", () => {
+    const { ExecutionRunner } = require("../runtime/executor");
+
+    /**
+     * The point of D-41: there is no builtin node kind, so this is an ordinary
+     * node running ordinary code, and the only thing between it and
+     * CloudFormation is the capability.  The whole path runs here — scheduler,
+     * capability check, observation, audit, service, client.
+     */
+    const port = (name) => ({ name, type: "Object", external: false, visible: true });
+    const deployingGraph = (capabilities) => ({
+        id: "infra", url: "infra", version: 0, properties: { name: "Infrastructure" },
+        nodes: [{
+            id: "stack", url: "stack", version: 0, graphId: "infra", artifact: null, data: null,
+            edges: [{ field: "out", connectors: [] }],
+            properties: {
+                inputs: [port("in")], outputs: [port("out")], name: "Uploads bucket", presentation: {},
+                capabilities,
+                iac: {
+                    schemaVersion: 1,
+                    stack: { name: "pio-dev-uploads", account: "695527765921", region: "us-west-1", environment: "dev" },
+                    template: { text: TEMPLATE, format: "yaml" },
+                },
+            },
+            template: { set: "state.answer = await host.deploy({stack: {name: 'pio-dev-uploads'}, operation: 'plan', parameters: {Stage: value}}); edges.out = state.answer;", vue: "" },
+        }],
+    });
+
+    async function runWith(capabilities, iacOver = {}) {
+        const s3 = new FakeS3Service();
+        const graph = deployingGraph(capabilities);
+        const cloudformation = fakeCloudFormation();
+        const iac = new IacService(s3, {
+            policy,
+            projection: async () => ({ revisionId: "rev_01J8ZK5K0B1C2D3E4F5G6H7J8A", projection: graph }),
+            template: async () => null,
+            cloudformation,
+            pollMs: 1,
+            timeoutMs: 50,
+            ...iacOver,
+        });
+        const observations = [];
+        const runner = new ExecutionRunner(s3, {
+            live: (o) => observations.push(o),
+            deploy: (request) => iac.fromHost({ ...request, principal: owner }),
+        });
+        const state = {};
+        const summary = await runner.run({ graph, nodeUrl: "stack", field: "in", value: "dev", principal: owner, state });
+        return { summary, observations, cloudformation, s3, state };
+    }
+
+    test("a node granted aws:cfn gets a plan back, and the parameters it assembled reach it", async () => {
+        const { summary, observations, cloudformation, state } = await runWith(["aws:cfn:pio-dev-*"]);
+        expect(summary.errors).toBe(0);
+        // what the node holds is the plan itself
+        expect(state.answer.plan.changes).toEqual([{ action: "Add", logicalId: "Bucket", resourceType: "AWS::S3::Bucket" }]);
+        expect(state.answer.plan.destructive).toBe(false);
+        const created = cloudformation.calls.find((c) => c[0] === "createChangeSet")[1];
+        // the template came from the document; only the parameters came from the node
+        expect(created.templateBody).toBe(TEMPLATE);
+        expect(created.parameters).toEqual({ Stage: "dev" });
+        // the effect is observed like any other, and named for what it was
+        const effects = observations.filter((o) => o.kind === "effect");
+        expect(effects.map((o) => [o.capability.kind, o.capability.decision, o.capability.scope[0]])).toContainEqual(["aws:cfn", "allowed", "pio-dev-uploads"]);
+    });
+
+    test("a node without the capability never reaches the service", async () => {
+        const { summary, observations, cloudformation } = await runWith(["net:https:example.com"]);
+        expect(cloudformation.calls).toEqual([]);
+        expect(observations.filter((o) => o.kind === "effect.denied").map((o) => o.capability.kind)).toEqual(["aws:cfn"]);
+        // the node's code failed, which is what a refused effect does
+        expect(summary.errors).toBeGreaterThan(0);
+    });
+
+    test("an instance with no CloudFormation authority answers the node, rather than throwing at it", async () => {
+        const { summary, observations, state } = await runWith(["aws:cfn:pio-dev-*"], { cloudformation: undefined });
+        // the capability was granted, so the effect happened as far as it could
+        expect(observations.filter((o) => o.kind === "effect").map((o) => o.capability.kind)).toContain("aws:cfn");
+        expect(summary.errors).toBe(0);
+        // and what the node holds says why, in the vocabulary of the tools
+        expect(state.answer.code).toBe("UNSUPPORTED");
+        expect(state.answer.error).toMatch(/no CloudFormation authority/);
+    });
+});
