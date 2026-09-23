@@ -64,6 +64,15 @@ provider:
     # resource above it is an opaque string: it does not have to be a hostname
     # anything answers on, and it is accepted whatever the metadata advertises.
     MCP_AUDIENCE: ${opt:mcpAudience, 'https://graph-server.plastic-io.dev'}
+    # What infrastructure this environment allows (plan §4.9, M4a).  With no
+    # accounts named there is no CloudFormation client at all, so the server
+    # validates a desired state and says plainly that it cannot plan one; the
+    # account this would point at is decided with the orchestrator (D-45).
+    IAC_ACCOUNTS: ${opt:iacAccounts, ''}
+    IAC_REGIONS: ${opt:iacRegions, 'us-west-1'}
+    IAC_STACK_PREFIX: ${opt:iacStackPrefix, 'pio-dev-'}
+    IAC_BOUNDARY_ARN: ${opt:iacBoundaryArn, ''}
+    IAC_SUBSTRATE_STACKS: 'plastic-io-graph-server,plastic-io-iac-orchestrator'
     OWNER_SUBS: ${opt:ownerSubs, ''}
     WS_EXECUTION_ENABLED: ${opt:wsExecution, 'false'}
     API_REGION: ${self:provider.region}

@@ -38,6 +38,8 @@ export interface Revision {
     digest: { definition: string; layout: string; full: string };
     schemaVersion: number;
     pins: { components: any[]; artifacts: string[]; runtime: { scheduler: string } };
+    /** The infrastructure templates this revision carries, by digest (PB-096). */
+    iac?: { nodeId: string; sha256: string; format: string; stack: any; resources: number; resourceTypes: string[] }[];
     mutationIds: string[];
     createdBy: { sub: string; kind: string; tenant: string } | null;
     at: string;
@@ -90,11 +92,17 @@ export class RevisionService {
     private fanOut: (graphId: string, update: Uint8Array) => Promise<void>;
     /** What must hold before a version may be the one that runs (plan §8.1.8). */
     gate: ((graphId: string, revisionId: string, projection: any) => Promise<{ gate: string; says: string }[]>) | null = null;
+    /**
+     * Infrastructure templates become immutable artifacts here, and a template
+     * this environment would refuse stops the revision being cut (PB-096).
+     */
+    templates: ((projection: any) => Promise<{ ok: boolean; problems: any[]; templates: any[] }>) | null = null;
 
     constructor(crdtStore: CrdtStore, admission: AdmissionService, hooks: {
         notify?: (graphId: string, event: any) => Promise<void>;
         fanOut?: (graphId: string, update: Uint8Array) => Promise<void>;
         gate?: (graphId: string, revisionId: string, projection: any) => Promise<{ gate: string; says: string }[]>;
+        templates?: (projection: any) => Promise<{ ok: boolean; problems: any[]; templates: any[] }>;
     } = {}) {
         this.crdtStore = crdtStore;
         this.admission = admission;
@@ -102,6 +110,7 @@ export class RevisionService {
         this.notify = hooks.notify || (async () => undefined);
         this.fanOut = hooks.fanOut || (async () => undefined);
         this.gate = hooks.gate || null;
+        this.templates = hooks.templates || null;
     }
 
     static manifestKey(graphId: string, revisionId: string) { return `revisions/${graphId}/${revisionId}.json`; }
@@ -194,6 +203,18 @@ export class RevisionService {
             if (parent && parent.digest.full === digest.full) {
                 return { revision: parent, created: false };
             }
+            // Before anything is named: a revision carrying a template this
+            // environment would refuse is not a revision (PB-096).  The
+            // artifacts are written here too, addressed by digest, so a plan
+            // and the apply that follows it are about the same bytes.
+            let iac: any[] = [];
+            if (this.templates) {
+                const written = await this.templates(projection);
+                if (!written.ok) {
+                    return { error: "this graph carries infrastructure this environment does not allow", code: "IAC_REFUSED", problems: written.problems } as any;
+                }
+                iac = written.templates;
+            }
             const auditHead = await this.getJson(this.admission.chain.headKey(graphId));
             const revision: Revision = {
                 revisionId: ulid(),
@@ -212,6 +233,7 @@ export class RevisionService {
                     artifacts: Array.from(new Set(projection.nodes.map((n: any) => n.artifact).filter((a: any) => typeof a === "string" && a))),
                     runtime: { scheduler: SCHEDULER_VERSION },
                 },
+                ...(iac.length ? { iac } : {}),
                 mutationIds: await this.mutationsSince(graphId, parent ? parent.auditHead : null),
                 createdBy: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant } : null,
                 at: new Date().toISOString(),

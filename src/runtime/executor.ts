@@ -108,7 +108,7 @@ const LEGACY_EVENTS = ["begin", "end", "beginconnector", "endconnector", "set", 
 export class ExecutionRunner {
     private store: Store;
     private chain: AuditChain;
-    constructor(store: Store, private deps: { fetchImpl?: typeof fetch; secrets?: (ref: string) => Promise<string>; live?: (observation: Observation) => void } = {}) {
+    constructor(store: Store, private deps: { fetchImpl?: typeof fetch; secrets?: (ref: string) => Promise<string>; live?: (observation: Observation) => void; deploy?: (request: any) => Promise<any> } = {}) {
         this.store = store;
         this.chain = new AuditChain(store as any);
     }
@@ -202,6 +202,7 @@ export class ExecutionRunner {
                 del: (key) => new Promise((resolve) => this.store.remove(kvKey(key), () => resolve())),
             },
             audit: (record) => this.chain.append(graph.id, record).then(() => undefined),
+            deploy: this.deps.deploy,
             now: req.now,
         };
         const hooks = makeContractHooks();

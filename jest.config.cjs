@@ -33,7 +33,8 @@ module.exports = {
   // `resolve.symlinks: false` in webpack.config.js; this is the same fix.
   moduleNameMapper: {
         ...mcpSubpaths,
-    // jest 26 cannot resolve the node: scheme; every core module has a re-exporting shim under nodeCore/
+    // jest 26 cannot resolve the node: scheme; every core module, nested paths
+    // included (node:fs/promises), has a re-exporting shim under nodeCore/
     "^node:(.*)$": "<rootDir>/src/__testHelpers__/nodeCore/$1.js",
     "^yjs$": "<rootDir>/node_modules/yjs",
     "^lib0/(.*)$": "<rootDir>/node_modules/lib0/$1",

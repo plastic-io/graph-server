@@ -189,6 +189,7 @@ const mcp = makeMcpStreamHandler({
   tasks: (eventSourceService as any).tasks,
   simulations: (eventSourceService as any).simulations,
   consumers: (eventSourceService as any).consumers,
+  iac: (eventSourceService as any).iac,
 } as any, { store, pollMs: 500 });
 
 function apiEvent(connectionId: string, body: any) {

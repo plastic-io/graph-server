@@ -109,7 +109,7 @@ describe("MCP over the Lambda handler", () => {
         const tools = (await client.listTools()).tools.map((t) => t.name).sort();
         expect(tools).toEqual([
             "component.consumers", "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
-            "journey.run", "observations.query", "proposal.commit", "proposal.create", "proposal.decide", "proposal.simulate", "proposal.validate",
+            "iac.plan", "iac.status", "journey.run", "observations.query", "proposal.commit", "proposal.create", "proposal.decide", "proposal.simulate", "proposal.validate",
             "revision.activate", "revision.cut", "revision.rollback", "tasks.cancel", "tasks.get", "tasks.list", "tests.run",
         ]);
         const r = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
@@ -640,6 +640,93 @@ describe("who uses a published component", () => {
         const body = JSON.parse(r.contents[0].text);
         expect(body.publishedId).toBe("c1");
         expect(body.consumers.map((c) => c.graphId)).toEqual(["g1"]);
+        await client.close();
+    });
+});
+
+describe("asking what an infrastructure change would do", () => {
+    /**
+     * A plan is a question, and the answer is the only thing this milestone
+     * can produce (D-43).  The tool exists so an agent can ask it; there is
+     * deliberately no tool that applies one.
+     */
+    const withIac = async (answers = {}) => {
+        const parts = await setup();
+        const plans = [];
+        const iac = {
+            plan: async (graphId, nodeId, principal, options) => {
+                plans.push({ graphId, nodeId, sub: principal && principal.sub, options });
+                return answers.plan || { plan: { changeSetId: "arn:cs", changes: [{ action: "Add", logicalId: "Bucket", resourceType: "AWS::S3::Bucket" }], destructive: false, changeSetRetained: false, stackExists: false } };
+            },
+            status: async () => answers.status || { state: "never-planned" },
+        };
+        const { makeMcpHandler } = require("../mcp/handler");
+        const { RateLimiter } = require("../admission/limits");
+        const mcp = makeMcpHandler({
+            crdtStore: parts.store, tocStore: parts.tocStore, admission: parts.crdt.admission, revisions: parts.revisions,
+            components: parts.components, proposals: parts.proposals, summaries: parts.summaries, delegations: parts.delegations,
+            tasks: parts.tasks, iac,
+            rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: 1000 }) },
+        });
+        return { ...parts, mcp, plans };
+    };
+
+    test("a plan is a task, because a change set takes longer than a call", async () => {
+        const { mcp, dispatched } = await withIac();
+        const client = await connect(mcp, owner);
+        const r = parse(await client.callTool({ name: "iac.plan", arguments: { schemaVersion: 1, graphId: "g1", nodeId: "stack" } }));
+        expect(r.result.resultType).toBe("task");
+        expect(r.result.task).toMatchObject({ kind: "iac.plan", status: "working", graphId: "g1" });
+        expect(r.result.task.taskId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+        expect(dispatched).toContain(r.result.task.taskId);
+        await client.close();
+    });
+
+    test("a caller who would rather wait gets the answer itself", async () => {
+        const { mcp, plans } = await withIac();
+        const client = await connect(mcp, owner);
+        const r = parse(await client.callTool({ name: "iac.plan", arguments: { schemaVersion: 1, graphId: "g1", nodeId: "stack", async: false } }));
+        expect(r.result.plan.changes).toHaveLength(1);
+        expect(r.result.plan.destructive).toBe(false);
+        expect(plans[0]).toMatchObject({ graphId: "g1", nodeId: "stack", sub: "auth0|u1" });
+        await client.close();
+    });
+
+    test("a refusal names what it refused, so it can be fixed", async () => {
+        const { mcp } = await withIac({ plan: { error: "this desired state is not one this environment allows", code: "IAC_REFUSED", problems: [{ code: "CUSTOM_RESOURCE", message: "a custom resource runs code of its own", resource: "X" }] } });
+        const client = await connect(mcp, owner);
+        const r = await client.callTool({ name: "iac.plan", arguments: { schemaVersion: 1, graphId: "g1", nodeId: "stack", async: false } });
+        expect(r.isError).toBe(true);
+        const answer = parse(r);
+        expect(answer.error.code).toBe("IAC_REFUSED");
+        expect(answer.error.details.problems[0].code).toBe("CUSTOM_RESOURCE");
+        await client.close();
+    });
+
+    test("an agent with no delegation cannot ask for a plan, or for the status", async () => {
+        const { mcp } = await withIac();
+        const client = await connect(mcp, agent);
+        for (const name of ["iac.plan", "iac.status"]) {
+            const r = await client.callTool({ name, arguments: { schemaVersion: 1, graphId: "g1", nodeId: "stack" } });
+            expect(parse(r).error.code).toBe("ADMISSION_DENIED");
+        }
+        await client.close();
+    });
+
+    test("there is no tool that applies one", async () => {
+        const { mcp } = await withIac();
+        const client = await connect(mcp, owner);
+        const names = (await client.listTools()).tools.map((t) => t.name);
+        expect(names).toContain("iac.plan");
+        expect(names.filter((n) => /apply|deploy|execute/i.test(n))).toEqual([]);
+        await client.close();
+    });
+
+    test("a server with no infrastructure service says so", async () => {
+        const { mcp } = await setup();
+        const client = await connect(mcp, owner);
+        const r = await client.callTool({ name: "iac.plan", arguments: { schemaVersion: 1, graphId: "g1", nodeId: "stack", async: false } });
+        expect(parse(r).error.code).toBe("UNSUPPORTED");
         await client.close();
     });
 });

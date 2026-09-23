@@ -49,6 +49,9 @@ async function invokeForAgent(graphId: string, principal: any, request: { nodeUr
     const active: any = await eventSourceService.crdtStore.activeRevision(graphId).catch(() => null);
     const runner = new ExecutionRunner(eventSourceService.crdtStore.store as any, {
         live: (observation) => { broadcastService._sendToChannel("graph-notify-" + graphId, { ...observation, eventType: "observation" }, () => undefined); },
+        // a node holding aws:cfn can ask what its change would do; the service
+        // decides whether this principal may, and it can only plan (D-41, D-43)
+        deploy: (request: any) => eventSourceService.iac.fromHost({ ...request, principal }),
     });
     const summary = await runner.run({
         graph,
@@ -100,6 +103,7 @@ const mcpDeps = {
     tasks: eventSourceService.tasks,
     simulations: eventSourceService.simulations,
     consumers: eventSourceService.consumers,
+    iac: eventSourceService.iac,
 };
 const mcp = makeMcpHandler(mcpDeps);
 // The one endpoint that can hold a stream open (plan PB-085): a Lambda
@@ -208,6 +212,9 @@ async function runTask(task: any, cancelled: () => Promise<boolean>): Promise<an
         return await eventSourceService.simulations.run(task.graphId, task.input.proposalId, principal, {
             mode: task.input.mode, executionSample: task.input.executionSample, budget: task.input.budget,
         });
+    }
+    if (task.kind === "iac.plan") {
+        return await eventSourceService.iac.plan(task.graphId, task.input.nodeId, principal, { revisionId: task.input.revisionId });
     }
     if (task.kind === "journey.run") {
         return await eventSourceService.journeys.run(task.graphId, task.input.journeyId, "request", principal);

@@ -44,6 +44,11 @@ export interface McpDeps {
     simulations?: { run(graphId: string, proposalId: string, principal: Principal | undefined, options: any): Promise<any> };
     /** Who carries a published component, and what a version would mean for them (PB-044). */
     consumers?: { consumers(publishedId: string, principal?: Principal): Promise<any[]>; impact(publishedId: string, version: number, principal?: Principal): Promise<any> };
+    /** Asking CloudFormation what a change would do (plan §4.9, M4a). */
+    iac?: {
+        plan(graphId: string, nodeId: string, principal: Principal | undefined, options?: { revisionId?: string; idempotencyKey?: string }): Promise<any>;
+        status(graphId: string, nodeId: string, principal: Principal | undefined, revisionId?: string): Promise<any>;
+    };
     rate?: { reads: RateLimiter; writes: RateLimiter };
 }
 
@@ -294,6 +299,39 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
             return ok(principal, { publishedId: args.publishedId, consumers });
         }
         return ok(principal, await deps.consumers.impact(args.publishedId, args.version, rawPrincipal));
+    }));
+
+    /**
+      * Infrastructure (plan §4.9, M4a).  A plan is a question — what would
+      * this change do — and the answer is the only thing this milestone can
+      * produce: there is no tool here that applies one, because the code that
+      * would apply one does not exist yet (D-43).
+      */
+    server.registerTool("iac.plan", {
+        title: "What this infrastructure change would do",
+        description: "Ask CloudFormation what the desired state a node carries would change, without changing anything: the template is validated against what this environment allows, a change set is made, read and deleted, and the answer says which resources would be added, changed or removed and whether any of it is destructive. Answers with a task when the change set takes longer than a call.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, nodeId: ID, revisionId: REV.optional(), async: z.boolean().optional() }).strict(),
+        annotations: { readOnlyHint: true },
+    }, guarded("iac.plan", "read", (a) => a.graphId, ["iac:propose"], async (args, principal) => {
+        if (!deps.iac) return fail("UNSUPPORTED", "this server does not do infrastructure");
+        if (args.async !== false && deps.tasks) {
+            return startTask("iac.plan", args.graphId, principal, { nodeId: args.nodeId, revisionId: args.revisionId });
+        }
+        const r: any = await deps.iac.plan(args.graphId, args.nodeId, rawPrincipal, { revisionId: args.revisionId });
+        if (r.error) return fail(r.code, r.error, retryFor(r.code), { problems: r.problems, validation: r.validation });
+        return ok(principal, r, { graphId: args.graphId });
+    }));
+
+    server.registerTool("iac.status", {
+        title: "What happened to this stack",
+        description: "The durable status of the stack a node describes: what was last asked for, at which revision, what the template validated as, and what the last plan found. Says 'never-planned' rather than nothing when there is no history.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, nodeId: ID, revisionId: REV.optional() }).strict(),
+        annotations: { readOnlyHint: true },
+    }, guarded("iac.status", "read", (a) => a.graphId, ["iac:read-status"], async (args, principal) => {
+        if (!deps.iac) return fail("UNSUPPORTED", "this server does not do infrastructure");
+        const r: any = await deps.iac.status(args.graphId, args.nodeId, rawPrincipal, args.revisionId);
+        if (r.error) return fail(r.code, r.error, retryFor(r.code));
+        return ok(principal, r, { graphId: args.graphId });
     }));
 
     server.registerTool("observations.query", {

@@ -28,6 +28,10 @@ import { SYSTEM_PRINCIPAL } from "./revisions/service";
 import { validatorFor_ } from "./runtime/contracts";
 import { ExecutionRunner } from "./runtime/executor";
 import { DelegationStore } from "./policy/delegation";
+import { TemplateStore } from "./iac/templates";
+import { IacService } from "./iac/service";
+import { cloudFormationClient } from "./iac/cloudformation";
+import { policyFromEnv } from "./iac/validator";
 import {
     ensureBuilt,
     listGraph,
@@ -89,6 +93,8 @@ export default class EventSourceService {
     tests: TestService;
     autonomy: AutonomyStore;
     delegations: DelegationStore;
+    templates: TemplateStore;
+    iac: IacService;
     store: S3Service;
     broadcastService: BroadcastService;
     crdtService: CrdtService;
@@ -106,9 +112,13 @@ export default class EventSourceService {
         this.crdtStore = crdtStore || new CrdtStore(store);
         this.crdtService = new CrdtService(this.crdtStore);
         this.tocStore = new TocStore(store);
+        // Infrastructure templates become immutable artifacts when a revision
+        // is cut, and one this environment would refuse stops the cut (PB-096).
+        this.templates = new TemplateStore((this.crdtStore as any).store);
         this.revisions = new RevisionService(this.crdtStore, this.crdtService.admission, {
             fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
             notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
+            templates: (projection) => this.templates.writeFor(projection),
         });
         this.components = new ComponentService(this.crdtStore, this.revisions, this.crdtService.admission, {
             tocStore: this.tocStore, broadcastService: this.broadcastService,
@@ -166,6 +176,31 @@ export default class EventSourceService {
          */
         this.tasks = new TaskService(this.crdtStore.store as any, {
             dispatch: (task: TaskRecord) => dispatchTask(task),
+        });
+        /**
+         * Asking CloudFormation what a change would do (M4a, D-43).  The
+         * client is built only where an environment names the accounts it may
+         * reach; with nothing configured there is no client, and the service
+         * says so rather than failing somewhere inside AWS.
+         */
+        const iacPolicy = policyFromEnv();
+        this.iac = new IacService((this.crdtStore as any).store, {
+            policy: () => policyFromEnv(),
+            projection: async (graphId: string, revisionId?: string) => {
+                const revision = revisionId ? await this.revisions.get(graphId, revisionId) : await this.revisions.head(graphId);
+                const id = revision && (revision as any).revisionId;
+                if (!id) {
+                    const live = await this.crdtStore.projectGraph(graphId);
+                    return live ? { revisionId: "live", projection: live } : null;
+                }
+                const projection = await this.revisions.projection(graphId, id);
+                return projection ? { revisionId: id, projection } : null;
+            },
+            template: (sha256: string) => this.templates.read(sha256),
+            cloudformation: iacPolicy.accounts.length ? cloudFormationClient(iacPolicy.regions[0]) : undefined,
+            observe: async (record: any) => {
+                this.broadcastService._sendToChannel("graph-notify-" + record.graphId, { eventType: "deploy", ...record }, () => undefined);
+            },
         });
         // Bringing the graphs that already exist into this world (plan §9.5).
         this.migrations = new MigrationService(this.crdtStore.store as any, this.crdtStore, this.tocStore, {
