@@ -55,7 +55,11 @@ provider:
     # knows; tokens for it and for AUTH0_AUDIENCE are both accepted, so one can
     # be introduced without the other stopping.  Unset, the canonical /mcp URL
     # is advertised, which only works once an Auth0 API carries that identifier.
-    MCP_RESOURCE: ${opt:mcpResource, 'https://graph-server.plastic-io.dev'}
+    # Left empty on purpose: the identifier is then derived from the host the
+    # client actually reached, which is what an MCP client checks it against —
+    # it refuses a resource that is not the server it is talking to.  Set it
+    # only to a hostname this API really answers on.
+    MCP_RESOURCE: ${opt:mcpResource, ''}
     OWNER_SUBS: ${opt:ownerSubs, ''}
     WS_EXECUTION_ENABLED: ${opt:wsExecution, 'false'}
     API_REGION: ${self:provider.region}
