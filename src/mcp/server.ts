@@ -4,7 +4,7 @@ import { createHash } from "crypto";
 import { ulid } from "ulid";
 import { semanticDiff } from "@plastic-io/graph-crdt";
 import { Principal } from "../auth/principal";
-import { decide, Authority, POLICY_VERSION } from "../policy/decide";
+import { decide, Authority, AUTHORITIES, POLICY_VERSION } from "../policy/decide";
 import { DelegationStore } from "../policy/delegation";
 import { TaskService, taskAnswer, taskView } from "./tasks";
 import { RateLimiter } from "../admission/limits";
@@ -42,6 +42,8 @@ export interface McpDeps {
     tasks?: TaskService;
     /** What a proposal would do, before anyone lives with it (plan §4.7.5). */
     simulations?: { run(graphId: string, proposalId: string, principal: Principal | undefined, options: any): Promise<any> };
+    /** Who carries a published component, and what a version would mean for them (PB-044). */
+    consumers?: { consumers(publishedId: string, principal?: Principal): Promise<any[]>; impact(publishedId: string, version: number, principal?: Principal): Promise<any> };
     rate?: { reads: RateLimiter; writes: RateLimiter };
 }
 
@@ -271,6 +273,28 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
         }
         return out;
     };
+
+    /**
+     * The other half of publishing.  `graph.summary` says what a graph depends
+     * on; this says who depends on *it*, which is the question asked before a
+     * version is replaced rather than after.  The answer is narrowed to the
+     * graphs the caller could have read directly.
+     */
+    server.registerTool("component.consumers", {
+        title: "Who uses a published component",
+        description: "The graphs that carry a published component, with the nodes and versions they pin. With a version, answers what publishing it would mean: which consumers are behind, level with it, or ahead.",
+        inputSchema: z.object({ schemaVersion: z.literal(1), publishedId: ID, version: z.number().int().min(0).optional() }).strict(),
+        annotations: { readOnlyHint: true },
+    }, guarded("component.consumers", "read", () => undefined, ["registry:read"], async (args, principal) => {
+        if (!deps.consumers) {
+            return fail("UNSUPPORTED", "this server keeps no consumers index");
+        }
+        if (args.version === undefined) {
+            const consumers = await deps.consumers.consumers(args.publishedId, rawPrincipal);
+            return ok(principal, { publishedId: args.publishedId, consumers });
+        }
+        return ok(principal, await deps.consumers.impact(args.publishedId, args.version, rawPrincipal));
+    }));
 
     server.registerTool("observations.query", {
         title: "Query what happened to a graph",
@@ -565,8 +589,40 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
 
     server.registerResource("graphs", "plastic://graphs", { title: "Graphs", description: "The graphs this principal may read", mimeType: "application/json" }, async (uri) => {
         const toc = await deps.tocStore.project();
-        const graphs = Object.keys(toc).map((k) => toc[k]).filter((e: any) => e && e.type === "graph" && !e.deleted).map((e: any) => ({ graphId: e.id, name: e.name, description: e.description, url: e.url, version: e.version }));
+        const entries = Object.keys(toc).map((k) => toc[k]).filter((e: any) => e && e.type === "graph" && !e.deleted);
+        // an owner reads everything, so ask once; an agent is asked per graph,
+        // because a delegation is per graph and the list must not name the rest
+        const everywhere = (await forGraph(undefined, ["graph:read"])).decision.allow;
+        const graphs: any[] = [];
+        for (const e of entries) {
+            if (!everywhere && !(await forGraph(e.id, ["graph:read"])).decision.allow) {
+                continue;
+            }
+            graphs.push({ graphId: e.id, name: e.name, description: e.description, url: e.url, version: e.version });
+        }
         return text(uri, { graphs });
+    });
+    /**
+     * What the caller is and what it may do.  An agent could discover its
+     * authority only by being refused something; this says it up front, which
+     * is what a client needs to decide whether to try at all.
+     */
+    server.registerResource("me", "plastic://me", { title: "The caller and its authority", description: "Who this principal is, what it holds everywhere, and the delegations it was given", mimeType: "application/json" }, async (uri) => {
+        if (!rawPrincipal) {
+            denied("not found: " + uri.href);
+        }
+        const wide = await deps.delegations.resolve(rawPrincipal, undefined);
+        const holds = AUTHORITIES.filter((a) => decide(wide, [a]).allow);
+        const me: any = {
+            sub: rawPrincipal!.sub, kind: rawPrincipal!.kind, tenant: rawPrincipal!.tenant,
+            policyVersion: POLICY_VERSION, holdsEverywhere: holds,
+        };
+        if (rawPrincipal!.kind === "agent") {
+            const mine = (await deps.delegations.list()).filter((d) => d.agentSub === rawPrincipal!.sub);
+            me.delegatedBy = (wide as any) && (wide as any).delegatedBy;
+            me.delegations = mine.map((d) => ({ graphId: d.graphId, scopes: d.scopes, expiresAt: d.expiresAt, delegatedBy: d.delegatedBy, label: d.label }));
+        }
+        return text(uri, me);
     });
     server.registerResource("graph", new ResourceTemplate("plastic://graph/{graphId}", { list: undefined }), { title: "Graph summary at HEAD", mimeType: "application/json" }, async (uri, vars: any) => {
         const graphId = v(vars, "graphId");
@@ -608,8 +664,17 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
         if (!versions.length) denied(`not found: ${uri.href}`);
         return text(uri, { publishedId, head, versions });
     });
+    server.registerResource("consumers", new ResourceTemplate("plastic://component/{publishedId}/consumers", { list: undefined }), { title: "Graphs that carry this component", mimeType: "application/json" }, async (uri, vars: any) => {
+        if (!deps.consumers) {
+            denied("not found: " + uri.href);
+        }
+        const publishedId = v(vars, "publishedId");
+        return text(uri, { publishedId, consumers: await deps.consumers!.consumers(publishedId, rawPrincipal) });
+    });
     server.registerResource("componentVersion", new ResourceTemplate("plastic://component/{publishedId}/{version}", { list: undefined }), { title: "A published version", mimeType: "application/json" }, async (uri, vars: any) => {
-        const manifest = await deps.components.manifest(v(vars, "publishedId"), Number(v(vars, "version")));
+        const version = v(vars, "version");
+        if (!/^\d+$/.test(version)) denied(`not found: ${uri.href}`);
+        const manifest = await deps.components.manifest(v(vars, "publishedId"), Number(version));
         if (!manifest) denied(`not found: ${uri.href}`);
         return text(uri, { manifest, artifactUri: `artifacts/${v(vars, "publishedId")}/${v(vars, "version")}` });
     });
@@ -621,6 +686,24 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
         return text(uri, { graphId, entries: history.slice(-limit).reverse() });
     };
     server.registerResource("history", new ResourceTemplate("plastic://graph/{graphId}/history", { list: undefined }), { title: "Mutation history", mimeType: "application/json" }, readHistory);
+    server.registerResource("revisions", new ResourceTemplate("plastic://graph/{graphId}/revisions", { list: undefined }), { title: "Named revisions of a graph", mimeType: "application/json" }, async (uri, vars: any) => {
+        const graphId = v(vars, "graphId");
+        await readable(graphId);
+        const revisions = (await deps.revisions.list(graphId)).map((r: any) => ({ revisionId: revRef(r.revisionId), seq: r.seq, label: r.label, at: r.at, digest: r.digest && digestRef(r.digest.full), createdBy: r.createdBy }));
+        const active: any = await deps.crdtStore.activeRevision(graphId).catch(() => null);
+        return text(uri, { graphId, revisions, active: active && active.revisionId ? revRef(active.revisionId) : null });
+    });
+    server.registerResource("proposals", new ResourceTemplate("plastic://graph/{graphId}/proposals", { list: undefined }), { title: "Proposals against a graph", mimeType: "application/json" }, async (uri, vars: any) => {
+        const graphId = v(vars, "graphId");
+        await readable(graphId);
+        const proposals = (await deps.proposals.list(graphId)).map((entry: any) => ({
+            proposalId: entry.proposalId, state: entry.state, description: entry.description, createdAt: entry.createdAt, updatedAt: entry.updatedAt,
+            principal: entry.principal,
+            baseRevision: entry.baseRevision ? revRef(entry.baseRevision) : undefined,
+            resultRevision: entry.resultRevision ? revRef(entry.resultRevision) : undefined,
+        }));
+        return text(uri, { graphId, proposals });
+    });
     server.registerResource("historyPage", new ResourceTemplate("plastic://graph/{graphId}/history{?limit}", { list: undefined }), { title: "Mutation history, bounded", mimeType: "application/json" }, readHistory);
     server.registerResource("diff", new ResourceTemplate("plastic://graph/{graphId}/diff/{fromRev}/{toRev}", { list: undefined }), { title: "Semantic diff between revisions", mimeType: "application/json" }, async (uri, vars: any) => {
         const graphId = v(vars, "graphId");

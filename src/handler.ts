@@ -99,6 +99,7 @@ const mcpDeps = {
     delegations: eventSourceService.delegations,
     tasks: eventSourceService.tasks,
     simulations: eventSourceService.simulations,
+    consumers: eventSourceService.consumers,
 };
 const mcp = makeMcpHandler(mcpDeps);
 // The one endpoint that can hold a stream open (plan PB-085): a Lambda
@@ -358,6 +359,9 @@ function _publish(event: any, context: any, callback: (err: any, response: any) 
 function _componentConsumers(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.consumers.route(event, context, callback);
 }
+function _componentConsumersRebuild(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.consumers.rebuildRoute(event, context, callback);
+}
 function _componentsList(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.components.listRoute(event, context, callback);
 }
@@ -443,6 +447,7 @@ const delegationPut = withPrincipal(broadcastService.store, _delegationPut);
 const delegationDelete = withPrincipal(broadcastService.store, _delegationDelete);
 const componentsList = withPrincipal(broadcastService.store, _componentsList);
 const componentConsumers = withPrincipal(broadcastService.store, _componentConsumers);
+const componentConsumersRebuild = withPrincipal(broadcastService.store, _componentConsumersRebuild);
 const componentGet = withPrincipal(broadcastService.store, _componentGet);
 const crdtSync = withPrincipal(broadcastService.store, _crdtSync);
 const crdtState = withPrincipal(broadcastService.store, _crdtState);
@@ -495,6 +500,7 @@ export {
     delegationDelete,
     componentsList,
     componentConsumers,
+    componentConsumersRebuild,
     componentGet,
     publishGraphWs,
     publishNodeWs,

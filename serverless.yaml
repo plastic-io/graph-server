@@ -541,6 +541,20 @@ functions:
           cors:
             origin: '*'
 
+  # The index is written as changes are accepted, so a graph nobody has edited
+  # since it existed is missing from it.  This rebuilds it from the graphs
+  # themselves; it is derived data, so it can be run whenever it is doubted.
+  componentConsumersRebuild:
+    handler: src/handler.componentConsumersRebuild
+    timeout: 300
+    events:
+      - http:
+          method: POST
+          path: /components/consumers/rebuild
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors:
+            origin: '*'
+
   componentGet:
     handler: src/handler.componentGet
     timeout: 60

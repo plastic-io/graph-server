@@ -188,6 +188,7 @@ const mcp = makeMcpStreamHandler({
   tests: (eventSourceService as any).tests,
   tasks: (eventSourceService as any).tasks,
   simulations: (eventSourceService as any).simulations,
+  consumers: (eventSourceService as any).consumers,
 } as any, { store, pollMs: 500 });
 
 function apiEvent(connectionId: string, body: any) {
@@ -437,6 +438,9 @@ const server = http.createServer(async (request, response) => {
     }
     if (parts[0] === "components" && parts.length === 2) {
       return eventSourceService.components.listRoute({ pathParameters: { id: parts[1] } }, {}, send);
+    }
+    if (parts[0] === "components" && parts[1] === "consumers" && parts[2] === "rebuild") {
+      return eventSourceService.consumers.rebuildRoute({ principal: DEV_PRINCIPAL }, {}, send);
     }
     if (parts[0] === "components" && parts[2] === "consumers") {
       return eventSourceService.consumers.route({

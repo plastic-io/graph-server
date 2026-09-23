@@ -8,6 +8,14 @@ export type Authority =
     | "graph:execute" | "graph:simulate" | "graph:test" | "graph:connect-privileged"
     | "component:publish" | "registry:read" | "iac:propose" | "iac:approve" | "iac:read-status" | "policy:admin";
 
+/** The same list, at runtime, for answering "what may I do here?". */
+export const AUTHORITIES: Authority[] = [
+    "graph:read", "graph:inspect-internals", "graph:inspect-payloads", "graph:observe",
+    "graph:propose", "graph:approve", "graph:commit", "graph:activate", "graph:rollback",
+    "graph:execute", "graph:simulate", "graph:test", "graph:connect-privileged",
+    "component:publish", "registry:read", "iac:propose", "iac:approve", "iac:read-status", "policy:admin",
+];
+
 export interface Decision {
     allow: boolean;
     reason?: string;

@@ -43,10 +43,26 @@ interface Store {
 
 const corsHeaders = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": true };
 
+export interface ConsumerIndexHooks {
+    /**
+     * Whether this caller may know that graph exists.  Asking which graphs use
+     * a component is asking about graphs, so the answer is narrowed to the ones
+     * the caller could have read directly — otherwise an agent delegated on one
+     * graph learns the names of every other graph that imports the same thing.
+     */
+    readable?: (graphId: string, principal: Principal | undefined) => Promise<boolean>;
+    /** Every graph in the instance, for rebuilding the index from the graphs themselves. */
+    graphIds?: () => Promise<string[]>;
+    /** A graph as it now stands. */
+    project?: (graphId: string) => Promise<any>;
+}
+
 export class ConsumerIndex {
     private store: Store;
-    constructor(store: Store) {
+    private hooks: ConsumerIndexHooks;
+    constructor(store: Store, hooks: ConsumerIndexHooks = {}) {
         this.store = store;
+        this.hooks = hooks;
     }
 
     static recordKey(publishedId: string, graphId: string) { return `components/${publishedId}/consumers/${graphId}.json`; }
@@ -123,15 +139,19 @@ export class ConsumerIndex {
         return { added, updated, removed };
     }
 
-    /** Every graph that carries this component, whichever version it pins. */
-    async consumers(publishedId: string): Promise<ConsumerRecord[]> {
+    /** Every graph that carries this component, of the ones this caller may see. */
+    async consumers(publishedId: string, principal?: Principal): Promise<ConsumerRecord[]> {
         const keys = await this.listKeys(ConsumerIndex.prefix(publishedId));
         const records: ConsumerRecord[] = [];
         for (const key of keys) {
             const record = await this.getJson(key);
-            if (record && record.graphId) {
-                records.push(record);
+            if (!record || !record.graphId) {
+                continue;
             }
+            if (this.hooks.readable && !(await this.hooks.readable(record.graphId, principal))) {
+                continue;
+            }
+            records.push(record);
         }
         return records.sort((a, b) => (a.graphName < b.graphName ? -1 : a.graphName > b.graphName ? 1 : 0));
     }
@@ -141,8 +161,8 @@ export class ConsumerIndex {
      * who is behind, who is level, and who is ahead — which happens when a
      * version is rolled back and says something is wrong rather than nothing.
      */
-    async impact(publishedId: string, version: number): Promise<any> {
-        const records = await this.consumers(publishedId);
+    async impact(publishedId: string, version: number, principal?: Principal): Promise<any> {
+        const records = await this.consumers(publishedId, principal);
         const at = (pick: (v: number) => boolean) => records
             .filter((r) => r.uses.some((u) => pick(u.version)))
             .map((r) => ({
@@ -161,6 +181,55 @@ export class ConsumerIndex {
         };
     }
 
+    /**
+     * Rebuild the index from the graphs themselves.
+     *
+     * The index is written as changes are accepted, so a graph nobody has
+     * edited since the index existed is missing from it — and "nobody uses
+     * this" is the one answer that must not be wrong by omission, because it
+     * is the answer people publish on.  This is derived data: rebuilding it
+     * cannot lose anything, and it is safe to run at any time.
+     */
+    async rebuild(): Promise<any> {
+        if (!this.hooks.graphIds || !this.hooks.project) {
+            return { error: "this index cannot enumerate the graphs", code: "UNSUPPORTED" };
+        }
+        const graphIds = await this.hooks.graphIds();
+        const changed: string[] = [];
+        const failed: { graphId: string; error: string }[] = [];
+        let consumers = 0;
+        for (const graphId of graphIds) {
+            try {
+                const graph = await this.hooks.project!(graphId);
+                if (!graph) {
+                    continue;
+                }
+                const r = await this.record(graph);
+                if (r.added.length || r.updated.length || r.removed.length) {
+                    changed.push(graphId);
+                }
+                consumers += r.added.length + r.updated.length;
+            } catch (err: any) {
+                failed.push({ graphId, error: (err && err.message) || String(err) });
+            }
+        }
+        return { graphs: graphIds.length, changed: changed.length, consumers, graphsChanged: changed, failed };
+    }
+
+    /** POST /components/consumers/rebuild */
+    rebuildRoute(event: any, context: any, callback: (err: any, r: any) => void) {
+        const allowed = decide(event.principal, ["policy:admin"]);
+        if (!allowed.allow) {
+            return callback(null, { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ error: allowed.reason || "denied", code: "ADMISSION_DENIED" }) });
+        }
+        this.rebuild()
+            .then((body: any) => callback(null, { statusCode: body && body.error ? 400 : 200, headers: corsHeaders, body: JSON.stringify(body) }))
+            .catch((err: any) => {
+                console.error("Cannot rebuild the consumers index.", err);
+                callback(null, { statusCode: 500, headers: corsHeaders });
+            });
+    }
+
     /** GET /components/{id}/consumers[?version=n] */
     route(event: any, context: any, callback: (err: any, r: any) => void) {
         const publishedId = event.pathParameters.id;
@@ -171,8 +240,8 @@ export class ConsumerIndex {
         }
         const asked = event.queryStringParameters && event.queryStringParameters.version;
         const answer = asked !== undefined && asked !== null && asked !== ""
-            ? this.impact(publishedId, Number(asked))
-            : this.consumers(publishedId).then((consumers) => ({ publishedId, consumers }));
+            ? this.impact(publishedId, Number(asked), principal)
+            : this.consumers(publishedId, principal).then((consumers) => ({ publishedId, consumers }));
         answer
             .then((body: any) => callback(null, { statusCode: 200, headers: corsHeaders, body: JSON.stringify(body) }))
             .catch((err: any) => {

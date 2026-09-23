@@ -30,7 +30,7 @@ const agent = { sub: "agent|a1", kind: "agent", tenant: "personal:auth0|u1", sco
 const ULID = "01J8ZK5K0B1C2D3E4F5G6H7J8A";
 function fakeBroadcast() { const b = { channel: [] }; b.postToClient = (d, c, p, cb) => cb(); b._sendToChannel = (ch, v, cb) => { b.channel.push([ch, v]); cb(); }; b.broadcast = b._sendToChannel; return b; }
 
-async function setup() {
+async function setup(opts = {}) {
     const s3 = new FakeS3Service(); const store = new CrdtStore(s3); const broadcast = fakeBroadcast();
     const crdt = new CrdtService(store, broadcast); const tocStore = new TocStore(s3);
     const revisions = new RevisionService(store, crdt.admission, { fanOut: (g, u) => crdt.fanOutUpdate(g, u) });
@@ -62,8 +62,14 @@ async function setup() {
         proposals: { get: (g, p) => proposals.get(g, p), projection: (g, p) => proposals.projection(g, p) },
         runner: (live) => new ExecutionRunner(s3, { live }),
     });
+    let consumers;
+    if (opts.consumers) {
+        const { ConsumerIndex } = require("../components/consumers");
+        const { decide } = require("../policy/decide");
+        consumers = new ConsumerIndex(s3, { readable: async (graphId, principal) => decide(await delegations.resolve(principal, graphId), ["graph:read"]).allow });
+    }
     const mcp = makeMcpHandler({
-        crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys, tests, tasks, simulations, simulations,
+        crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys, tests, tasks, simulations, consumers,
         // the brake is tested in its own suite; here it would only stop the test
         rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: 1000 }) },
         invoke: async (graphId, principal, request) => {
@@ -80,7 +86,7 @@ async function setup() {
             return { executionId, requested: true, reason };
         },
     });
-    return { s3, store, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, simulations, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled };
+    return { s3, store, tocStore, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, simulations, consumers, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled };
 }
 
 /** a real MCP client whose fetch goes straight into the handler, as the Lambda would */
@@ -102,7 +108,7 @@ describe("MCP over the Lambda handler", () => {
         const client = await connect(mcp, owner);
         const tools = (await client.listTools()).tools.map((t) => t.name).sort();
         expect(tools).toEqual([
-            "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
+            "component.consumers", "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
             "journey.run", "observations.query", "proposal.commit", "proposal.create", "proposal.decide", "proposal.simulate", "proposal.validate",
             "revision.activate", "revision.cut", "revision.rollback", "tasks.cancel", "tasks.get", "tasks.list", "tests.run",
         ]);
@@ -548,5 +554,174 @@ describe("asking what a proposal would do", () => {
         const answer = await client.callTool({ name: "proposal.simulate", arguments: { schemaVersion: 1, graphId: "g1", proposalId: created.result.proposalId, mode: "replay", async: false } });
         expect(answer.isError).toBe(true);
         expect(parse(answer).error.code).toBe("UNSUPPORTED");
+    });
+});
+
+describe("who uses a published component", () => {
+    /**
+     * `graph.summary` says what a graph depends on; this is the other
+     * direction, which is the question asked *before* a version is replaced.
+     * It is still a question about graphs, so it answers about the ones the
+     * caller could have read directly and no others (PB-044).
+     */
+    async function withConsumers(extraGraphs = []) {
+        const parts = await setup({ consumers: true });
+        const pinned = (nodeId, publishedId, version, name) => ({
+            id: nodeId, url: nodeId, properties: { name: name || nodeId, component: { publishedId, version, digest: "sha256:abc" } },
+        });
+        await parts.consumers.record({ id: "g1", url: "g1", nodes: [pinned("left", "c1", 1, "Left"), pinned("right", "c1", 1, "Right")], properties: { name: "Account settings" } });
+        for (const g of extraGraphs) {
+            await parts.consumers.record(g);
+        }
+        return parts;
+    }
+
+    test("lists the graphs that carry it, with the nodes and versions they pin", async () => {
+        const { mcp } = await withConsumers();
+        const client = await connect(mcp, owner);
+        const r = parse(await client.callTool({ name: "component.consumers", arguments: { schemaVersion: 1, publishedId: "c1" } }));
+        expect(r.result.publishedId).toBe("c1");
+        expect(r.result.consumers.map((c) => c.graphName)).toEqual(["Account settings"]);
+        expect(r.result.consumers[0].uses.map((u) => `${u.name}@${u.version}`).sort()).toEqual(["Left@1", "Right@1"]);
+        expect(r.envelope.principal.sub).toBe("auth0|u1");
+        await client.close();
+    });
+
+    test("with a version, says who would be behind it, level with it, and ahead of it", async () => {
+        const { mcp } = await withConsumers([
+            { id: "g2", url: "g2", nodes: [{ id: "n", url: "n", properties: { name: "n", component: { publishedId: "c1", version: 3 } } }], properties: { name: "Ahead already" } },
+        ]);
+        const client = await connect(mcp, owner);
+        const r = parse(await client.callTool({ name: "component.consumers", arguments: { schemaVersion: 1, publishedId: "c1", version: 2 } }));
+        expect(r.result.consumers).toBe(2);
+        expect(r.result.behind.map((c) => c.graphName)).toEqual(["Account settings"]);
+        expect(r.result.current).toEqual([]);
+        // ahead is not nothing: it says a rollback happened, or that somebody
+        // is running a version that was withdrawn
+        expect(r.result.ahead.map((c) => c.graphName)).toEqual(["Ahead already"]);
+        await client.close();
+    });
+
+    test("an agent is told about the graphs it may read, and not about the others", async () => {
+        const { mcp, delegations } = await withConsumers([
+            { id: "secret", url: "secret", nodes: [{ id: "n", url: "n", properties: { name: "n", component: { publishedId: "c1", version: 1 } } }], properties: { name: "Somebody else's graph" } },
+        ]);
+        // may browse the registry everywhere, may read one graph
+        await delegations.put({ agentSub: "agent|a1", graphId: "*", delegatedBy: "auth0|u1", scopes: ["registry:read"], expiresAt: null, createdAt: new Date().toISOString() });
+        await delegations.put({ agentSub: "agent|a1", graphId: "g1", delegatedBy: "auth0|u1", scopes: ["graph:read", "registry:read"], expiresAt: null, createdAt: new Date().toISOString() });
+        const client = await connect(mcp, agent);
+        const r = parse(await client.callTool({ name: "component.consumers", arguments: { schemaVersion: 1, publishedId: "c1" } }));
+        expect(r.result.consumers.map((c) => c.graphId)).toEqual(["g1"]);
+        await client.close();
+    });
+
+    test("an agent with no delegation is refused outright", async () => {
+        const { mcp } = await withConsumers();
+        const client = await connect(mcp, agent);
+        const r = await client.callTool({ name: "component.consumers", arguments: { schemaVersion: 1, publishedId: "c1" } });
+        expect(r.isError).toBe(true);
+        expect(parse(r).error.code).toBe("ADMISSION_DENIED");
+        await client.close();
+    });
+
+    test("a server with no index says so rather than answering emptily", async () => {
+        const { mcp } = await setup();
+        const client = await connect(mcp, owner);
+        const r = await client.callTool({ name: "component.consumers", arguments: { schemaVersion: 1, publishedId: "c1" } });
+        expect(r.isError).toBe(true);
+        expect(parse(r).error.code).toBe("UNSUPPORTED");
+        await client.close();
+    });
+
+    test("the same answer is a resource, for a client that reads rather than calls", async () => {
+        const { mcp } = await withConsumers();
+        const client = await connect(mcp, owner);
+        const r = await client.readResource({ uri: "plastic://component/c1/consumers" });
+        const body = JSON.parse(r.contents[0].text);
+        expect(body.publishedId).toBe("c1");
+        expect(body.consumers.map((c) => c.graphId)).toEqual(["g1"]);
+        await client.close();
+    });
+});
+
+describe("what an agent needs to find its way around", () => {
+    /**
+     * Two things an agent could not ask for: which named revisions a graph has
+     * (so it can name a base other than HEAD), and what proposals are open
+     * against it (so it can see what became of its own).  Both existed over
+     * REST and neither was reachable through the protocol.
+     */
+    test("a graph's revisions are a resource, and say which one is active", async () => {
+        const { mcp, revisions } = await setup();
+        await revisions.cut("g1", owner, "first");
+        const client = await connect(mcp, owner);
+        const r = await client.readResource({ uri: "plastic://graph/g1/revisions" });
+        const body = JSON.parse(r.contents[0].text);
+        expect(body.graphId).toBe("g1");
+        expect(body.revisions.length).toBeGreaterThan(0);
+        expect(body.revisions[0].revisionId).toMatch(/^rev_[0-9A-HJKMNP-TV-Z]{26}$/);
+        expect(body.revisions[0].seq).toBe(1);
+        expect(body).toHaveProperty("active");
+        await client.close();
+    });
+
+    test("proposals against a graph are a resource, with what became of each", async () => {
+        const { mcp } = await setup();
+        const client = await connect(mcp, owner);
+        const cut = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
+        const created = parse(await client.callTool({ name: "proposal.create", arguments: {
+            schemaVersion: 1, graphId: "g1", baseRevision: cut.envelope.resultRevision, description: "Trim in normalize",
+            rationale: "make normalize trim", idempotencyKey: ULID,
+            ops: [{ op: "set-node-code", nodeId: "normalize", template: "set", text: "edges.out = String(value).trim();" }],
+        } }));
+        const r = await client.readResource({ uri: "plastic://graph/g1/proposals" });
+        const body = JSON.parse(r.contents[0].text);
+        expect(body.proposals.map((p) => p.proposalId)).toContain(created.result.proposalId);
+        const mine = body.proposals.find((p) => p.proposalId === created.result.proposalId);
+        // the listing agrees with what the tool said it had done
+        expect(mine.state).toBe(created.result.state);
+        expect(mine.baseRevision).toMatch(/^rev_/);
+        await client.close();
+    });
+
+    test("the graph listing names only the graphs the caller may read", async () => {
+        const { mcp, delegations, tocStore, broadcast } = await setup();
+        await listGraph(tocStore, broadcast, { ...graphJson(), id: "g2", url: "g2", properties: { ...graphJson().properties, name: "Somebody else's graph" } }, "system");
+        const client = await connect(mcp, owner);
+        const all = JSON.parse((await client.readResource({ uri: "plastic://graphs" })).contents[0].text);
+        expect(all.graphs.map((g) => g.graphId).sort()).toEqual(["g1", "g2"]);
+        await client.close();
+        await delegations.put({ agentSub: "agent|a1", graphId: "g1", delegatedBy: "auth0|u1", scopes: ["graph:read"], expiresAt: null, createdAt: new Date().toISOString() });
+        const asAgent = await connect(mcp, agent);
+        const mine = JSON.parse((await asAgent.readResource({ uri: "plastic://graphs" })).contents[0].text);
+        expect(mine.graphs.map((g) => g.graphId)).toEqual(["g1"]);
+        await asAgent.close();
+    });
+
+    test("a caller can ask what it is and what it may do, without being refused something first", async () => {
+        const { mcp, delegations } = await setup();
+        const human = await connect(mcp, owner);
+        const me = JSON.parse((await human.readResource({ uri: "plastic://me" })).contents[0].text);
+        expect(me).toMatchObject({ sub: "auth0|u1", kind: "human", policyVersion: "m1-diff" });
+        expect(me.holdsEverywhere).toContain("graph:commit");
+        expect(me.delegations).toBeUndefined();
+        await human.close();
+
+        await delegations.put({ agentSub: "agent|a1", graphId: "g1", delegatedBy: "auth0|u1", scopes: ["graph:read", "graph:propose"], expiresAt: null, createdAt: new Date().toISOString(), label: "reviewer" });
+        const asAgent = await connect(mcp, agent);
+        const theirs = JSON.parse((await asAgent.readResource({ uri: "plastic://me" })).contents[0].text);
+        expect(theirs.kind).toBe("agent");
+        // nothing was delegated for every graph, so it holds nothing at large
+        expect(theirs.holdsEverywhere).toEqual([]);
+        expect(theirs.delegations).toEqual([{ graphId: "g1", scopes: ["graph:read", "graph:propose"], expiresAt: null, delegatedBy: "auth0|u1", label: "reviewer" }]);
+        await asAgent.close();
+    });
+
+    test("an agent with no delegation cannot list either", async () => {
+        const { mcp } = await setup();
+        const client = await connect(mcp, agent);
+        await expect(client.readResource({ uri: "plastic://graph/g1/revisions" })).rejects.toThrow(/not found/);
+        await expect(client.readResource({ uri: "plastic://graph/g1/proposals" })).rejects.toThrow(/not found/);
+        await client.close();
     });
 });

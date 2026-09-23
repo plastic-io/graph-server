@@ -11,6 +11,7 @@ import TocStore from "./tocStore";
 import { RevisionService } from "./revisions/service";
 import { ComponentService } from "./components/service";
 import { ConsumerIndex } from "./components/consumers";
+import { decide } from "./policy/decide";
 import { SummaryService } from "./summary/service";
 import { ProposalService } from "./proposals/service";
 import { SimulationService } from "./proposals/simulate";
@@ -119,7 +120,20 @@ export default class EventSourceService {
         // (PB-044).
         // the store the CRDT store resolved, not the argument: the Lambda passes
         // none and lets it make its own, which is the trap the note above warns of
-        this.consumers = new ConsumerIndex((this.crdtStore as any).store);
+        this.consumers = new ConsumerIndex((this.crdtStore as any).store, {
+            // Which graphs a caller may know about is the delegation question,
+            // asked per graph, exactly as reading one would ask it.
+            readable: async (graphId: string, principal: any) => {
+                const resolved = await this.delegations.resolve(principal, graphId);
+                return decide(resolved, ["graph:read"]).allow;
+            },
+            // for rebuilding it: the graphs this instance has, and each as it stands
+            graphIds: async () => {
+                const toc = await this.tocStore.project();
+                return Object.keys(toc).filter((key) => !key.includes("/") && toc[key] && (toc[key] as any).type !== "endpoint" && !(toc[key] as any).deleted);
+            },
+            project: (graphId: string) => this.crdtStore.projectGraph(graphId),
+        });
         this.crdtService.admission.admitted = async (after: any) => { await this.consumers.record(after); };
         /**
          * What the gates ask of a version before it may be published or run

@@ -62,6 +62,29 @@ describe("the consumers index", () => {
         expect(impact.behind[0].nodes).toEqual([{ nodeId: "n", name: "n" }]);
     });
 
+    test("a caller hears only about the graphs it may read, in both answers", async () => {
+        // the index is instance-wide; the answer is not.  Without this, asking
+        // who uses a component is a way to learn the names of graphs you were
+        // never given.
+        const asked = [];
+        const index = new ConsumerIndex(new FakeS3Service(), {
+            readable: async (graphId, principal) => {
+                asked.push([graphId, principal && principal.sub]);
+                return graphId === "mine";
+            },
+        });
+        await index.record(graph("mine", [pinned("a", "c1", 1)], { name: "Mine" }));
+        await index.record(graph("theirs", [pinned("b", "c1", 3)], { name: "Somebody else's" }));
+
+        expect((await index.consumers("c1", owner)).map((r) => r.graphId)).toEqual(["mine"]);
+        expect(asked.map((a) => a[1])).toEqual(["auth0|u1", "auth0|u1"]);
+        const impact = await index.impact("c1", 2, owner);
+        // the graph it may not read is missing from the counts as well as the lists
+        expect(impact.consumers).toBe(1);
+        expect(impact.behind.map((r) => r.graphId)).toEqual(["mine"]);
+        expect(impact.ahead).toEqual([]);
+    });
+
     test("a graph with no pins is not a consumer of anything, and says so quietly", async () => {
         const index = new ConsumerIndex(new FakeS3Service());
         const answer = await index.record(graph("plain", [{ id: "a", url: "a", properties: { name: "a" } }]));
@@ -82,6 +105,66 @@ describe("the consumers index", () => {
         expect(impact.json.behind.map((c) => c.graphId)).toEqual(["g1"]);
 
         const refused = await call({ pathParameters: { id: "c1" } });
+        expect(refused.statusCode).toBe(403);
+    });
+});
+
+describe("rebuilding it from the graphs themselves", () => {
+    /**
+     * The index is written as changes are accepted, so every graph that
+     * existed before it did is missing from it — and the answer it gives for
+     * those, "nobody uses this", is the answer people publish on.  So it has
+     * to be rebuildable, and rebuilding has to be safe to do at any time.
+     */
+    const withGraphs = (graphs) => {
+        const store = new FakeS3Service();
+        const index = new ConsumerIndex(store, {
+            graphIds: async () => graphs.map((g) => g.id),
+            project: async (graphId) => graphs.find((g) => g.id === graphId) || null,
+        });
+        return { store, index };
+    };
+
+    test("finds the consumers of graphs that were never edited since the index existed", async () => {
+        const { index } = withGraphs([
+            graph("g1", [pinned("a", "c1", 1)]),
+            graph("g2", [pinned("b", "c1", 2), pinned("c", "c2", 1)]),
+            graph("g3", []),
+        ]);
+        expect(await index.consumers("c1")).toEqual([]);
+
+        const r = await index.rebuild();
+        expect(r).toMatchObject({ graphs: 3, changed: 2, consumers: 3, failed: [] });
+        expect((await index.consumers("c1")).map((x) => x.graphId).sort()).toEqual(["g1", "g2"]);
+        expect((await index.consumers("c2")).map((x) => x.graphId)).toEqual(["g2"]);
+    });
+
+    test("running it twice changes nothing, and a graph that cannot be read does not stop the rest", async () => {
+        const good = graph("g1", [pinned("a", "c1", 1)]);
+        const working = new ConsumerIndex(new FakeS3Service(), {
+            graphIds: async () => ["g1", "bad"],
+            project: async (graphId) => { if (graphId === "bad") { throw new Error("no projection"); } return good; },
+        });
+        const first = await working.rebuild();
+        expect(first.failed).toEqual([{ graphId: "bad", error: "no projection" }]);
+        expect((await working.consumers("c1")).map((x) => x.graphId)).toEqual(["g1"]);
+        const second = await working.rebuild();
+        // the same graphs, so the records are rewritten rather than added
+        expect(second).toMatchObject({ graphs: 2, consumers: 1 });
+        expect((await working.consumers("c1")).map((x) => x.graphId)).toEqual(["g1"]);
+    });
+
+    test("an index that cannot enumerate the graphs says so rather than reporting an empty rebuild", async () => {
+        const index = new ConsumerIndex(new FakeS3Service());
+        expect(await index.rebuild()).toMatchObject({ code: "UNSUPPORTED" });
+    });
+
+    test("the route is for an administrator, and answers with what it did", async () => {
+        const { index } = withGraphs([graph("g1", [pinned("a", "c1", 1)])]);
+        const answer = await new Promise((resolve) => index.rebuildRoute({ principal: owner }, {}, (err, r) => resolve(r)));
+        expect(answer.statusCode).toBe(200);
+        expect(JSON.parse(answer.body)).toMatchObject({ graphs: 1, changed: 1 });
+        const refused = await new Promise((resolve) => index.rebuildRoute({ principal: undefined }, {}, (err, r) => resolve(r)));
         expect(refused.statusCode).toBe(403);
     });
 });
