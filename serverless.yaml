@@ -60,6 +60,10 @@ provider:
     # it refuses a resource that is not the server it is talking to.  Set it
     # only to a hostname this API really answers on.
     MCP_RESOURCE: ${opt:mcpResource, ''}
+    # The API identifier the authorization server issues tokens for.  Unlike the
+    # resource above it is an opaque string: it does not have to be a hostname
+    # anything answers on, and it is accepted whatever the metadata advertises.
+    MCP_AUDIENCE: ${opt:mcpAudience, 'https://graph-server.plastic-io.dev'}
     OWNER_SUBS: ${opt:ownerSubs, ''}
     WS_EXECUTION_ENABLED: ${opt:wsExecution, 'false'}
     API_REGION: ${self:provider.region}

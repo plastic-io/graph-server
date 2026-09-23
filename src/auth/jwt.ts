@@ -17,8 +17,20 @@ export interface JwtConfig {
 let remoteKeys: JWTVerifyGetKey | undefined;
 let remoteKeysFor = "";
 
+/**
+ * Two different things that were one thing for a while, to everyone's cost:
+ *
+ *   - `MCP_RESOURCE` is what the metadata **advertises**, and an MCP client
+ *     refuses it unless it is the server it is talking to.
+ *   - `MCP_AUDIENCE` is what the authorization server **issues for** — an API
+ *     identifier, which is an opaque string and need not be a real host.
+ *
+ * Conflating them is what made a working Auth0 API look like it needed
+ * replacing.  Any of them is accepted, so the identifier already configured
+ * keeps working whatever the metadata says.
+ */
 export function configFromEnv(): JwtConfig {
-    const audience = [process.env.AUTH0_AUDIENCE, process.env.MCP_RESOURCE]
+    const audience = [process.env.AUTH0_AUDIENCE, process.env.MCP_AUDIENCE, process.env.MCP_RESOURCE]
         .filter((value): value is string => !!value);
     return {
         domain: process.env.AUTH0_DOMAIN || "",
