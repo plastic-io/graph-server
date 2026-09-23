@@ -440,6 +440,18 @@ const server = http.createServer(async (request, response) => {
     if (parts[0] === "components" && parts.length === 2) {
       return eventSourceService.components.listRoute({ pathParameters: { id: parts[1] } }, {}, send);
     }
+    if (parts[0] === "crdt" && parts[2] === "iac") {
+      const body = await readBody(request);
+      return eventSourceService.iac.route({
+        pathParameters: { id: parts[1], nodeId: parts[3] },
+        httpMethod: parts[4] === "plan" ? "POST" : request.method,
+        body, principal: DEV_PRINCIPAL,
+      }, {}, send);
+    }
+    if (parts[0] === "crdt" && parts[2] === "stacks") {
+      return eventSourceService.iac.overview(parts[1], DEV_PRINCIPAL as any)
+        .then((body: any) => send(null, { statusCode: body && body.error ? 400 : 200, body: JSON.stringify(body) }));
+    }
     if (parts[0] === "components" && parts[1] === "consumers" && parts[2] === "rebuild") {
       return eventSourceService.consumers.rebuildRoute({ principal: DEV_PRINCIPAL }, {}, send);
     }

@@ -887,6 +887,50 @@ functions:
           rate: rate(5 minutes)
           enabled: ${opt:journeys, 'true'}
 
+  # What this graph deploys, and what became of it (plan §4.9, PB-094).  The
+  # editor asks the same questions an agent asks.
+  iacOverview:
+    handler: src/handler.iacOverview
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/stacks
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+          cors:
+            origin: '*'
+
+  iac:
+    handler: src/handler.iac
+    timeout: 60
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/iac/{nodeId}
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 nodeId: true
+          cors:
+            origin: '*'
+      - http:
+          method: POST
+          path: /crdt/{id}/iac/{nodeId}/plan
+          authorizer: ${self:custom.jwtAuthorizer}
+          request:
+            parameters:
+               paths:
+                 id: true
+                 nodeId: true
+          cors:
+            origin: '*'
+
   executionsList:
     handler: src/handler.executionsList
     timeout: 30

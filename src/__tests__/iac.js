@@ -377,3 +377,73 @@ describe("a node asking for it, all the way down", () => {
         expect(state.answer.error).toMatch(/no CloudFormation authority/);
     });
 });
+
+describe("what the editor asks", () => {
+    /**
+     * The panel and the tool ask the same service the same questions, over the
+     * routes the editor already speaks — so a stack cannot look one way to an
+     * agent and another way to a person (PB-094).
+     */
+    const routeFor = (nodes, options = {}) => {
+        const { service } = serviceFor(nodes, options);
+        return {
+            service,
+            call: (event) => new Promise((resolve) => service.route(event, {}, (err, r) => resolve({ status: r.statusCode, body: r.body ? JSON.parse(r.body) : null }))),
+        };
+    };
+
+    test("an overview lists every node that describes infrastructure, with what is known of each", async () => {
+        const { service } = serviceFor([iacNode(), { id: "plain", url: "plain", properties: { name: "plain" } }]);
+        const before = await service.overview("infra", owner);
+        expect(before.stacks).toHaveLength(1);
+        expect(before.stacks[0]).toMatchObject({ nodeId: "stack", name: "Uploads bucket", status: null });
+        expect(before.stacks[0].stack.name).toBe("pio-dev-uploads");
+        // the template is validated as it stands, so a problem shows before anyone plans
+        expect(before.stacks[0].validation.ok).toBe(true);
+        expect(before.canPlan).toBe(true);
+
+        await service.plan("infra", "stack", owner);
+        const after = await service.overview("infra", owner);
+        expect(after.stacks[0].status).toMatchObject({ state: "planned" });
+    });
+
+    test("an overview says when the template is the problem, before anything is asked of AWS", async () => {
+        const bad = iacNode({ template: { text: `Resources:\n  X:\n    Type: AWS::EC2::NatGateway\n    Properties: {}\n`, format: "yaml" } });
+        const { service } = serviceFor([bad], { policy: () => ({ ...policy(), allowedResourceTypes: ["AWS::S3::Bucket"], maxResources: 100 }) });
+        const r = await service.overview("infra", owner);
+        expect(r.stacks[0].validation.ok).toBe(false);
+        expect(r.stacks[0].validation.problems[0].code).toBe("RESOURCE_TYPE_NOT_ALLOWED");
+    });
+
+    test("an instance that cannot plan says so, so the button can say so too", async () => {
+        const { service } = serviceFor([iacNode()], { cloudformation: null });
+        expect((await service.overview("infra", owner)).canPlan).toBe(false);
+    });
+
+    test("the routes answer the status, a plan, and a refusal with the code the editor reads", async () => {
+        const { call } = routeFor([iacNode()]);
+        const status = await call({ pathParameters: { id: "infra", nodeId: "stack" }, httpMethod: "GET", principal: owner });
+        expect(status.status).toBe(200);
+        expect(status.body.state).toBe("never-planned");
+
+        const planned = await call({ pathParameters: { id: "infra", nodeId: "stack" }, httpMethod: "POST", principal: owner });
+        expect(planned.status).toBe(200);
+        expect(planned.body.plan.changes).toHaveLength(1);
+
+        const denied = await call({ pathParameters: { id: "infra", nodeId: "stack" }, httpMethod: "POST", principal: agent });
+        expect(denied.status).toBe(403);
+        expect(denied.body.code).toBe("ADMISSION_DENIED");
+
+        const missing = await call({ pathParameters: { id: "infra", nodeId: "nope" }, httpMethod: "GET", principal: owner });
+        expect(missing.status).toBe(404);
+    });
+
+    test("a refused desired state answers 400 with the problems, not 500", async () => {
+        const bad = iacNode({ stack: { name: "not-ours", account: "695527765921", region: "us-west-1", environment: "dev" } });
+        const { call } = routeFor([bad]);
+        const r = await call({ pathParameters: { id: "infra", nodeId: "stack" }, httpMethod: "POST", principal: owner });
+        expect(r.status).toBe(400);
+        expect(r.body.code).toBe("IAC_REFUSED");
+        expect(r.body.problems.map((p) => p.code)).toContain("STACK_PREFIX");
+    });
+});

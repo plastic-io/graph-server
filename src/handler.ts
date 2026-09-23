@@ -366,6 +366,18 @@ function _publish(event: any, context: any, callback: (err: any, response: any) 
 function _componentConsumers(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.consumers.route(event, context, callback);
 }
+function _iac(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.iac.route(event, context, callback);
+}
+function _iacOverview(event: any, context: any, callback: (err: any, response: any) => void) {
+    eventSourceService.iac.overview(event.pathParameters.id, event.principal)
+        .then((body: any) => callback(null, {
+            statusCode: body && body.error ? (body.code === "ADMISSION_DENIED" ? 403 : 404) : 200,
+            headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": true },
+            body: JSON.stringify(body),
+        }))
+        .catch((err: any) => { console.error("Cannot list what this graph deploys.", err); callback(null, { statusCode: 500 }); });
+}
 function _componentConsumersRebuild(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.consumers.rebuildRoute(event, context, callback);
 }
@@ -455,6 +467,8 @@ const delegationDelete = withPrincipal(broadcastService.store, _delegationDelete
 const componentsList = withPrincipal(broadcastService.store, _componentsList);
 const componentConsumers = withPrincipal(broadcastService.store, _componentConsumers);
 const componentConsumersRebuild = withPrincipal(broadcastService.store, _componentConsumersRebuild);
+const iac = withPrincipal(broadcastService.store, _iac);
+const iacOverview = withPrincipal(broadcastService.store, _iacOverview);
 const componentGet = withPrincipal(broadcastService.store, _componentGet);
 const crdtSync = withPrincipal(broadcastService.store, _crdtSync);
 const crdtState = withPrincipal(broadcastService.store, _crdtState);
@@ -508,6 +522,8 @@ export {
     componentsList,
     componentConsumers,
     componentConsumersRebuild,
+    iac,
+    iacOverview,
     componentGet,
     publishGraphWs,
     publishNodeWs,

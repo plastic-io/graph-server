@@ -82,6 +82,7 @@ export interface IacStatus {
     reason?: string;
 }
 
+const corsHeaders = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": true };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** A change that takes something away, which is what a person is being asked about. */
 const DESTRUCTIVE = ["Remove", "Replace"];
@@ -280,6 +281,62 @@ export class IacService {
             await this.record(failed);
             return { error: failed.reason, code: denied ? "ADMISSION_DENIED" : "IAC_PLAN_FAILED", validation };
         }
+    }
+
+    /**
+     * `GET /crdt/{id}/iac/{nodeId}` and `POST /crdt/{id}/iac/{nodeId}/plan`.
+     * The editor asks the same questions an agent asks, over the routes it
+     * already speaks, so the panel and the tool cannot drift apart.
+     */
+    route(event: any, context: any, callback: (err: any, r: any) => void) {
+        const graphId = event.pathParameters && event.pathParameters.id;
+        const nodeId = event.pathParameters && event.pathParameters.nodeId;
+        const principal: Principal | undefined = event.principal;
+        const answer = event.httpMethod === "POST"
+            ? this.plan(graphId, nodeId, principal)
+            : this.status(graphId, nodeId, principal);
+        answer
+            .then((body: any) => {
+                const code = body && body.error
+                    ? (body.code === "ADMISSION_DENIED" ? 403 : body.code === "NOT_FOUND" ? 404 : 400)
+                    : 200;
+                callback(null, { statusCode: code, headers: corsHeaders, body: JSON.stringify(body) });
+            })
+            .catch((err: any) => {
+                console.error("Cannot answer about a stack.", err);
+                callback(null, { statusCode: 500, headers: corsHeaders });
+            });
+    }
+
+    /** Every node in this graph that describes infrastructure, and what is known of each. */
+    async overview(graphId: string, principal: Principal | undefined, revisionId?: string): Promise<any> {
+        const allowed = decide(principal, ["iac:read-status"]);
+        if (!allowed.allow) {
+            return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
+        }
+        const at = await this.deps.projection(graphId, revisionId);
+        if (!at) {
+            return { error: `no graph ${graphId}`, code: "NOT_FOUND" };
+        }
+        const policy = this.policy();
+        const stacks: any[] = [];
+        for (const node of (at.projection.nodes || [])) {
+            const carried = IacService.desiredOf(node);
+            if (!carried || !carried.stack) {
+                continue;
+            }
+            const status = await this.getJson(IacService.statusKey(carried.stack));
+            const text = carried.template && carried.template.text;
+            stacks.push({
+                nodeId: node.id,
+                name: (node.properties && node.properties.name) || node.id,
+                stack: carried.stack,
+                validation: typeof text === "string" ? validateTemplate(text, carried.template.format === "json" ? "json" : "yaml", policy) : null,
+                status: status || null,
+                atRevision: at.revisionId,
+            });
+        }
+        return { graphId, revisionId: at.revisionId, stacks, canPlan: !!this.deps.cloudformation };
     }
 
     /** Wait for the change set to be made, by asking; there is no callback to wait on. */
