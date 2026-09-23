@@ -139,9 +139,9 @@ describe("reference-instance policy", () => {
 });
 
 describe("what a client with no token can find out", () => {
-    const { protectedResourceMetadata, protectedResourceMetadataHandler, baseUrlOf, bearerChallenge, resourceIdentifier } = require("../auth/metadata");
+    const { protectedResourceMetadata, protectedResourceMetadataHandler, baseUrlOf, bearerChallenge, resourceIdentifier, audienceIdentifier } = require("../auth/metadata");
     const request = { headers: { Host: "api.example.com" }, requestContext: { stage: "dev" } };
-    afterEach(() => { delete process.env.AUTH0_AUDIENCE; delete process.env.AUTH0_DOMAIN; delete process.env.MCP_RESOURCE; });
+    afterEach(() => { delete process.env.AUTH0_AUDIENCE; delete process.env.AUTH0_DOMAIN; delete process.env.MCP_RESOURCE; delete process.env.MCP_AUDIENCE; });
 
     test("names the authorization server, and a resource identifier a token can be asked for", (done) => {
         process.env.AUTH0_AUDIENCE = "plastic-io-graph-server"; process.env.AUTH0_DOMAIN = "tenant.example.auth0.com";
@@ -157,6 +157,28 @@ describe("what a client with no token can find out", () => {
             expect(JSON.parse(res.body).scopes_supported).toContain("graph:commit");
             done();
         });
+    });
+
+    test("the audience is not the resource, and the document says both", () => {
+        // Conflating them locked the editor out: a client that asked its authorization
+        // server for a token for this server's own URL was told "Service not found",
+        // because an audience is an API the tenant knows and a resource indicator is an
+        // address.  MCP clients read one; a first-party client reads the other.
+        process.env.AUTH0_AUDIENCE = "plastic-io-graph-server"; process.env.AUTH0_DOMAIN = "tenant.example.auth0.com";
+        const document = protectedResourceMetadata(baseUrlOf(request));
+        expect(document.resource).toBe("https://api.example.com/dev/mcp");
+        expect(document.audience).toBe("plastic-io-graph-server");
+        expect(audienceIdentifier()).toBe("plastic-io-graph-server");
+    });
+
+    test("with no API named at all, the document carries no audience rather than an empty one", () => {
+        process.env.AUTH0_DOMAIN = "tenant.example.auth0.com";
+        expect("audience" in protectedResourceMetadata(baseUrlOf(request))).toBe(false);
+    });
+
+    test("an instance that only knows its MCP audience publishes that", () => {
+        process.env.MCP_AUDIENCE = "https://graph-server.example.dev";
+        expect(audienceIdentifier()).toBe("https://graph-server.example.dev");
     });
 
     test("uses the identifier the authorization server knows, when it is told one", () => {

@@ -10,6 +10,12 @@
  *     indicator when it asks for a token.  A bare name cannot be a resource indicator, so
  *     a client that follows the spec asks for a token for nothing in particular and gets
  *     one this server will not accept.
+ *   - `audience` is **not** `resource`, and conflating them locked the editor out.  A
+ *     resource indicator has to be this server's own address or an MCP client refuses it;
+ *     an Auth0 audience has to be an API identifier the tenant knows.  Those are two
+ *     different strings for the same server, so the document carries both: MCP clients
+ *     read `resource`, and a first-party client that asks its authorization server for a
+ *     token reads `audience`.
  *   - the 401 that sends a client here must name this document at an **absolute** URL.
  *     That challenge is emitted by the API Gateway itself (the authorizer refuses before
  *     any handler runs), so it is configured beside the routes in `serverless.yaml`.
@@ -47,10 +53,21 @@ export function resourceIdentifier(baseUrl: string): string {
     return /^https?:\/\//.test(audience) ? audience : `${baseUrl}/mcp`;
 }
 
+/**
+ * The API identifier a first-party client asks its authorization server for.  This is what
+ * the authorizer accepts, which is not necessarily what `resource` says: the resource
+ * indicator names *this server*, while the audience names *the API the tenant knows*.
+ */
+export function audienceIdentifier(): string {
+    return process.env.AUTH0_AUDIENCE || process.env.MCP_AUDIENCE || "";
+}
+
 export function protectedResourceMetadata(baseUrl = "") {
     const resource = resourceIdentifier(baseUrl);
+    const audience = audienceIdentifier();
     return {
         resource,
+        ...(audience ? { audience } : {}),
         authorization_servers: process.env.AUTH0_DOMAIN ? [`https://${process.env.AUTH0_DOMAIN}/`] : [],
         bearer_methods_supported: ["header"],
         scopes_supported: AUTHORITIES,
