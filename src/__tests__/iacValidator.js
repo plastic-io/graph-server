@@ -259,3 +259,69 @@ describe("the policy is substrate configuration, not graph content", () => {
         expect(p.substrateStacks.length).toBeGreaterThan(0);
     });
 });
+
+describe("what it would cost to leave running", () => {
+    /**
+     * This runs in somebody's personal account.  The IAM boundary stops a
+     * template doing damage; none of it stops a template being expensive, and
+     * an idle NAT gateway costs more per month than everything else here put
+     * together.  So the resource types are an allow-list — absence is refusal —
+     * and the few things inside it that can be made to bill while idle are
+     * checked one by one.
+     */
+    const { DEFAULT_POLICY, CHEAP_RESOURCE_TYPES } = require("../iac/types");
+    const strict = { ...policy, allowedResourceTypes: CHEAP_RESOURCE_TYPES, maxResources: 100 };
+
+    test("the cheap things are allowed", () => {
+        const t = `Resources:\n  B:\n    Type: AWS::S3::Bucket\n    Properties: {BucketName: pio-dev-b}\n  Q:\n    Type: AWS::SQS::Queue\n    Properties: {QueueName: pio-dev-q}\n  F:\n    Type: AWS::Lambda::Function\n    Properties: {FunctionName: pio-dev-f}\n`;
+        expect(validateTemplate(t, "yaml", strict).ok).toBe(true);
+    });
+
+    test("anything with an hourly price is not on the list, and absence is refusal", () => {
+        for (const type of ["AWS::EC2::Instance", "AWS::EC2::NatGateway", "AWS::RDS::DBInstance", "AWS::ElastiCache::CacheCluster", "AWS::EKS::Cluster", "AWS::OpenSearchService::Domain", "AWS::Kinesis::Stream", "AWS::ECS::Service", "AWS::EC2::EIP"]) {
+            const t = `Resources:\n  X:\n    Type: ${type}\n    Properties: {}\n`;
+            const r = validateTemplate(t, "yaml", strict);
+            expect(codes(r)).toContain("RESOURCE_TYPE_NOT_ALLOWED");
+            expect(r.problems[0].message).toMatch(/costs nothing while it sits idle/);
+        }
+    });
+
+    test("an environment can widen the list deliberately", () => {
+        const t = `Resources:\n  X:\n    Type: AWS::EC2::Instance\n    Properties: {}\n`;
+        expect(validateTemplate(t, "yaml", { ...strict, allowedResourceTypes: [...CHEAP_RESOURCE_TYPES, "AWS::EC2::Instance"] }).ok).toBe(true);
+    });
+
+    test("a table billed by capacity rather than by use", () => {
+        const provisioned = `Resources:\n  T:\n    Type: AWS::DynamoDB::Table\n    Properties:\n      TableName: pio-dev-t\n      ProvisionedThroughput: {ReadCapacityUnits: 5, WriteCapacityUnits: 5}\n`;
+        expect(codes(validateTemplate(provisioned, "yaml", strict))).toEqual(["COST_PROVISIONED"]);
+        const onDemand = `Resources:\n  T:\n    Type: AWS::DynamoDB::Table\n    Properties:\n      TableName: pio-dev-t\n      BillingMode: PAY_PER_REQUEST\n`;
+        expect(validateTemplate(onDemand, "yaml", strict).ok).toBe(true);
+    });
+
+    test("concurrency reserved in advance is billed in advance", () => {
+        const t = `Resources:\n  V:\n    Type: AWS::Lambda::Version\n    Properties:\n      FunctionName: pio-dev-f\n      ProvisionedConcurrencyConfig: {ProvisionedConcurrentExecutions: 2}\n`;
+        expect(codes(validateTemplate(t, "yaml", strict))).toEqual(["COST_PROVISIONED"]);
+    });
+
+    test("logs kept for ever are the part of logging that keeps costing", () => {
+        const forever = `Resources:\n  L:\n    Type: AWS::Logs::LogGroup\n    Properties: {LogGroupName: pio-dev-l}\n`;
+        expect(codes(validateTemplate(forever, "yaml", strict))).toEqual(["COST_UNBOUNDED"]);
+        const bounded = `Resources:\n  L:\n    Type: AWS::Logs::LogGroup\n    Properties: {LogGroupName: pio-dev-l, RetentionInDays: 14}\n`;
+        expect(validateTemplate(bounded, "yaml", strict).ok).toBe(true);
+    });
+
+    test("a template with more resources than the environment deploys is refused unread", () => {
+        const many = "Resources:\n" + Array.from({ length: 101 }, (_, i) => `  B${i}:\n    Type: AWS::S3::Bucket\n    Properties: {BucketName: pio-dev-b${i}}\n`).join("");
+        const r = validateTemplate(many, "yaml", strict);
+        expect(codes(r)).toEqual(["TOO_MANY_RESOURCES"]);
+        expect(r.counts.resources).toBe(101);
+    });
+
+    test("the default policy is the careful one, whatever the environment says", () => {
+        expect(DEFAULT_POLICY.allowedResourceTypes).toBe(CHEAP_RESOURCE_TYPES);
+        expect(DEFAULT_POLICY.maxResources).toBe(100);
+        expect(policyFromEnv({}).allowedResourceTypes).toEqual(CHEAP_RESOURCE_TYPES);
+        expect(policyFromEnv({ IAC_ALLOWED_TYPES: "AWS::S3::Bucket" }).allowedResourceTypes).toEqual(["AWS::S3::Bucket"]);
+        expect(policyFromEnv({ IAC_MAX_RESOURCES: "5" }).maxResources).toBe(5);
+    });
+});

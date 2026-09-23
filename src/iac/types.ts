@@ -56,13 +56,48 @@ export interface IacPolicy {
     allowNestedStacks?: boolean;
     /** Off by default: a macro is code running with the execution role's authority. */
     allowTransforms?: boolean;
+    /**
+     * The resource types this environment will deploy.  An allow-list rather
+     * than a list of forbidden ones: the expensive corners of AWS are many and
+     * new ones arrive, so anything not named here is refused, which fails
+     * towards a bill nobody expected rather than away from it.
+     */
+    allowedResourceTypes: string[];
+    /** A template with more resources than this is refused unread. */
+    maxResources: number;
 }
+
+/**
+ * What a graph may deploy by default: things that cost what they are used and
+ * nothing when they are idle.  Everything with an hourly price — instances,
+ * NAT gateways, databases, clusters, search domains, provisioned throughput —
+ * is absent, and absence is refusal.
+ */
+export const CHEAP_RESOURCE_TYPES: string[] = [
+    "AWS::S3::Bucket", "AWS::S3::BucketPolicy",
+    "AWS::Lambda::Function", "AWS::Lambda::Permission", "AWS::Lambda::Alias", "AWS::Lambda::Version",
+    "AWS::Lambda::EventSourceMapping", "AWS::Lambda::Url", "AWS::Lambda::LayerVersion",
+    "AWS::IAM::Role", "AWS::IAM::Policy", "AWS::IAM::ManagedPolicy",
+    "AWS::DynamoDB::Table", "AWS::DynamoDB::GlobalTable",
+    "AWS::SQS::Queue", "AWS::SQS::QueuePolicy",
+    "AWS::SNS::Topic", "AWS::SNS::Subscription", "AWS::SNS::TopicPolicy",
+    "AWS::Logs::LogGroup", "AWS::Logs::LogStream", "AWS::Logs::SubscriptionFilter", "AWS::Logs::MetricFilter",
+    "AWS::Events::Rule", "AWS::Events::EventBus", "AWS::Scheduler::Schedule", "AWS::Scheduler::ScheduleGroup",
+    "AWS::ApiGateway::RestApi", "AWS::ApiGateway::Resource", "AWS::ApiGateway::Method", "AWS::ApiGateway::Deployment",
+    "AWS::ApiGateway::Stage", "AWS::ApiGateway::Account", "AWS::ApiGatewayV2::Api", "AWS::ApiGatewayV2::Route",
+    "AWS::ApiGatewayV2::Integration", "AWS::ApiGatewayV2::Stage", "AWS::ApiGatewayV2::Deployment",
+    "AWS::StepFunctions::StateMachine", "AWS::StepFunctions::Activity",
+    "AWS::SSM::Parameter", "AWS::CloudWatch::Alarm", "AWS::CloudWatch::Dashboard",
+    "AWS::CloudFormation::WaitConditionHandle",
+];
 
 export const DEFAULT_POLICY: IacPolicy = {
     stackPrefix: "pio-dev-",
     accounts: [],
     regions: ["us-west-1"],
     substrateStacks: ["plastic-io-graph-server", "plastic-io-iac-orchestrator"],
+    allowedResourceTypes: CHEAP_RESOURCE_TYPES,
+    maxResources: 100,
 };
 
 export interface IacProblem {
@@ -75,7 +110,8 @@ export interface IacProblem {
         | "CUSTOM_RESOURCE" | "MACRO" | "TRANSFORM" | "NESTED_STACK"
         | "IAM_WITHOUT_BOUNDARY" | "IAM_NEGATED_STATEMENT"
         | "OPEN_PRINCIPAL" | "FOREIGN_PRINCIPAL"
-        | "NAME_OUTSIDE_PREFIX";
+        | "NAME_OUTSIDE_PREFIX"
+        | "RESOURCE_TYPE_NOT_ALLOWED" | "TOO_MANY_RESOURCES" | "COST_PROVISIONED" | "COST_UNBOUNDED";
     message: string;
     /** Where in the template or the desired state, as a dotted path. */
     path?: string;

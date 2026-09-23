@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { parse as parseYaml } from "yaml";
-import { DEFAULT_POLICY, IacDesiredState, IacPolicy, IacProblem, TemplateValidation } from "./types";
+import { CHEAP_RESOURCE_TYPES, DEFAULT_POLICY, IacDesiredState, IacPolicy, IacProblem, TemplateValidation } from "./types";
 
 /**
  * What a template is allowed to be (plan §4.9.6, PB-091).
@@ -160,6 +160,11 @@ export function validateTemplate(text: string, format: "yaml" | "json" = "yaml",
         }
     });
 
+    const logical = Object.keys(resources);
+    if (policy.maxResources && logical.length > policy.maxResources) {
+        push("TOO_MANY_RESOURCES", `${logical.length} resources is more than the ${policy.maxResources} this environment deploys in one stack`, "Resources");
+        return { ...empty, counts: { resources: logical.length, outputs: 0, parameters: 0 } };
+    }
     const resourceTypes: string[] = [];
     const ownAccounts = policy.accounts.length ? policy.accounts : [];
     Object.keys(resources).forEach((logicalId) => {
@@ -172,6 +177,25 @@ export function validateTemplate(text: string, format: "yaml" | "json" = "yaml",
         const type = resource.Type;
         resourceTypes.push(type);
         const properties = (resource.Properties && typeof resource.Properties === "object") ? resource.Properties : {};
+
+        // What it costs to leave running is a property of the type, so it is
+        // asked first: an allow-list, because the expensive corners of AWS are
+        // many and new ones arrive.
+        if (policy.allowedResourceTypes && policy.allowedResourceTypes.length && !policy.allowedResourceTypes.includes(type)) {
+            push("RESOURCE_TYPE_NOT_ALLOWED", `${type} is not one of the resource types this environment deploys; the list is what costs nothing while it sits idle, and widening it is a decision about the bill`, `${at}.Type`, logicalId);
+        }
+        if (type === "AWS::DynamoDB::Table" || type === "AWS::DynamoDB::GlobalTable") {
+            const provisioned = properties.BillingMode !== undefined ? properties.BillingMode !== "PAY_PER_REQUEST" : !!properties.ProvisionedThroughput;
+            if (provisioned) {
+                push("COST_PROVISIONED", "provisioned capacity is billed whether or not anything reads or writes; PAY_PER_REQUEST is not", `${at}.Properties.BillingMode`, logicalId);
+            }
+        }
+        if (type === "AWS::Logs::LogGroup" && properties.RetentionInDays === undefined) {
+            push("COST_UNBOUNDED", "a log group with no RetentionInDays keeps everything for ever, and storage is the part of logging that does not stop costing", `${at}.Properties.RetentionInDays`, logicalId);
+        }
+        if (properties.ProvisionedConcurrencyConfig !== undefined) {
+            push("COST_PROVISIONED", "provisioned concurrency is billed while it is reserved, whether or not anything calls it", `${at}.Properties.ProvisionedConcurrencyConfig`, logicalId);
+        }
 
         if (/^Custom::/.test(type) || type === "AWS::CloudFormation::CustomResource") {
             push("CUSTOM_RESOURCE", "a custom resource runs code of its own with this deployment's authority, and nothing here can see what that code does", `${at}.Type`, logicalId);
@@ -373,8 +397,11 @@ export function validateDesired(desired: any, policy: IacPolicy = DEFAULT_POLICY
 /** The policy an environment runs under, from substrate configuration only. */
 export function policyFromEnv(env: Record<string, string | undefined> = process.env): IacPolicy {
     const list = (value: string | undefined) => (value || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const types = list(env.IAC_ALLOWED_TYPES);
     return {
         stackPrefix: env.IAC_STACK_PREFIX || DEFAULT_POLICY.stackPrefix,
+        allowedResourceTypes: types.length ? types : CHEAP_RESOURCE_TYPES,
+        maxResources: Number(env.IAC_MAX_RESOURCES || DEFAULT_POLICY.maxResources),
         accounts: list(env.IAC_ACCOUNTS),
         regions: list(env.IAC_REGIONS).length ? list(env.IAC_REGIONS) : DEFAULT_POLICY.regions,
         permissionsBoundaryArn: env.IAC_BOUNDARY_ARN || undefined,

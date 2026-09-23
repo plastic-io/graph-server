@@ -38,6 +38,19 @@ provider:
         - lambda:InvokeFunction
       Resource:
         - "arn:aws:lambda:${self:provider.region}:*:function:${self:service}-${self:provider.stage}-taskWorker"
+    # Asking CloudFormation what a change would do (plan §4.9, M4a).  Three
+    # calls about a change set and no fourth: without ExecuteChangeSet — and
+    # without iam:PassRole, which executing one would need — this role can
+    # describe a change and cannot make it happen.  Scoped to the stacks this
+    # environment names, so it cannot read or touch the substrate's own stack.
+    - Effect: Allow
+      Action:
+        - cloudformation:CreateChangeSet
+        - cloudformation:DescribeChangeSet
+        - cloudformation:DeleteChangeSet
+        - cloudformation:DescribeStacks
+      Resource:
+        - "arn:aws:cloudformation:${self:provider.region}:${aws:accountId}:stack/${opt:iacStackPrefix, 'pio-dev-'}*/*"
     - Effect: Allow
       Action:
         - secretsmanager:GetSecretValue
@@ -68,11 +81,18 @@ provider:
     # accounts named there is no CloudFormation client at all, so the server
     # validates a desired state and says plainly that it cannot plan one; the
     # account this would point at is decided with the orchestrator (D-45).
-    IAC_ACCOUNTS: ${opt:iacAccounts, ''}
+    # The account this stack is deployed into, which is the one it plans
+    # against (D-45 resolved: the same account, scoped by the stack prefix).
+    IAC_ACCOUNTS: ${opt:iacAccounts, '${aws:accountId}'}
     IAC_REGIONS: ${opt:iacRegions, 'us-west-1'}
     IAC_STACK_PREFIX: ${opt:iacStackPrefix, 'pio-dev-'}
     IAC_BOUNDARY_ARN: ${opt:iacBoundaryArn, ''}
     IAC_SUBSTRATE_STACKS: 'plastic-io-graph-server,plastic-io-iac-orchestrator'
+    # An allow-list of resource types, because this runs in a personal account
+    # and the expensive corners of AWS are many: empty means the careful
+    # default (things that cost what they are used and nothing when idle).
+    IAC_ALLOWED_TYPES: ${opt:iacAllowedTypes, ''}
+    IAC_MAX_RESOURCES: ${opt:iacMaxResources, '100'}
     OWNER_SUBS: ${opt:ownerSubs, ''}
     WS_EXECUTION_ENABLED: ${opt:wsExecution, 'false'}
     API_REGION: ${self:provider.region}
