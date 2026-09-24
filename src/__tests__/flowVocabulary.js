@@ -400,3 +400,151 @@ describe("the vocabulary composed, which is the point of it", () => {
         expect(values(out)).toEqual([1, 2, 3]);
     });
 });
+
+describe("pipelines: several of them at once, through the scheduler", () => {
+    /**
+     * These are the shapes people actually draw.  Each one runs as one
+     * execution, so what a node remembers holds for the whole pipeline, and
+     * what comes out the end is the only thing asserted — if the arrangement
+     * is wrong the answer is wrong, which is the point of testing it this way
+     * rather than node by node.
+     */
+
+    test("filter and collect: keep what passes a test, and send them on together", async () => {
+        const iterate = node("iterate");
+        const branch = node("if", { data: { test: "value > 2" } });
+        const collect = node("collect", { data: { count: 3, items: [] } });
+        const end = sink();
+        wire(iterate, "each", branch, "value");
+        wire(branch, "then", collect, "value");
+        wire(collect, "value", end);
+
+        const { out, summary } = await run([iterate, branch, collect, end], "iterate", [1, 2, 3, 4, 5], "value");
+        expect(summary.errors).toBe(0);
+        // three of the five passed, and they left as one thing, once
+        expect(out).toHaveLength(1);
+        expect(out[0].value).toEqual([3, 4, 5]);
+    });
+
+    test("route, gate and count: only what is let through is counted", async () => {
+        const trigger = node("trigger");
+        const opening = constant("opening", true);
+        const work = constant("work", [{ kind: "bucket" }, { kind: "queue" }, { kind: "bucket" }]);
+        const iterate = node("iterate");
+        const route = node("route", { data: { on: "kind" }, properties: { outputs: [port("bucket"), port("queue"), port("unmatched")] } });
+        route.edges = [{ field: "bucket", connectors: [] }, { field: "queue", connectors: [] }, { field: "unmatched", connectors: [] }];
+        const gate = node("gate");
+        const counter = node("counter");
+        const end = sink();
+        // the gate is opened first, because Trigger's last output fires first
+        wire(trigger, "third", opening, "bang");
+        wire(trigger, "second", work, "bang");
+        wire(opening, "value", gate, "open");
+        wire(work, "value", iterate, "value");
+        wire(iterate, "each", route, "value");
+        wire(route, "bucket", gate, "value");
+        wire(gate, "value", counter, "bang");
+        wire(counter, "count", end);
+
+        const { out, summary } = await run([trigger, opening, work, iterate, route, gate, counter, end], "trigger", "GO", "bang");
+        expect(summary.errors).toBe(0);
+        // two buckets went through; the queue was routed elsewhere and never counted
+        expect(values(out)).toEqual([1, 2]);
+    });
+
+    test("a gate nobody opened stops the same pipeline dead", async () => {
+        const work = constant("work", [{ kind: "bucket" }, { kind: "bucket" }]);
+        const iterate = node("iterate");
+        const route = node("route", { data: { on: "kind" }, properties: { outputs: [port("bucket"), port("unmatched")] } });
+        route.edges = [{ field: "bucket", connectors: [] }, { field: "unmatched", connectors: [] }];
+        const gate = node("gate");
+        const counter = node("counter");
+        const end = sink();
+        wire(work, "value", iterate, "value");
+        wire(iterate, "each", route, "value");
+        wire(route, "bucket", gate, "value");
+        wire(gate, "value", counter, "bang");
+        wire(counter, "count", end);
+        const { out } = await run([work, iterate, route, gate, counter, end], "work", "GO", "bang");
+        expect(out).toEqual([]);
+    });
+
+    test("take apart, change one part, put it back together", async () => {
+        const unpack = node("unpack", { properties: { outputs: [port("name"), port("region")] } });
+        unpack.edges = [{ field: "name", connectors: [] }, { field: "region", connectors: [] }];
+        const shout = node("format", { data: { pattern: "${value.toUpperCase()}" } });
+        shout.id = shout.url = "shout";
+        const pack = node("pack", { properties: { inputs: [port("bang"), port("name"), port("region")] } });
+        const end = sink();
+        wire(unpack, "region", pack, "region");
+        wire(unpack, "name", shout, "value");
+        wire(shout, "value", pack, "name");
+        // Unpack sends its last output first, so region is in before name
+        // arrives; name is the one that bangs, because it comes last
+        wire(shout, "value", pack, "bang");
+        wire(pack, "value", end);
+
+        const { out, summary } = await run([unpack, shout, pack, end], "unpack", { name: "uploads", region: "us-west-1" }, "value");
+        expect(summary.errors).toBe(0);
+        // the bang is not kept: Pack remembers its cold inputs and nothing else
+        expect(out[0].value).toEqual({ name: "UPLOADS", region: "us-west-1" });
+    });
+
+    test("wait for two slow things: the run does not end while they are in the air", async () => {
+        const repeat = node("repeat", { data: { times: 3 } });
+        const slow = node("delay", { data: { ms: 20 } });
+        const collect = node("collect", { data: { count: 3, items: [] } });
+        const end = sink();
+        wire(repeat, "each", slow, "value");
+        wire(slow, "value", collect, "value");
+        wire(collect, "value", end);
+
+        const started = Date.now();
+        const { out, summary } = await run([repeat, slow, collect, end], "repeat", "GO", "bang");
+        expect(summary.errors).toBe(0);
+        // all three waited, and all three were still collected into one answer
+        expect(Date.now() - started).toBeGreaterThanOrEqual(15);
+        expect(out).toHaveLength(1);
+        expect(out[0].value.map((v) => v.index)).toEqual([0, 1, 2]);
+    });
+
+    test("what is missing is counted, not lost: read a path that is not always there", async () => {
+        const iterate = node("iterate");
+        const get = node("get", { data: { path: "stack.name" } });
+        const found = node("counter");
+        const missing = node("counter");
+        missing.id = missing.url = "missing-counter";
+        const end = sink();
+        wire(iterate, "each", get, "value");
+        wire(get, "value", found, "bang");
+        wire(get, "missing", missing, "bang");
+        wire(found, "count", end, "found");
+        wire(missing, "count", end, "missing");
+
+        const { state, summary } = await run([iterate, get, found, missing, end], "iterate", [
+            { stack: { name: "one" } }, { stack: {} }, { stack: { name: "two" } }, {},
+        ], "value");
+        expect(summary.errors).toBe(0);
+        expect(state.out.filter((o) => o.field === "found").map((o) => o.value)).toEqual([1, 2]);
+        expect(state.out.filter((o) => o.field === "missing").map((o) => o.value)).toEqual([1, 2]);
+    });
+
+    test("a pipeline that says what it did: Log in the middle changes nothing", async () => {
+        const iterate = node("iterate");
+        const log = node("log", { data: { label: "seen" } });
+        const collect = node("collect", { data: { count: 2, items: [] } });
+        const end = sink();
+        wire(iterate, "each", log, "value");
+        wire(log, "value", collect, "value");
+        wire(collect, "value", end);
+
+        const observed = [];
+        const runner = new ExecutionRunner(new FakeS3Service(), { live: (o) => observed.push(o) });
+        const state = {};
+        await runner.run({ graph: graphOf([iterate, log, collect, end]), nodeUrl: "iterate", field: "value", value: ["a", "b"], principal: owner, state });
+        expect(state.out[0].value).toEqual(["a", "b"]);
+        // and both of them are in the execution's own record of what happened
+        const seen = observed.filter((o) => o.kind === "custom" && JSON.stringify(o.payload).indexOf("seen") !== -1);
+        expect(seen).toHaveLength(2);
+    });
+});
