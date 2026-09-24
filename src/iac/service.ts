@@ -4,6 +4,7 @@ import { Principal } from "../auth/principal";
 import { decide } from "../policy/decide";
 import { IacDesiredState, IacPolicy, IacProblem, TemplateValidation } from "./types";
 import { policyFromEnv, validateDesired, validateTemplate } from "./validator";
+import { assemble } from "./assemble";
 
 /**
  * Asking CloudFormation what a change would do (plan §4.9, M4a: D-43).
@@ -163,7 +164,7 @@ export class IacService {
         if (!carried.stack || typeof carried.stack !== "object") {
             return { error: "the desired state names no stack", code: "SCHEMA_INVALID" };
         }
-        return { revisionId: at.revisionId, node, carried };
+        return { revisionId: at.revisionId, node, carried, projection: at.projection };
     }
 
     /**
@@ -199,11 +200,33 @@ export class IacService {
         const at = this.now().toISOString();
         const idempotencyKey = options.idempotencyKey || ulid();
 
+        /**
+         * What this stack is, in order: what the graph describes, and only
+         * then a template the node carries as text.  A graph that draws its
+         * infrastructure is the point (D-48); carrying a file is what a graph
+         * does when somebody brought one.
+         */
         const template = carried.template || {};
-        const text: string | undefined = typeof template.text === "string" ? template.text : undefined;
-        const format: "yaml" | "json" = template.format === "json" ? "json" : "yaml";
+        const carriedText: string | undefined = typeof template.text === "string" ? template.text : undefined;
+        const assembled = assemble(found.projection, nodeId, policy);
+        const fromGraph = assembled.fragments.length > 0 || !carriedText;
+        const text = fromGraph ? assembled.text : carriedText!;
+        const format: "yaml" | "json" = fromGraph ? "json" : (template.format === "json" ? "json" : "yaml");
+        if (fromGraph && !assembled.ok) {
+            const at = this.now().toISOString();
+            const refused: IacStatus = {
+                schemaVersion: 1, graphId, nodeId, stack: carried.stack, operation: "plan",
+                state: "failed", requestedRevision: revisionId, templateSha256: "", at,
+                by: principal ? { sub: principal.sub, kind: principal.kind } : null,
+                correlation: { idempotencyKey },
+                problems: assembled.problems,
+                reason: "this graph does not describe a stack that can be deployed",
+            };
+            await this.record(refused);
+            return { error: refused.reason, code: "IAC_REFUSED", problems: assembled.problems, assembly: { fragments: assembled.fragments.length, orphans: assembled.orphans } };
+        }
         if (!text) {
-            return { error: "the desired state carries no template", code: "SCHEMA_INVALID" };
+            return { error: "nothing is wired into this stack and it carries no template", code: "SCHEMA_INVALID" };
         }
         const sha256 = createHash("sha256").update(text).digest("hex");
 
@@ -273,7 +296,7 @@ export class IacService {
             };
             await this.cleanUp(created.changeSetId);
             await this.record(planned);
-            return { status: planned, plan: planned.plan, validation, revisionId };
+            return { status: planned, plan: planned.plan, validation, revisionId, assembly: fromGraph ? { fragments: assembled.fragments, orphans: assembled.orphans } : undefined };
         } catch (err: any) {
             const message = (err && err.message) || String(err);
             const denied = /AccessDenied|not authorized|AccessDeniedException/i.test(message);
