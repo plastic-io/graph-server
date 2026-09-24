@@ -1,19 +1,4 @@
 {
-  "pack": {
-    "name": "Pack",
-    "description": "Cold inputs remember what arrives; bang sends them as one object, keyed by the input each value came in on.",
-    "icon": "mdi-package-variant-closed",
-    "inputs": [
-      "bang",
-      "a",
-      "b"
-    ],
-    "outputs": [
-      "value"
-    ],
-    "set": "/**\n * Pack: the cold inputs remember, `bang` sends.\n *\n * Max's pack, with names instead of positions — what comes out is an object\n * keyed by the input each value arrived on, so the names drawn on the node are\n * the names whatever is downstream reads.  Add or rename inputs freely; this\n * works for any of them.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {};\nif (field === \"bang\") {\n    edges.value = {...node.data};\n} else {\n    node.data[field] = value;\n}\n",
-    "vue": "<template>\n  <v-card width=\"230\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-package-variant-closed</v-icon>Pack</v-card-title>\n    <v-card-text class=\"text-caption\">\n      <div v-for=\"(v, k) in held\" :key=\"k\"><strong>{{ k }}</strong>: {{ short(v) }}</div>\n      <div v-if=\"!Object.keys(held).length\" class=\"text-disabled\">nothing held yet</div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\n// Presentation only: it reads what the node is holding and shows it.\nexport default {\n  props: { node: Object, state: Object },\n  computed: {\n    held() { return (this.node && this.node.data) || {}; },\n  },\n  methods: {\n    short(v) {\n      const s = typeof v === \"string\" ? v : JSON.stringify(v);\n      return s && s.length > 28 ? s.slice(0, 28) + \"…\" : s;\n    },\n  },\n};\n</script>\n"
-  },
   "collect": {
     "name": "Collect",
     "description": "Holds values until there are as many as it was told to expect, then sends them as one array. Max's zl group.",
@@ -26,77 +11,7 @@
       "value"
     ],
     "set": "/**\n * Collect: hold values until there are `count` of them, then send them as one.\n *\n * Max's `zl group`, and the reason a fan-in is safe: many connectors into one\n * field arrive one at a time, each running this node again, and nothing\n * downstream should see a half-assembled answer.  `reset` throws away what has\n * been collected so far, for a branch that legitimately did not fire.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {count: 2, items: []};\nif (field === \"reset\") {\n    node.data.items = [];\n    return;\n}\nnode.data.items = (node.data.items || []).concat([value]);\nif (node.data.items.length >= Number(node.data.count || 0)) {\n    const all = node.data.items;\n    node.data.items = [];\n    edges.value = all;\n}\n",
-    "vue": "<template>\n  <v-card width=\"230\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-tray-full</v-icon>Collect</v-card-title>\n    <v-card-text>\n      <v-text-field density=\"compact\" type=\"number\" label=\"how many\" hide-details v-model.number=\"node.data.count\"/>\n      <div class=\"text-caption mt-2\">{{ held }} of {{ node.data.count }} arrived</div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\n// Presentation: it shows what is held and lets a person say how many to wait\n// for, the way the String node lets one edit its value.\nexport default {\n  props: { node: Object, state: Object },\n  computed: {\n    held() { return ((this.node.data && this.node.data.items) || []).length; },\n  },\n  mounted() {\n    if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {count: 2, items: []}; }\n  },\n};\n</script>\n"
-  },
-  "loadbang": {
-    "name": "Loadbang",
-    "description": "Sends once when the graph is drawn, so a graph can start itself. Max's loadbang.",
-    "icon": "mdi-flash-outline",
-    "inputs": [
-      "bang"
-    ],
-    "outputs": [
-      "value"
-    ],
-    "set": "/**\n * Loadbang: sends once, when the graph is first drawn.\n *\n * The impulse comes from the presentation, which emits on mount — a user-side\n * event travelling left to right like any other, so nothing here reaches back\n * into the graph.  Where there is no presentation (a run on the server) invoke\n * this node's url to start the same flow.\n */\nedges.value = value === undefined ? \"BANG\" : value;\n",
-    "vue": "<template>\n  <v-card width=\"200\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-flash-outline</v-icon>Loadbang</v-card-title>\n    <v-card-text class=\"text-caption\">\n      sends once when this graph is drawn\n      <div><v-btn size=\"x-small\" variant=\"text\" class=\"mt-1 px-0\" @click=\"$emit('set', 'BANG')\">send again</v-btn></div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\n// The one thing presentation may start: a user-facing event, emitted outward.\nexport default {\n  props: { node: Object, state: Object },\n  mounted() { this.$emit(\"set\", \"BANG\"); },\n};\n</script>\n"
-  },
-  "trigger": {
-    "name": "Trigger",
-    "description": "One in, many out, in a known order: the last output fires first, as Max's trigger fires right to left.",
-    "icon": "mdi-call-split",
-    "inputs": [
-      "bang"
-    ],
-    "outputs": [
-      "first",
-      "second",
-      "third"
-    ],
-    "set": "/**\n * Trigger: one in, many out, in an order you can rely on.\n *\n * Max's `trigger` fires its outlets right to left, so that everything a hot\n * inlet depends on has already arrived by the time it fires.  Outputs here are\n * drawn top to bottom, so the last one fires first.  Delete the outputs you do\n * not need; this sends to whichever are there.\n */\nconst names = ((properties.outputs || []).map((o) => o.name)).reverse();\nfor (const name of names) {\n    edges[name] = value;\n}\n",
-    "vue": "<template>\n  <v-card width=\"200\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-call-split</v-icon>Trigger</v-card-title>\n    <v-card-text class=\"text-caption\">\n      <div v-for=\"(o, i) in outputs\" :key=\"o\">{{ outputs.length - i }}. {{ o }}</div>\n      <div class=\"text-disabled mt-1\">the last fires first</div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  computed: {\n    outputs() { return ((this.node.properties && this.node.properties.outputs) || []).map((o) => o.name); },\n  },\n};\n</script>\n"
-  },
-  "unpack": {
-    "name": "Unpack",
-    "description": "Takes an object apart: each key goes out of the output with that name. An array goes out as 0, 1, 2. Last output first, so everything has arrived before the first fires.",
-    "icon": "mdi-package-variant",
-    "inputs": [
-      "value"
-    ],
-    "outputs": [
-      "a",
-      "b"
-    ],
-    "set": "/**\n * Unpack: an object in, each key out of the output named for it.\n *\n * Max's `unpack`, by name rather than position: name the outputs after the\n * keys you want.  An array is unpacked by index (0, 1, 2).  Outputs fire last\n * first, for the same reason Trigger does — so nothing downstream sees half\n * of an object.  A key with no output is left alone rather than lost quietly:\n * it goes out `rest` if there is one.\n */\nconst source = Array.isArray(value)\n    ? value.reduce((o, v, i) => { o[String(i)] = v; return o; }, {})\n    : (value && typeof value === \"object\" ? value : {value: value});\nconst names = ((properties.outputs || []).map((o) => o.name)).reverse();\nconst rest = {};\nObject.keys(source).forEach((key) => { if (names.indexOf(key) === -1) { rest[key] = source[key]; } });\nfor (const name of names) {\n    if (name === \"rest\") { continue; }\n    if (source[name] !== undefined) { edges[name] = source[name]; }\n}\nif (names.indexOf(\"rest\") !== -1 && Object.keys(rest).length) { edges.rest = rest; }\n",
-    "vue": "<template>\n  <v-card width=\"210\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-package-variant</v-icon>Unpack</v-card-title>\n    <v-card-text class=\"text-caption text-disabled\">name an output after each key you want</v-card-text>\n  </v-card>\n</template>\n<script>\nexport default { props: { node: Object, state: Object } };\n</script>\n"
-  },
-  "store": {
-    "name": "Store",
-    "description": "Remembers the last value it was given; sends it when banged. Max's v.",
-    "icon": "mdi-content-save-outline",
-    "inputs": [
-      "bang",
-      "value"
-    ],
-    "outputs": [
-      "value"
-    ],
-    "set": "/**\n * Store: `value` remembers, `bang` sends.\n *\n * Max's `v`.  The cold input is how a value waits for the right moment — the\n * difference between a graph that reacts to whatever arrived last and one that\n * decides when to read it.  What is remembered survives between runs, because\n * `node.data` does.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {};\nif (field === \"value\") {\n    node.data.held = value;\n    return;\n}\nedges.value = node.data.held;\n",
-    "vue": "<template>\n  <v-card width=\"210\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-content-save-outline</v-icon>Store</v-card-title>\n    <v-card-text class=\"text-caption\">\n      <span v-if=\"has\">holding: {{ short }}</span>\n      <span v-else class=\"text-disabled\">nothing held yet</span>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  computed: {\n    has() { return !!(this.node.data && \"held\" in this.node.data); },\n    short() {\n      const v = this.node.data.held;\n      const s = typeof v === \"string\" ? v : JSON.stringify(v);\n      return s && s.length > 30 ? s.slice(0, 30) + \"…\" : s;\n    },\n  },\n};\n</script>\n"
-  },
-  "toggle": {
-    "name": "Toggle",
-    "description": "Flips between true and false each time it is banged, and sends which it now is. Max's toggle.",
-    "icon": "mdi-toggle-switch-outline",
-    "inputs": [
-      "bang",
-      "set"
-    ],
-    "outputs": [
-      "value"
-    ],
-    "set": "/**\n * Toggle: flips on each bang and says which it now is.\n *\n * `set` puts it where you want without sending, so a graph can be armed\n * before it is started.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {on: false};\nif (field === \"set\") {\n    node.data.on = !!value;\n    return;\n}\nnode.data.on = !node.data.on;\nedges.value = node.data.on;\n",
-    "vue": "<template>\n  <v-card width=\"180\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-toggle-switch-outline</v-icon>Toggle</v-card-title>\n    <v-card-text class=\"text-caption\">{{ on ? \"on\" : \"off\" }}</v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  computed: { on() { return !!(this.node.data && this.node.data.on); } },\n};\n</script>\n"
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-tray-full</v-icon>Collect</v-card-title>\n    <v-card-text class=\"py-1\">\n      <v-text-field density=\"compact\" variant=\"plain\" type=\"number\" hide-details label=\"how many\" v-model.number=\"count\"/>\n      <div class=\"text-caption mt-1\">{{ held }} of {{ count }} arrived</div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 220 }; },\n  computed: {\n    count: {\n      get() { const d = this.node && this.node.data; return d && d.count !== undefined ? d.count : 2; },\n      set(v) { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {}; } this.node.data.count = v; },\n    },\n    held() { const d = this.node && this.node.data; return ((d && d.items) || []).length; },\n  },\n};\n</script>\n"
   },
   "counter": {
     "name": "Counter",
@@ -110,22 +25,34 @@
       "count"
     ],
     "set": "/**\n * Counter: counts what arrives and sends the running count.\n *\n * Max's `counter`.  Useful as an end in itself, and as the thing a graph asks\n * when it wants to know how far round a loop it has gone.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {count: 0};\nif (field === \"reset\") {\n    node.data.count = 0;\n    return;\n}\nnode.data.count = (node.data.count || 0) + 1;\nedges.count = node.data.count;\n",
-    "vue": "<template>\n  <v-card width=\"170\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-counter</v-icon>Counter</v-card-title>\n    <v-card-text class=\"text-h6 py-1\">{{ (node.data && node.data.count) || 0 }}</v-card-text>\n  </v-card>\n</template>\n<script>\nexport default { props: { node: Object, state: Object } };\n</script>\n"
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-counter</v-icon>Counter</v-card-title>\n    <v-card-text class=\"py-1 text-h6\">{{ count }}</v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 170 }; },\n  computed: { count() { const d = this.node && this.node.data; return (d && d.count) || 0; } },\n};\n</script>\n"
   },
-  "route": {
-    "name": "Route",
-    "description": "Sends the value out of the output named by one of its properties (by default 'kind'). Anything unmatched goes out unmatched. Max's route.",
-    "icon": "mdi-directions-fork",
+  "delay": {
+    "name": "Delay",
+    "description": "Holds a value for a while, then sends it. Max's delay and pipe.",
+    "icon": "mdi-timer-sand",
+    "inputs": [
+      "value",
+      "ms"
+    ],
+    "outputs": [
+      "value"
+    ],
+    "set": "/**\n * Delay: hold a value for a while, then send it.\n *\n * Max's `delay`/`pipe`.  The wait is awaited rather than left running, so the\n * execution does not end while a value is still in the air — which is what\n * makes \"the run has finished\" mean something.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {ms: 250};\nif (field === \"ms\") {\n    node.data.ms = Number(value) || 0;\n    return;\n}\nconst ms = Math.max(0, Number(node.data.ms) || 0);\nawait new Promise((resolve) => setTimeout(resolve, ms));\nhost.throwIfCancelled();\nedges.value = value;\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-timer-sand</v-icon>Delay</v-card-title>\n    <v-card-text class=\"py-1\">\n      <v-text-field density=\"compact\" variant=\"plain\" type=\"number\" hide-details label=\"milliseconds\" v-model.number=\"ms\"/>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 210 }; },\n  computed: { ms: {\n      get() { const d = this.node && this.node.data; return d && d.ms !== undefined ? d.ms : 250; },\n      set(v) { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {}; } this.node.data.ms = v; },\n    }, },\n};\n</script>\n"
+  },
+  "format": {
+    "name": "Format",
+    "description": "Makes a string out of what arrives, from a pattern with ${...} in it.",
+    "icon": "mdi-format-text",
     "inputs": [
       "value"
     ],
     "outputs": [
-      "a",
-      "b",
-      "unmatched"
+      "value"
     ],
-    "set": "/**\n * Route: one value in, out of the output that its `kind` names.\n *\n * Max's `route`, on a named property rather than a leading symbol: set\n * `node.data.on` to the property to read (`kind` by default), name the outputs\n * after the values you expect, and anything else goes out `unmatched` — which\n * is there so a value nobody expected is visible rather than dropped.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {on: \"kind\"};\nconst key = value && typeof value === \"object\" ? value[node.data.on || \"kind\"] : value;\nconst names = (properties.outputs || []).map((o) => o.name);\nconst name = names.indexOf(String(key)) !== -1 ? String(key) : \"unmatched\";\nif (names.indexOf(name) !== -1) {\n    edges[name] = value;\n}\n",
-    "vue": "<template>\n  <v-card width=\"210\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-directions-fork</v-icon>Route</v-card-title>\n    <v-card-text>\n      <v-text-field density=\"compact\" label=\"on which property\" hide-details v-model=\"node.data.on\"/>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  mounted() { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {on: \"kind\"}; } },\n};\n</script>\n"
+    "set": "/**\n * Format: a string from a pattern, with what arrived in it.\n *\n * `${value.name} in ${value.region}` — the pattern is data on the node, so a\n * label, a key or a name can be composed on the canvas instead of in code.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {pattern: \"${value}\"};\nconst pattern = String(node.data.pattern || \"\");\nconst made = pattern.replace(/\\$\\{([^}]*)\\}/g, (whole, expression) => {\n    try {\n        const read = Function(\"value\", \"state\", \"return (\" + expression + \");\")(value, state);\n        return read === undefined || read === null ? \"\" : String(read);\n    } catch (err) {\n        return whole;\n    }\n});\nnode.data.last = made.length > 40 ? made.slice(0, 40) + \"\\u2026\" : made;\nedges.value = made;\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-format-text</v-icon>Format</v-card-title>\n    <v-card-text class=\"py-1\">\n      <v-text-field density=\"compact\" variant=\"plain\" hide-details label=\"pattern\" v-model=\"pattern\"/>\n      <div class=\"text-caption mt-1\" v-if=\"last\"><span class=\"text-disabled\">last:</span> {{ last }}</div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 250 }; },\n  computed: {\n    pattern: {\n      get() { const d = this.node && this.node.data; return d && d.pattern !== undefined ? d.pattern : \"${value}\"; },\n      set(v) { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {}; } this.node.data.pattern = v; },\n    },\n    last() { const d = this.node && this.node.data; return d && d.last ? d.last : \"\"; },\n  },\n};\n</script>\n"
   },
   "gate": {
     "name": "Gate",
@@ -139,22 +66,36 @@
       "value"
     ],
     "set": "/**\n * Gate: values pass while it is open, and are dropped while it is shut.\n *\n * Max's `gate`.  Shut by default, because a gate that passes everything until\n * told otherwise is a gate that does nothing on the run that matters — the\n * first one.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {open: false};\nif (field === \"open\") {\n    node.data.open = !!value;\n    return;\n}\nif (node.data.open) {\n    edges.value = value;\n}\n",
-    "vue": "<template>\n  <v-card width=\"180\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-gate</v-icon>Gate</v-card-title>\n    <v-card-text class=\"text-caption\" :class=\"open ? 'text-success' : 'text-disabled'\">{{ open ? \"open\" : \"shut\" }}</v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  computed: { open() { return !!(this.node.data && this.node.data.open); } },\n};\n</script>\n"
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-gate</v-icon>Gate</v-card-title>\n    <v-card-text class=\"py-1 text-caption\">\n      <span :class=\"open ? 'text-success' : 'text-disabled'\">{{ open ? \"open\" : \"shut\" }}</span>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 190 }; },\n  computed: { open() { const d = this.node && this.node.data; return !!(d && d.open); } },\n};\n</script>\n"
   },
-  "select": {
-    "name": "Select",
-    "description": "Compares what arrives with what it was told to match: equal goes out yes, anything else out no. Max's select.",
-    "icon": "mdi-equal",
+  "get": {
+    "name": "Get",
+    "description": "Reads one path out of an object and sends it; a path that is not there goes out missing.",
+    "icon": "mdi-code-braces",
     "inputs": [
       "value",
-      "match"
+      "path"
     ],
     "outputs": [
-      "yes",
-      "no"
+      "value",
+      "missing"
     ],
-    "set": "/**\n * Select: equal goes out `yes`, everything else out `no`.\n *\n * Max's `select`, with the unmatched case given somewhere to go rather than\n * being dropped.  `match` sets what to compare against without testing, so the\n * thing being matched can be decided by the graph.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {match: \"\"};\nif (field === \"match\") {\n    node.data.match = value;\n    return;\n}\nconst same = JSON.stringify(value) === JSON.stringify(node.data.match);\nedges[same ? \"yes\" : \"no\"] = value;\n",
-    "vue": "<template>\n  <v-card width=\"210\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-equal</v-icon>Select</v-card-title>\n    <v-card-text>\n      <v-text-field density=\"compact\" label=\"matches\" hide-details v-model=\"node.data.match\"/>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  mounted() { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {match: \"\"}; } },\n};\n</script>\n"
+    "set": "/**\n * Get: read one path out of what arrives.\n *\n * `a.b.0.c`, the way anyone would write it.  A path that is not there goes out\n * `missing` carrying the path, rather than sending undefined down the happy\n * road — a missing value should be a branch, not a surprise later.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {path: \"\"};\nif (field === \"path\") {\n    node.data.path = String(value || \"\");\n    return;\n}\nconst parts = String(node.data.path || \"\").split(\".\").filter(Boolean);\nlet at = value;\nfor (const part of parts) {\n    if (at === null || at === undefined) { at = undefined; break; }\n    at = at[part];\n}\nconst short = (v) => { const s = typeof v === \"string\" ? v : JSON.stringify(v); return s === undefined ? \"\" : (s.length > 40 ? s.slice(0, 40) + \"\\u2026\" : s); };\nnode.data.last = at === undefined ? \"missing\" : short(at);\nif (at === undefined) {\n    edges.missing = {path: node.data.path, value: value};\n} else {\n    edges.value = at;\n}\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-code-braces</v-icon>Get</v-card-title>\n    <v-card-text class=\"py-1\">\n      <v-text-field density=\"compact\" variant=\"plain\" hide-details label=\"path\" placeholder=\"a.b.0.c\" v-model=\"path\"/>\n      <div class=\"text-caption mt-1\" v-if=\"last\"><span class=\"text-disabled\">last:</span> {{ last }}</div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 230 }; },\n  computed: {\n    path: {\n      get() { const d = this.node && this.node.data; return d && d.path !== undefined ? d.path : \"\"; },\n      set(v) { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {}; } this.node.data.path = v; },\n    },\n    last() { const d = this.node && this.node.data; return d && d.last ? d.last : \"\"; },\n  },\n};\n</script>\n"
+  },
+  "if": {
+    "name": "If",
+    "description": "Tests what arrives against a condition you write, and sends it out then or else.",
+    "icon": "mdi-source-branch",
+    "inputs": [
+      "value"
+    ],
+    "outputs": [
+      "then",
+      "else"
+    ],
+    "set": "/**\n * If: a condition a person can edit, rather than code they have to open.\n *\n * The test is written on the node (`value > 10`, `value.kind === \"bucket\"`)\n * and read as data, so a graph can be reasoned about without reading every\n * set script.  A condition that throws sends nothing and says why, rather\n * than quietly choosing a branch.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {test: \"value\"};\nconst test = String(node.data.test || \"value\");\nlet passed;\ntry {\n    passed = Function(\"value\", \"state\", \"properties\", \"return (\" + test + \");\")(value, state, properties);\n} catch (err) {\n    throw new Error(\"If: \" + test + \" — \" + err.message);\n}\nnode.data.last = passed ? \"then\" : \"else\";\nedges[passed ? \"then\" : \"else\"] = value;\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-source-branch</v-icon>If</v-card-title>\n    <v-card-text class=\"py-1\">\n      <v-text-field density=\"compact\" variant=\"plain\" hide-details label=\"condition\" v-model=\"test\"/>\n      <div class=\"text-caption mt-1\" v-if=\"last\"><span class=\"text-disabled\">last:</span> {{ last }}</div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 250 }; },\n  computed: {\n    test: {\n      get() { const d = this.node && this.node.data; return d && d.test !== undefined ? d.test : \"value\"; },\n      set(v) { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {}; } this.node.data.test = v; },\n    },\n    last() { const d = this.node && this.node.data; return d && d.last ? d.last : \"\"; },\n  },\n};\n</script>\n"
   },
   "iterate": {
     "name": "Iterate",
@@ -168,7 +109,48 @@
       "done"
     ],
     "set": "/**\n * Iterate: an array in, its elements out one at a time, then `done`.\n *\n * Max's `iter`.  Each element is a delivery of its own, so whatever is\n * downstream runs once per element and the scheduler counts every one against\n * the budget — a loop that cannot run away unnoticed.  `done` fires after the\n * last, carrying how many there were, which is what Collect wants to be told.\n */\nconst items = Array.isArray(value) ? value : (value === undefined ? [] : [value]);\nfor (const item of items) {\n    edges.each = item;\n}\nedges.done = items.length;\n",
-    "vue": "<template>\n  <v-card width=\"200\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-format-list-numbered</v-icon>Iterate</v-card-title>\n    <v-card-text class=\"text-caption text-disabled\">each element, then how many</v-card-text>\n  </v-card>\n</template>\n<script>\nexport default { props: { node: Object, state: Object } };\n</script>\n"
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-format-list-numbered</v-icon>Iterate</v-card-title>\n    <v-card-text class=\"py-1 text-caption text-disabled\">each element, then how many</v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 210 }; },\n};\n</script>\n"
+  },
+  "loadbang": {
+    "name": "Loadbang",
+    "description": "Sends once when the graph is drawn, so a graph can start itself. Max's loadbang.",
+    "icon": "mdi-flash-outline",
+    "inputs": [
+      "bang"
+    ],
+    "outputs": [
+      "value"
+    ],
+    "set": "/**\n * Loadbang: sends once, when the graph is first drawn.\n *\n * The impulse comes from the presentation, which emits on mount — a user-side\n * event travelling left to right like any other, so nothing here reaches back\n * into the graph.  Where there is no presentation (a run on the server) invoke\n * this node's url to start the same flow.\n */\nedges.value = value === undefined ? \"BANG\" : value;\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-flash-outline</v-icon>Loadbang</v-card-title>\n    <v-card-text class=\"py-1 text-caption\">\n      sends once when this graph is drawn\n      <div><v-btn size=\"x-small\" variant=\"text\" class=\"px-0\" @click=\"$emit('set', 'BANG')\">send again</v-btn></div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 210 }; },\n  mounted() { this.$emit(\"set\", \"BANG\"); },\n};\n</script>\n"
+  },
+  "log": {
+    "name": "Log",
+    "description": "Records what passes through it in the execution's own stream, and passes it on unchanged. Max's print.",
+    "icon": "mdi-eye-outline",
+    "inputs": [
+      "value"
+    ],
+    "outputs": [
+      "value"
+    ],
+    "set": "/**\n * Log: see what is passing, without stopping it.\n *\n * Max's `print`, except the place it prints to is the execution's own stream of\n * observations — so what a graph saw is beside what it did, in the same order,\n * wherever it ran.  The value passes through unchanged, so a Log can be left\n * in the middle of a working graph.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {label: \"\"};\nconst short = (v) => { const s = typeof v === \"string\" ? v : JSON.stringify(v); return s === undefined ? \"\" : (s.length > 40 ? s.slice(0, 40) + \"\\u2026\" : s); };\nnode.data.last = short(value);\nhost.emit(\"log\", {label: node.data.label || node.properties.name, value: value});\nedges.value = value;\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-eye-outline</v-icon>Log</v-card-title>\n    <v-card-text class=\"py-1\">\n      <v-text-field density=\"compact\" variant=\"plain\" hide-details label=\"label\" v-model=\"label\"/>\n      <div class=\"text-caption mt-1\" v-if=\"last\"><span class=\"text-disabled\">last:</span> {{ last }}</div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 230 }; },\n  computed: {\n    label: {\n      get() { const d = this.node && this.node.data; return d && d.label !== undefined ? d.label : \"\"; },\n      set(v) { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {}; } this.node.data.label = v; },\n    },\n    last() { const d = this.node && this.node.data; return d && d.last ? d.last : \"\"; },\n  },\n};\n</script>\n"
+  },
+  "pack": {
+    "name": "Pack",
+    "description": "Cold inputs remember what arrives; bang sends them as one object, keyed by the input each value came in on.",
+    "icon": "mdi-package-variant-closed",
+    "inputs": [
+      "bang",
+      "a",
+      "b"
+    ],
+    "outputs": [
+      "value"
+    ],
+    "set": "/**\n * Pack: the cold inputs remember, `bang` sends.\n *\n * Max's pack, with names instead of positions — what comes out is an object\n * keyed by the input each value arrived on, so the names drawn on the node are\n * the names whatever is downstream reads.  Add or rename inputs freely; this\n * works for any of them.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {};\nif (field === \"bang\") {\n    edges.value = {...node.data};\n} else {\n    node.data[field] = value;\n}\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-package-variant-closed</v-icon>Pack</v-card-title>\n    <v-card-text class=\"py-1 text-caption\">\n      <div v-if=\"!held.length\" class=\"text-disabled\">holding nothing yet</div>\n      <div v-for=\"h in held\" :key=\"h.key\"><strong>{{ h.key }}</strong>: {{ h.value }}</div>\n      <v-divider class=\"my-1\"/>\n      <div class=\"d-flex align-center\" v-for=\"p in ports\" :key=\"p\">\n        <span class=\"text-caption\">{{ p }}</span>\n        <v-spacer/>\n        <v-icon size=\"x-small\" @click=\"remove(p)\" title=\"remove\">mdi-close</v-icon>\n      </div>\n      <div class=\"d-flex align-center mt-1\">\n        <v-text-field density=\"compact\" variant=\"plain\" hide-details placeholder=\"add an input\" v-model=\"fresh\" @keyup.enter=\"add\"/>\n        <v-icon size=\"small\" @click=\"add\" title=\"add\">mdi-plus</v-icon>\n      </div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 240, fresh: \"\" }; },\n  computed: {\n    held() {\n      const d = (this.node && this.node.data) || {};\n      return Object.keys(d).map((key) => ({ key, value: this.short(d[key]) }));\n    },\n    ports() { return ((this.node.properties && this.node.properties.inputs) || []).map((p) => p.name); },\n  },\n  methods: {\n    short(v) { const s = typeof v === \"string\" ? v : JSON.stringify(v); return s && s.length > 22 ? s.slice(0, 22) + \"…\" : s; },\n    add() {\n      const name = (this.fresh || \"\").trim();\n      if (!name || this.ports.indexOf(name) !== -1) { return; }\n      this.node.properties.inputs = (this.node.properties.inputs || []).concat([{ name, type: \"Object\", external: false, visible: true }]);\n      \n      this.fresh = \"\";\n    },\n    remove(name) {\n      this.node.properties.inputs = (this.node.properties.inputs || []).filter((p) => p.name !== name);\n      \n    },\n  },\n};\n</script>\n"
   },
   "repeat": {
     "name": "Repeat",
@@ -183,75 +165,93 @@
       "done"
     ],
     "set": "/**\n * Repeat: send `times` times, counting, then `done`.\n *\n * Max's `uzi`, bounded rather than free-running: the count is a number you can\n * see on the node, and every send is a hop the execution budget counts, so a\n * loop that is too big is refused rather than discovered later.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {times: 4};\nif (field === \"times\") {\n    node.data.times = Number(value) || 0;\n    return;\n}\nconst times = Math.max(0, Math.floor(Number(node.data.times) || 0));\nfor (let i = 0; i < times; i++) {\n    edges.each = {index: i, of: times, value: value};\n}\nedges.done = times;\n",
-    "vue": "<template>\n  <v-card width=\"200\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-repeat</v-icon>Repeat</v-card-title>\n    <v-card-text>\n      <v-text-field density=\"compact\" type=\"number\" label=\"how many times\" hide-details v-model.number=\"node.data.times\"/>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  mounted() { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {times: 4}; } },\n};\n</script>\n"
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-repeat</v-icon>Repeat</v-card-title>\n    <v-card-text class=\"py-1\">\n      <v-text-field density=\"compact\" variant=\"plain\" type=\"number\" hide-details label=\"how many times\" v-model.number=\"times\"/>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 220 }; },\n  computed: { times: {\n      get() { const d = this.node && this.node.data; return d && d.times !== undefined ? d.times : 4; },\n      set(v) { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {}; } this.node.data.times = v; },\n    }, },\n};\n</script>\n"
   },
-  "delay": {
-    "name": "Delay",
-    "description": "Holds a value for a while, then sends it. Max's delay and pipe.",
-    "icon": "mdi-timer-sand",
+  "route": {
+    "name": "Route",
+    "description": "Sends the value out of the output named by one of its properties (by default 'kind'). Anything unmatched goes out unmatched. Max's route.",
+    "icon": "mdi-directions-fork",
+    "inputs": [
+      "value"
+    ],
+    "outputs": [
+      "a",
+      "b",
+      "unmatched"
+    ],
+    "set": "/**\n * Route: one value in, out of the output that its `kind` names.\n *\n * Max's `route`, on a named property rather than a leading symbol: set\n * `node.data.on` to the property to read (`kind` by default), name the outputs\n * after the values you expect, and anything else goes out `unmatched` — which\n * is there so a value nobody expected is visible rather than dropped.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {on: \"kind\"};\nconst key = value && typeof value === \"object\" ? value[node.data.on || \"kind\"] : value;\nconst names = (properties.outputs || []).map((o) => o.name);\nconst name = names.indexOf(String(key)) !== -1 ? String(key) : \"unmatched\";\nnode.data.last = name;\nif (names.indexOf(name) !== -1) {\n    edges[name] = value;\n}\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-directions-fork</v-icon>Route</v-card-title>\n    <v-card-text class=\"py-1\">\n      <v-text-field density=\"compact\" variant=\"plain\" hide-details label=\"on which property\" v-model=\"on\"/>\n      <div class=\"text-caption mt-1\" v-if=\"last\"><span class=\"text-disabled\">last:</span> {{ last }}</div>\n      <v-divider class=\"my-1\"/>\n      <div class=\"d-flex align-center\" v-for=\"p in ports\" :key=\"p\">\n        <span class=\"text-caption\">{{ p }}</span>\n        <v-spacer/>\n        <v-icon size=\"x-small\" @click=\"remove(p)\" title=\"remove\">mdi-close</v-icon>\n      </div>\n      <div class=\"d-flex align-center mt-1\">\n        <v-text-field density=\"compact\" variant=\"plain\" hide-details placeholder=\"add an output\" v-model=\"fresh\" @keyup.enter=\"add\"/>\n        <v-icon size=\"small\" @click=\"add\" title=\"add\">mdi-plus</v-icon>\n      </div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 240, fresh: \"\" }; },\n  computed: {\n    on: {\n      get() { const d = this.node && this.node.data; return d && d.on !== undefined ? d.on : \"kind\"; },\n      set(v) { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {}; } this.node.data.on = v; },\n    },\n    last() { const d = this.node && this.node.data; return d && d.last ? d.last : \"\"; },\n    ports() { return ((this.node.properties && this.node.properties.outputs) || []).map((p) => p.name); },\n  },\n  methods: {\n    add() {\n      const name = (this.fresh || \"\").trim();\n      if (!name || this.ports.indexOf(name) !== -1) { return; }\n      this.node.properties.outputs = (this.node.properties.outputs || []).concat([{ name, type: \"Object\", external: false, visible: true }]);\n      this.node.edges = (this.node.edges || []).concat([{ field: name, connectors: [] }]);\n      this.fresh = \"\";\n    },\n    remove(name) {\n      this.node.properties.outputs = (this.node.properties.outputs || []).filter((p) => p.name !== name);\n      this.node.edges = (this.node.edges || []).filter((e) => e.field !== name);\n    },\n  },\n};\n</script>\n"
+  },
+  "select": {
+    "name": "Select",
+    "description": "Compares what arrives with what it was told to match: equal goes out yes, anything else out no. Max's select.",
+    "icon": "mdi-equal",
     "inputs": [
       "value",
-      "ms"
+      "match"
+    ],
+    "outputs": [
+      "yes",
+      "no"
+    ],
+    "set": "/**\n * Select: equal goes out `yes`, everything else out `no`.\n *\n * Max's `select`, with the unmatched case given somewhere to go rather than\n * being dropped.  `match` sets what to compare against without testing, so the\n * thing being matched can be decided by the graph.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {match: \"\"};\nif (field === \"match\") {\n    node.data.match = value;\n    return;\n}\nconst same = JSON.stringify(value) === JSON.stringify(node.data.match);\nnode.data.last = same ? \"yes\" : \"no\";\nedges[same ? \"yes\" : \"no\"] = value;\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-equal</v-icon>Select</v-card-title>\n    <v-card-text class=\"py-1\">\n      <v-text-field density=\"compact\" variant=\"plain\" hide-details label=\"matches\" v-model=\"match\"/>\n      <div class=\"text-caption mt-1\" v-if=\"last\"><span class=\"text-disabled\">last:</span> {{ last }}</div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 220 }; },\n  computed: {\n    match: {\n      get() { const d = this.node && this.node.data; return d && d.match !== undefined ? d.match : \"\"; },\n      set(v) { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {}; } this.node.data.match = v; },\n    },\n    last() { const d = this.node && this.node.data; return d && d.last ? d.last : \"\"; },\n  },\n};\n</script>\n"
+  },
+  "store": {
+    "name": "Store",
+    "description": "Remembers the last value it was given; sends it when banged. Max's v.",
+    "icon": "mdi-content-save-outline",
+    "inputs": [
+      "bang",
+      "value"
     ],
     "outputs": [
       "value"
     ],
-    "set": "/**\n * Delay: hold a value for a while, then send it.\n *\n * Max's `delay`/`pipe`.  The wait is awaited rather than left running, so the\n * execution does not end while a value is still in the air — which is what\n * makes \"the run has finished\" mean something.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {ms: 250};\nif (field === \"ms\") {\n    node.data.ms = Number(value) || 0;\n    return;\n}\nconst ms = Math.max(0, Number(node.data.ms) || 0);\nawait new Promise((resolve) => setTimeout(resolve, ms));\nhost.throwIfCancelled();\nedges.value = value;\n",
-    "vue": "<template>\n  <v-card width=\"200\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-timer-sand</v-icon>Delay</v-card-title>\n    <v-card-text>\n      <v-text-field density=\"compact\" type=\"number\" label=\"milliseconds\" hide-details v-model.number=\"node.data.ms\"/>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  mounted() { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {ms: 250}; } },\n};\n</script>\n"
+    "set": "/**\n * Store: `value` remembers, `bang` sends.\n *\n * Max's `v`.  The cold input is how a value waits for the right moment — the\n * difference between a graph that reacts to whatever arrived last and one that\n * decides when to read it.  What is remembered survives between runs, because\n * `node.data` does.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {};\nif (field === \"value\") {\n    node.data.held = value;\n    return;\n}\nedges.value = node.data.held;\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-content-save-outline</v-icon>Store</v-card-title>\n    <v-card-text class=\"py-1 text-caption\">\n      <span v-if=\"has\">holding: {{ held }}</span>\n      <span v-else class=\"text-disabled\">nothing held yet</span>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 220 }; },\n  computed: {\n    has() { const d = this.node && this.node.data; return !!(d && \"held\" in d); },\n    held() {\n      const v = this.node.data.held;\n      const s = typeof v === \"string\" ? v : JSON.stringify(v);\n      return s && s.length > 26 ? s.slice(0, 26) + \"…\" : s;\n    },\n  },\n};\n</script>\n"
   },
-  "if": {
-    "name": "If",
-    "description": "Tests what arrives against a condition you write, and sends it out then or else.",
-    "icon": "mdi-source-branch",
+  "toggle": {
+    "name": "Toggle",
+    "description": "Flips between true and false each time it is banged, and sends which it now is. Max's toggle.",
+    "icon": "mdi-toggle-switch-outline",
+    "inputs": [
+      "bang",
+      "set"
+    ],
+    "outputs": [
+      "value"
+    ],
+    "set": "/**\n * Toggle: flips on each bang and says which it now is.\n *\n * `set` puts it where you want without sending, so a graph can be armed\n * before it is started.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {on: false};\nif (field === \"set\") {\n    node.data.on = !!value;\n    return;\n}\nnode.data.on = !node.data.on;\nedges.value = node.data.on;\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-toggle-switch-outline</v-icon>Toggle</v-card-title>\n    <v-card-text class=\"py-1 text-caption\">{{ on ? \"on\" : \"off\" }}</v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 190 }; },\n  computed: { on() { const d = this.node && this.node.data; return !!(d && d.on); } },\n};\n</script>\n"
+  },
+  "trigger": {
+    "name": "Trigger",
+    "description": "One in, many out, in a known order: the last output fires first, as Max's trigger fires right to left.",
+    "icon": "mdi-call-split",
+    "inputs": [
+      "bang"
+    ],
+    "outputs": [
+      "first",
+      "second",
+      "third"
+    ],
+    "set": "/**\n * Trigger: one in, many out, in an order you can rely on.\n *\n * Max's `trigger` fires its outlets right to left, so that everything a hot\n * inlet depends on has already arrived by the time it fires.  Outputs here are\n * drawn top to bottom, so the last one fires first.  Delete the outputs you do\n * not need; this sends to whichever are there.\n */\nconst names = ((properties.outputs || []).map((o) => o.name)).reverse();\nfor (const name of names) {\n    edges[name] = value;\n}\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-call-split</v-icon>Trigger</v-card-title>\n    <v-card-text class=\"py-1 text-caption\">\n      <div class=\"d-flex align-center\" v-for=\"p in ports\" :key=\"p\">\n        <span class=\"text-caption\">{{ p }}</span>\n        <v-spacer/>\n        <v-icon size=\"x-small\" @click=\"remove(p)\" title=\"remove\">mdi-close</v-icon>\n      </div>\n      <div class=\"d-flex align-center mt-1\">\n        <v-text-field density=\"compact\" variant=\"plain\" hide-details placeholder=\"add an output\" v-model=\"fresh\" @keyup.enter=\"add\"/>\n        <v-icon size=\"small\" @click=\"add\" title=\"add\">mdi-plus</v-icon>\n      </div>\n      <div class=\"text-disabled mt-1\">the last one fires first</div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 230, fresh: \"\" }; },\n  computed: {\n    ports() { return ((this.node.properties && this.node.properties.outputs) || []).map((p) => p.name); },\n  },\n  methods: {\n    add() {\n      const name = (this.fresh || \"\").trim();\n      if (!name || this.ports.indexOf(name) !== -1) { return; }\n      this.node.properties.outputs = (this.node.properties.outputs || []).concat([{ name, type: \"Object\", external: false, visible: true }]);\n      this.node.edges = (this.node.edges || []).concat([{ field: name, connectors: [] }]);\n      this.fresh = \"\";\n    },\n    remove(name) {\n      this.node.properties.outputs = (this.node.properties.outputs || []).filter((p) => p.name !== name);\n      this.node.edges = (this.node.edges || []).filter((e) => e.field !== name);\n    },\n  },\n};\n</script>\n"
+  },
+  "unpack": {
+    "name": "Unpack",
+    "description": "Takes an object apart: each key goes out of the output with that name. An array goes out as 0, 1, 2. Last output first, so everything has arrived before the first fires.",
+    "icon": "mdi-package-variant",
     "inputs": [
       "value"
     ],
     "outputs": [
-      "then",
-      "else"
+      "a",
+      "b"
     ],
-    "set": "/**\n * If: a condition a person can edit, rather than code they have to open.\n *\n * The test is written on the node (`value > 10`, `value.kind === \"bucket\"`)\n * and read as data, so a graph can be reasoned about without reading every\n * set script.  A condition that throws sends nothing and says why, rather\n * than quietly choosing a branch.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {test: \"value\"};\nconst test = String(node.data.test || \"value\");\nlet passed;\ntry {\n    passed = Function(\"value\", \"state\", \"properties\", \"return (\" + test + \");\")(value, state, properties);\n} catch (err) {\n    throw new Error(\"If: \" + test + \" — \" + err.message);\n}\nedges[passed ? \"then\" : \"else\"] = value;\n",
-    "vue": "<template>\n  <v-card width=\"240\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-source-branch</v-icon>If</v-card-title>\n    <v-card-text>\n      <v-text-field density=\"compact\" label=\"condition\" hide-details v-model=\"node.data.test\"/>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  mounted() { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {test: \"value\"}; } },\n};\n</script>\n"
-  },
-  "get": {
-    "name": "Get",
-    "description": "Reads one path out of an object and sends it; a path that is not there goes out missing.",
-    "icon": "mdi-code-braces",
-    "inputs": [
-      "value",
-      "path"
-    ],
-    "outputs": [
-      "value",
-      "missing"
-    ],
-    "set": "/**\n * Get: read one path out of what arrives.\n *\n * `a.b.0.c`, the way anyone would write it.  A path that is not there goes out\n * `missing` carrying the path, rather than sending undefined down the happy\n * road — a missing value should be a branch, not a surprise later.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {path: \"\"};\nif (field === \"path\") {\n    node.data.path = String(value || \"\");\n    return;\n}\nconst parts = String(node.data.path || \"\").split(\".\").filter(Boolean);\nlet at = value;\nfor (const part of parts) {\n    if (at === null || at === undefined) { at = undefined; break; }\n    at = at[part];\n}\nif (at === undefined) {\n    edges.missing = {path: node.data.path, value: value};\n} else {\n    edges.value = at;\n}\n",
-    "vue": "<template>\n  <v-card width=\"220\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-code-braces</v-icon>Get</v-card-title>\n    <v-card-text>\n      <v-text-field density=\"compact\" label=\"path\" placeholder=\"a.b.0.c\" hide-details v-model=\"node.data.path\"/>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  mounted() { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {path: \"\"}; } },\n};\n</script>\n"
-  },
-  "format": {
-    "name": "Format",
-    "description": "Makes a string out of what arrives, from a pattern with ${...} in it.",
-    "icon": "mdi-format-text",
-    "inputs": [
-      "value"
-    ],
-    "outputs": [
-      "value"
-    ],
-    "set": "/**\n * Format: a string from a pattern, with what arrived in it.\n *\n * `${value.name} in ${value.region}` — the pattern is data on the node, so a\n * label, a key or a name can be composed on the canvas instead of in code.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {pattern: \"${value}\"};\nconst pattern = String(node.data.pattern || \"\");\nedges.value = pattern.replace(/\\$\\{([^}]*)\\}/g, (whole, expression) => {\n    try {\n        const read = Function(\"value\", \"state\", \"return (\" + expression + \");\")(value, state);\n        return read === undefined || read === null ? \"\" : String(read);\n    } catch (err) {\n        return whole;\n    }\n});\n",
-    "vue": "<template>\n  <v-card width=\"240\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-format-text</v-icon>Format</v-card-title>\n    <v-card-text>\n      <v-text-field density=\"compact\" label=\"pattern\" hide-details v-model=\"node.data.pattern\"/>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  mounted() { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {pattern: \"${value}\"}; } },\n};\n</script>\n"
-  },
-  "log": {
-    "name": "Log",
-    "description": "Records what passes through it in the execution's own stream, and passes it on unchanged. Max's print.",
-    "icon": "mdi-eye-outline",
-    "inputs": [
-      "value"
-    ],
-    "outputs": [
-      "value"
-    ],
-    "set": "/**\n * Log: see what is passing, without stopping it.\n *\n * Max's `print`, except the place it prints to is the execution's own stream of\n * observations — so what a graph saw is beside what it did, in the same order,\n * wherever it ran.  The value passes through unchanged, so a Log can be left\n * in the middle of a working graph.\n */\nnode.data = (node.data && typeof node.data === \"object\") ? node.data : {label: \"\"};\nhost.emit(\"log\", {label: node.data.label || node.properties.name, value: value});\nedges.value = value;\n",
-    "vue": "<template>\n  <v-card width=\"220\">\n    <v-card-title class=\"text-body-2\"><v-icon size=\"small\" class=\"mr-1\">mdi-eye-outline</v-icon>Log</v-card-title>\n    <v-card-text>\n      <v-text-field density=\"compact\" label=\"label\" hide-details v-model=\"node.data.label\"/>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  mounted() { if (!this.node.data || typeof this.node.data !== \"object\") { this.node.data = {label: \"\"}; } },\n};\n</script>\n"
+    "set": "/**\n * Unpack: an object in, each key out of the output named for it.\n *\n * Max's `unpack`, by name rather than position: name the outputs after the\n * keys you want.  An array is unpacked by index (0, 1, 2).  Outputs fire last\n * first, for the same reason Trigger does — so nothing downstream sees half\n * of an object.  A key with no output is left alone rather than lost quietly:\n * it goes out `rest` if there is one.\n */\nconst source = Array.isArray(value)\n    ? value.reduce((o, v, i) => { o[String(i)] = v; return o; }, {})\n    : (value && typeof value === \"object\" ? value : {value: value});\nconst names = ((properties.outputs || []).map((o) => o.name)).reverse();\nconst rest = {};\nObject.keys(source).forEach((key) => { if (names.indexOf(key) === -1) { rest[key] = source[key]; } });\nfor (const name of names) {\n    if (name === \"rest\") { continue; }\n    if (source[name] !== undefined) { edges[name] = source[name]; }\n}\nif (names.indexOf(\"rest\") !== -1 && Object.keys(rest).length) { edges.rest = rest; }\n",
+    "vue": "<template>\n  <v-card :width=\"width\" density=\"compact\">\n    <v-card-title class=\"text-body-2 py-1\"><v-icon size=\"small\" class=\"mr-1\">mdi-package-variant</v-icon>Unpack</v-card-title>\n    <v-card-text class=\"py-1 text-caption\">\n      <div class=\"text-disabled\">one output per key</div>\n      <div class=\"d-flex align-center\" v-for=\"p in ports\" :key=\"p\">\n        <span class=\"text-caption\">{{ p }}</span>\n        <v-spacer/>\n        <v-icon size=\"x-small\" @click=\"remove(p)\" title=\"remove\">mdi-close</v-icon>\n      </div>\n      <div class=\"d-flex align-center mt-1\">\n        <v-text-field density=\"compact\" variant=\"plain\" hide-details placeholder=\"add an output\" v-model=\"fresh\" @keyup.enter=\"add\"/>\n        <v-icon size=\"small\" @click=\"add\" title=\"add\">mdi-plus</v-icon>\n      </div>\n    </v-card-text>\n  </v-card>\n</template>\n<script>\nexport default {\n  props: { node: Object, state: Object },\n  data() { return { width: 230, fresh: \"\" }; },\n  computed: {\n    ports() { return ((this.node.properties && this.node.properties.outputs) || []).map((p) => p.name); },\n  },\n  methods: {\n    add() {\n      const name = (this.fresh || \"\").trim();\n      if (!name || this.ports.indexOf(name) !== -1) { return; }\n      this.node.properties.outputs = (this.node.properties.outputs || []).concat([{ name, type: \"Object\", external: false, visible: true }]);\n      this.node.edges = (this.node.edges || []).concat([{ field: name, connectors: [] }]);\n      this.fresh = \"\";\n    },\n    remove(name) {\n      this.node.properties.outputs = (this.node.properties.outputs || []).filter((p) => p.name !== name);\n      this.node.edges = (this.node.edges || []).filter((e) => e.field !== name);\n    },\n  },\n};\n</script>\n"
   }
 }
