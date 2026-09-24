@@ -97,12 +97,16 @@ export class RevisionService {
      * this environment would refuse stops the revision being cut (PB-096).
      */
     templates: ((projection: any) => Promise<{ ok: boolean; problems: any[]; templates: any[] }>) | null = null;
+    /** How this graph gets back onto the list of graphs after it changes. */
+    listed: ((graph: any) => Promise<void>) | null = null;
 
     constructor(crdtStore: CrdtStore, admission: AdmissionService, hooks: {
         notify?: (graphId: string, event: any) => Promise<void>;
         fanOut?: (graphId: string, update: Uint8Array) => Promise<void>;
         gate?: (graphId: string, revisionId: string, projection: any) => Promise<{ gate: string; says: string }[]>;
         templates?: (projection: any) => Promise<{ ok: boolean; problems: any[]; templates: any[] }>;
+        /** Put the graph back on the list once it has been rolled back. */
+        listed?: (graph: any) => Promise<void>;
     } = {}) {
         this.crdtStore = crdtStore;
         this.admission = admission;
@@ -111,6 +115,7 @@ export class RevisionService {
         this.fanOut = hooks.fanOut || (async () => undefined);
         this.gate = hooks.gate || null;
         this.templates = hooks.templates || null;
+        this.listed = hooks.listed || null;
     }
 
     static manifestKey(graphId: string, revisionId: string) { return `revisions/${graphId}/${revisionId}.json`; }
@@ -416,7 +421,11 @@ export class RevisionService {
             });
             if (result.decision === "accepted") {
                 await this.fanOut(graphId, update);
-                await this.crdtStore.writeProjections(graphId);
+                const projection = await this.crdtStore.writeProjections(graphId);
+                if (this.listed && projection) {
+                    // derived data: a list that cannot be written never fails a rollback
+                    await this.listed(projection).catch((err: any) => console.error("Cannot list the graph after a rollback.", graphId, err));
+                }
                 await this.notify(graphId, { eventType: "revision", action: "restored", revisionId, seq: revision.seq, by: principal ? principal.sub : null });
             }
             return result;

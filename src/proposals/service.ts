@@ -72,6 +72,15 @@ export class ProposalService {
             notify?: (graphId: string, event: any) => Promise<void>;
             /** How much a person wants to see before an agent's work takes effect. */
             autonomy?: AutonomyStore;
+            /**
+             * Put the graph on the list of graphs.  Writing the projection is
+             * not the same as being on it: the list is its own document, and
+             * only the websocket path ever wrote to it — so a graph changed
+             * only by proposals sat at whatever an editor last saved, and one
+             * that had never been opened in an editor was not on the list at
+             * all.
+             */
+            listed?: (graph: any) => Promise<void>;
         } = {},
     ) {
         this.store = crdtStore.store as any;
@@ -373,8 +382,9 @@ export class ProposalService {
             return { error: result.reason || "rejected", code: (result.code === "STALE_BASE" ? "STALE_BASE" : result.code === "ADMISSION_DENIED" ? "ADMISSION_DENIED" : "CONFLICT") as any };
         }
         if (this.hooks.fanOut) await this.hooks.fanOut(graphId, content);
-        // execution and the TOC read plain projections; refresh them as an editor's edit would
-        await this.crdtStore.writeProjections(graphId);
+        // execution and publishing read plain projections; refresh them as an editor's edit would
+        const projection = await this.crdtStore.writeProjections(graphId);
+        await this.relist(projection);
         const cut = await this.revisions.cut(graphId, principal, proposal.description);
         proposal.state = "committed";
         proposal.mutationId = result.mutationId;
@@ -386,6 +396,21 @@ export class ProposalService {
         await this.admission.chain.append(graphId, { kind: "proposal.committed", at: proposal.updatedAt, graphId, proposalId, mutationId: result.mutationId, resultRevision: proposal.resultRevision, principal: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant } : null, proposer: proposal.principal });
         if (this.hooks.notify) await this.hooks.notify(graphId, { eventType: "proposal", action: "committed", proposalId, by: principal && principal.sub, mutationId: result.mutationId, resultRevision: proposal.resultRevision });
         return { proposal, result };
+    }
+
+    /**
+     * A graph that changed is a graph whose entry is out of date.  It is
+     * derived data, so it never fails the change that prompted it (D-39).
+     */
+    private async relist(projection: any): Promise<void> {
+        if (!this.hooks.listed || !projection) {
+            return;
+        }
+        try {
+            await this.hooks.listed(projection);
+        } catch (err) {
+            console.error("Cannot list the graph after a commit.", projection && projection.id, err);
+        }
     }
 
     /* ------------------------------------------------------------ http (humans, editor) */

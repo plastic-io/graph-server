@@ -119,6 +119,7 @@ export default class EventSourceService {
             fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
             notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
             templates: (projection) => this.templates.writeFor(projection),
+            listed: (graph) => this.crdtService.listGraph(graph),
         });
         this.components = new ComponentService(this.crdtStore, this.revisions, this.crdtService.admission, {
             tocStore: this.tocStore, broadcastService: this.broadcastService,
@@ -223,6 +224,7 @@ export default class EventSourceService {
             fanOut: (graphId, update) => this.crdtService.fanOutUpdate(graphId, update),
             notify: (graphId, event) => this.crdtService.notifyGraph(graphId, event),
             autonomy: this.autonomy,
+            listed: (graph) => this.crdtService.listGraph(graph),
         });
         // What a proposal would do, before anyone lives with it (plan §4.7.5).
         this.simulations = new SimulationService(this.crdtStore.store as any, this.crdtStore, {

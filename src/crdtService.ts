@@ -137,7 +137,7 @@ export default class CrdtService {
    * up on anybody's list.  Only this graph's entry is written, so the cost
    * does not grow with how many graphs there are.
    */
-  private async listGraph(graph: any): Promise<void> {
+  async listGraph(graph: any): Promise<void> {
     if (!graph || !graph.id) {
       return;
     }
