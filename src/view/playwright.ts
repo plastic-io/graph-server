@@ -14,27 +14,48 @@ import { Renderer, ShotRequest, ShotResult } from "./capture";
  * URL, never the headers.
  */
 
-/** What the layer provides.  Required lazily so the rest of the server runs without it. */
-function browserPieces(): { chromium: any; playwright: any } | null {
+/** Why the browser could not be loaded, when it could not be. */
+let loadError = "";
+
+/**
+ * Load a module by name at the moment it is needed, without the bundler
+ * following it.
+ *
+ * Two things make this necessary.  The packages live in a layer, so they are
+ * not there to be bundled; and `@sparticuz/chromium` is an ES module, so
+ * `require` of it fails outright — "require() of ES Module ... not supported",
+ * which is what this said for its first deployment.  `import()` reads both
+ * kinds, and building it through `Function` keeps webpack from rewriting it
+ * into a chunk that does not exist.
+ */
+const importAtRuntime = new Function("specifier", "return import(specifier);") as (specifier: string) => Promise<any>;
+
+/** What the layer provides, loaded lazily so a server without it still runs. */
+async function browserPieces(): Promise<{ chromium: any; playwright: any } | null> {
     try {
-        /* eslint-disable @typescript-eslint/no-var-requires */
-        const chromium = require("@sparticuz/chromium");
-        const playwright = require("playwright-core");
-        return { chromium: chromium.default || chromium, playwright };
-    } catch (err) {
+        const chromiumModule = await importAtRuntime("@sparticuz/chromium");
+        const playwrightModule = await importAtRuntime("playwright-core");
+        const chromium = chromiumModule.default || chromiumModule;
+        const playwright = playwrightModule.chromium ? playwrightModule : (playwrightModule.default || playwrightModule);
+        return { chromium, playwright };
+    } catch (err: any) {
+        // Saying only "there is no browser" turns every cause — a layer that is
+        // not attached, a module that will not load, a missing library — into
+        // the same sentence, and none of them is actionable.
+        loadError = (err && err.message) || String(err);
         return null;
     }
 }
 
-export function browserAvailable(): boolean {
-    return !!browserPieces();
+export async function browserAvailable(): Promise<boolean> {
+    return !!(await browserPieces());
 }
 
 export class PlaywrightRenderer implements Renderer {
     async shoot(request: ShotRequest): Promise<ShotResult> {
-        const pieces = browserPieces();
+        const pieces = await browserPieces();
         if (!pieces) {
-            throw new Error("this server has no browser: the chromium layer is not on this function");
+            throw new Error(`this server has no browser: ${loadError || "the chromium layer is not on this function"}`);
         }
         const { chromium, playwright } = pieces;
         const executablePath = typeof chromium.executablePath === "function" ? await chromium.executablePath() : chromium.executablePath;

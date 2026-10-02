@@ -104,6 +104,7 @@ const mcpDeps = {
     simulations: eventSourceService.simulations,
     consumers: eventSourceService.consumers,
     iac: eventSourceService.iac,
+    capture: eventSourceService.capture,
 };
 const mcp = makeMcpHandler(mcpDeps);
 // The one endpoint that can hold a stream open (plan PB-085): a Lambda

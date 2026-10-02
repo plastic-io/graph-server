@@ -1,0 +1,11 @@
+{
+  "name": "@plastic-io/chromium-layer",
+  "version": "1.0.0",
+  "description": "Chromium and the driver that works it, for the function that photographs a page (PB-149)",
+  "private": true,
+  "license": "BSD-3-Clause",
+  "dependencies": {
+    "@sparticuz/chromium": "^153.0.0",
+    "playwright-core": "^1.63.0"
+  }
+}

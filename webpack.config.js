@@ -28,6 +28,10 @@ module.exports = {
   // required at runtime (src/runtime/isolate.ts) and must never be bundled.
   externals: {
     'isolated-vm': 'commonjs isolated-vm',
+    // chromium and its driver ride in a layer; bundling a 50MB browser would
+    // be absurd and webpack cannot do anything useful with it anyway
+    '@sparticuz/chromium': 'commonjs @sparticuz/chromium',
+    'playwright-core': 'commonjs playwright-core',
   },
   module: {
     rules: [

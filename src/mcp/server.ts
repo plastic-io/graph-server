@@ -352,7 +352,7 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
      */
     server.registerTool("view.screenshot", {
         title: "Look at what this graph serves",
-        description: "A picture of the page this graph serves, from a browser somebody already has open if there is one, and otherwise from a browser this server starts. Give a nodeUrl for one node's page, or a url that this deployment serves. Comes back as an image, with the page's title, its status, and anything the page logged on the way up — which is usually the answer when the picture is blank. Accepted and valid are not the same as seen: this is seen.",
+        description: "A picture of the page this graph serves, taken by a browser this server starts and points at it. Give a nodeUrl for one node's page, or a url that this deployment serves. Comes back as an image, with the page's title, its status, and anything the page logged on the way up — which is usually the answer when the picture is blank. Accepted and valid are not the same as seen: this is seen.",
         inputSchema: z.object({
             schemaVersion: z.literal(1), graphId: ID,
             nodeUrl: z.string().max(200).optional(),
@@ -360,7 +360,6 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
             viewport: z.object({ width: z.number().int().min(320).max(2560), height: z.number().int().min(240).max(2000) }).strict().optional(),
             fullPage: z.boolean().optional(),
             waitFor: z.string().max(200).optional(),
-            from: z.enum(["viewer", "server", "auto"]).optional(),
             timeoutMs: z.number().int().min(1000).max(60000).optional(),
         }).strict(),
         annotations: { readOnlyHint: true },
@@ -370,7 +369,7 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
         }
         const r: any = await deps.capture.screenshot(args.graphId, rawPrincipal, {
             nodeUrl: args.nodeUrl, url: args.url, viewport: args.viewport, fullPage: args.fullPage,
-            waitFor: args.waitFor, from: args.from, timeoutMs: args.timeoutMs,
+            waitFor: args.waitFor, timeoutMs: args.timeoutMs,
             // the page is fetched as the caller, with the caller's own token
             token: options.token,
         });

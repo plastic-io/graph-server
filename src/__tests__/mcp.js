@@ -686,20 +686,21 @@ describe("looking at what a graph serves", () => {
         await client.close();
     });
 
-    test("what it was asked for is passed through, including which browser to use", async () => {
+    test("what it was asked for is passed through: one node, a phone-shaped viewport, something to wait for", async () => {
         const { mcp, asked } = await withCapture();
         const client = await connect(mcp, owner);
-        await client.callTool({ name: "view.screenshot", arguments: { schemaVersion: 1, graphId: "g1", nodeUrl: "index", viewport: { width: 375, height: 667 }, fullPage: true, from: "viewer", waitFor: ".bag" } });
-        expect(asked[0].options).toMatchObject({ nodeUrl: "index", viewport: { width: 375, height: 667 }, fullPage: true, from: "viewer", waitFor: ".bag" });
+        await client.callTool({ name: "view.screenshot", arguments: { schemaVersion: 1, graphId: "g1", nodeUrl: "index", viewport: { width: 375, height: 667 }, fullPage: true, waitFor: ".bag" } });
+        expect(asked[0].options).toMatchObject({ nodeUrl: "index", viewport: { width: 375, height: 667 }, fullPage: true, waitFor: ".bag" });
         await client.close();
     });
 
-    test("nobody watching, when a viewer was insisted on, is an answer and not a picture", async () => {
-        const { mcp } = await withCapture({ error: "nobody is watching this graph, so nobody can be asked for a picture", code: "UNAVAILABLE" });
+    test("a browser that could not reach the page is an answer, and carries no picture", async () => {
+        const { mcp } = await withCapture({ error: "net::ERR_CONNECTION_REFUSED", code: "CAPTURE_FAILED" });
         const client = await connect(mcp, owner);
-        const r = await client.callTool({ name: "view.screenshot", arguments: { schemaVersion: 1, graphId: "g1", from: "viewer" } });
+        const r = await client.callTool({ name: "view.screenshot", arguments: { schemaVersion: 1, graphId: "g1" } });
         expect(r.isError).toBe(true);
-        expect(parse(r).error.code).toBe("UNAVAILABLE");
+        expect(parse(r).error.code).toBe("CAPTURE_FAILED");
+        // nothing that looks like a picture of a working page
         expect(r.content.find((c) => c.type === "image")).toBeUndefined();
         await client.close();
     });

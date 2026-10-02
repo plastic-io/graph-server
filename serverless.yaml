@@ -51,6 +51,13 @@ provider:
         - cloudformation:DescribeStacks
       Resource:
         - "arn:aws:cloudformation:${self:provider.region}:${aws:accountId}:stack/${opt:iacStackPrefix, 'pio-dev-'}*/*"
+    # The browser that photographs a page lives in a function of its own, so
+    # that every other call does not pay for a 67MB layer it will never use.
+    - Effect: Allow
+      Action:
+        - lambda:InvokeFunction
+      Resource:
+        - "arn:aws:lambda:${self:provider.region}:*:function:${self:service}-${self:provider.stage}-screenshot"
     - Effect: Allow
       Action:
         - secretsmanager:GetSecretValue
@@ -88,6 +95,12 @@ provider:
     IAC_STACK_PREFIX: ${opt:iacStackPrefix, 'pio-dev-'}
     IAC_BOUNDARY_ARN: ${opt:iacBoundaryArn, ''}
     IAC_SUBSTRATE_STACKS: 'plastic-io-graph-server,plastic-io-iac-orchestrator'
+    # Where this deployment answers, so a picture can be taken of what it serves.
+    PUBLIC_BASE_URL: !Sub "https://${ApiGatewayRestApi}.execute-api.${self:provider.region}.amazonaws.com/${self:provider.stage}"
+    # Anywhere else a picture may be taken of — an editor, usually.  Empty means
+    # this deployment and nothing else.
+    VIEW_ORIGINS: ${opt:viewOrigins, ''}
+    SCREENSHOT_FUNCTION: ${self:service}-${self:provider.stage}-screenshot
     # An allow-list of resource types, because this runs in a personal account
     # and the expensive corners of AWS are many: empty means the careful
     # default (things that cost what they are used and nothing when idle).
@@ -136,6 +149,10 @@ provider:
   websocketsApiName: "${self:custom.prefix}-${self:provider.stage}-plastic-ws"
 
 layers:
+  chromium:
+    path: layers/chromium
+    name: ${self:custom.prefix}-${self:provider.stage}-chromium
+    description: chromium and playwright-core, for the function that photographs a page (PB-149)
   isolatedVm:
     path: layers/isolated-vm
     name: ${self:custom.prefix}-${self:provider.stage}-isolated-vm
@@ -930,6 +947,16 @@ functions:
                  nodeId: true
           cors:
             origin: '*'
+
+  # A picture of what a graph serves (PB-149).  Nothing routes to it: the
+  # protocol handler invokes it when somebody asks to look.
+  screenshot:
+    handler: src/screenshot.handler
+    layers:
+      - !Ref ChromiumLambdaLayer
+    # chromium wants room; it is asleep the rest of the time
+    memorySize: 2048
+    timeout: 60
 
   executionsList:
     handler: src/handler.executionsList

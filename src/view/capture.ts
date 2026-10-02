@@ -11,9 +11,10 @@ import { decide } from "../policy/decide";
  * were right in the end, and the site was blank — and nothing in the protocol
  * could tell those two states apart.
  *
- * So: a picture.  Preferably from a browser that already has the thing open,
- * because that is what a person is actually looking at; failing that, from a
- * browser the server starts itself, pointed at the same URL.
+ * So: a picture, taken by a browser the server starts for itself and points at
+ * the page.  Not by whatever browser somebody happens to have open: that was
+ * the first design, and it makes the answer depend on who is watching, which
+ * is the opposite of what a check is for.
  *
  * Two things this deliberately will not do:
  *
@@ -56,12 +57,6 @@ export interface Renderer {
     shoot(request: ShotRequest): Promise<ShotResult>;
 }
 
-/** A browser somebody already has open, which may or may not answer. */
-export interface Viewers {
-    ask(graphId: string, request: { nodeId?: string; viewport: Viewport; waitMs: number }): Promise<ShotResult | undefined>;
-    watching(graphId: string): Promise<number>;
-}
-
 interface Store {
     get(key: string, cb: (err: any, data: any) => void): void;
     set(key: string, val: any, meta: any, cb: (err: any, data: any) => void): void;
@@ -74,7 +69,6 @@ export interface CaptureDeps {
     /** Origins a picture may be taken of, beyond this deployment's own. */
     origins?: () => string[];
     renderer?: Renderer;
-    viewers?: Viewers;
     now?: () => Date;
 }
 
@@ -93,8 +87,6 @@ export interface Shot {
     bytes: number;
     takenAt: string;
     by: { sub: string; kind: string } | null;
-    /** Which browser took it: one somebody had open, or one the server started. */
-    from: "viewer" | "server";
     title?: string;
     status?: number;
     console?: { level: string; text: string }[];
@@ -166,7 +158,7 @@ export class CaptureService {
 
     async screenshot(graphId: string, principal: Principal | undefined, options: {
         url?: string; nodeUrl?: string; viewport?: Partial<Viewport>; fullPage?: boolean;
-        waitFor?: string; from?: "viewer" | "server" | "auto"; timeoutMs?: number; token?: string;
+        waitFor?: string; timeoutMs?: number; token?: string;
     } = {}): Promise<{ shot: Shot; image: Buffer } | { error: string; code: string; details?: any }> {
         const allowed = decide(principal, ["graph:read"]);
         if (!allowed.allow) {
@@ -181,36 +173,22 @@ export class CaptureService {
             return where;
         }
         const viewport = this.bounded(options.viewport);
-        const from = options.from || "auto";
         const fullPage = !!options.fullPage;
-
-        let result: ShotResult | undefined;
-        let taker: Shot["from"] = "server";
-        if (from === "viewer" || from === "auto") {
-            result = await this.fromAViewer(graphId, options, viewport, from === "viewer");
-            if (result) {
-                taker = "viewer";
-            }
+        if (!this.deps.renderer) {
+            return { error: "this server has no browser to take a picture with", code: "UNSUPPORTED" };
         }
-        if (!result) {
-            if (from === "viewer") {
-                return { error: "nobody is watching this graph, so nobody can be asked for a picture", code: "UNAVAILABLE" };
-            }
-            if (!this.deps.renderer) {
-                return { error: "this server has no browser of its own to take a picture with", code: "UNSUPPORTED" };
-            }
-            try {
-                result = await this.deps.renderer.shoot({
-                    url: where.url,
-                    viewport,
-                    fullPage,
-                    waitFor: options.waitFor,
-                    timeoutMs: Math.min(60000, Math.max(1000, Number(options.timeoutMs) || 20000)),
-                    headers: options.token ? { authorization: `Bearer ${options.token}` } : {},
-                });
-            } catch (err: any) {
-                return { error: (err && err.message) || String(err), code: "CAPTURE_FAILED" };
-            }
+        let result: ShotResult | undefined;
+        try {
+            result = await this.deps.renderer.shoot({
+                url: where.url,
+                viewport,
+                fullPage,
+                waitFor: options.waitFor,
+                timeoutMs: Math.min(60000, Math.max(1000, Number(options.timeoutMs) || 20000)),
+                headers: options.token ? { authorization: `Bearer ${options.token}` } : {},
+            });
+        } catch (err: any) {
+            return { error: (err && err.message) || String(err), code: "CAPTURE_FAILED" };
         }
         if (!result || !result.image || !result.image.length) {
             return { error: "the browser gave back no picture", code: "CAPTURE_FAILED" };
@@ -230,7 +208,6 @@ export class CaptureService {
             bytes: result.image.length,
             takenAt: this.now().toISOString(),
             by: principal ? { sub: principal.sub, kind: principal.kind } : null,
-            from: taker,
             title: result.title,
             status: result.status,
             console: (result.console || []).slice(0, 50),
@@ -238,25 +215,4 @@ export class CaptureService {
         return { shot, image: result.image };
     }
 
-    /** Ask a browser somebody already has open.  It may not answer, and that is not a failure. */
-    private async fromAViewer(graphId: string, options: any, viewport: Viewport, insist: boolean): Promise<ShotResult | undefined> {
-        if (!this.deps.viewers) {
-            return undefined;
-        }
-        try {
-            if (!(await this.deps.viewers.watching(graphId))) {
-                return undefined;
-            }
-            return await this.deps.viewers.ask(graphId, {
-                nodeId: options.nodeUrl,
-                viewport,
-                // a person's browser is not a service: it is given a moment, and
-                // then the server does the work itself rather than hanging on
-                waitMs: insist ? 8000 : 3000,
-            });
-        } catch (err) {
-            console.error("Cannot ask a viewer for a picture.", graphId, err);
-            return undefined;
-        }
-    }
 }

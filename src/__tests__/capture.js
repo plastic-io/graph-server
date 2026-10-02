@@ -33,7 +33,6 @@ function serviceWith(over = {}) {
         renderer: over.renderer === null ? undefined : (over.renderer || {
             shoot: async (request) => { shots.push(request); return { image: png, format: "png", title: "Storefront", status: 200, console: [] }; },
         }),
-        viewers: over.viewers,
     });
     return { service, store, shots, asked };
 }
@@ -72,7 +71,7 @@ describe("taking the picture", () => {
         const { service, store, shots } = serviceWith();
         const r = await service.screenshot("g1", owner, { token: "a-token" });
         expect(r.error).toBeUndefined();
-        expect(r.shot).toMatchObject({ url: `${BASE}/storefront`, from: "server", format: "png", title: "Storefront", status: 200, bytes: png.length });
+        expect(r.shot).toMatchObject({ url: `${BASE}/storefront`, format: "png", title: "Storefront", status: 200, bytes: png.length });
         expect(r.shot.key).toMatch(/^screenshots\/g1\/[0-9A-HJKMNP-TV-Z]{26}\.png$/);
         expect([...store.objects.keys()]).toContain(r.shot.key);
         // the caller's own token renders the page, so a picture shows what that caller may see
@@ -121,56 +120,13 @@ describe("taking the picture", () => {
         expect(await service.screenshot("nope", owner, {})).toMatchObject({ code: "NOT_FOUND" });
         expect(await service.screenshot("g1", agent, {})).toMatchObject({ code: "ADMISSION_DENIED" });
     });
-});
 
-describe("asking a browser somebody already has open", () => {
-    const viewerShot = { image: png, format: "png", title: "as the person sees it" };
-
-    test("a watcher is asked first, and its picture is the one kept", async () => {
-        const asked = [];
-        const viewers = {
-            watching: async () => 2,
-            ask: async (graphId, request) => { asked.push({ graphId, request }); return viewerShot; },
-        };
-        const { service, shots } = serviceWith({ viewers });
+    test("it takes the picture itself: there is no other browser to wait for", async () => {
+        const { service, shots } = serviceWith();
         const r = await service.screenshot("g1", owner, {});
-        expect(r.shot.from).toBe("viewer");
-        expect(r.shot.title).toBe("as the person sees it");
-        expect(asked[0].request.waitMs).toBe(3000);
-        // and the server's own browser was never started
-        expect(shots).toEqual([]);
-    });
-
-    test("nobody watching means the server takes it itself, without waiting", async () => {
-        const viewers = { watching: async () => 0, ask: async () => { throw new Error("should not be asked"); } };
-        const { service, shots } = serviceWith({ viewers });
-        const r = await service.screenshot("g1", owner, {});
-        expect(r.shot.from).toBe("server");
+        expect(r.error).toBeUndefined();
         expect(shots).toHaveLength(1);
-    });
-
-    test("a watcher that does not answer in time is not a failure", async () => {
-        const viewers = { watching: async () => 1, ask: async () => undefined };
-        const { service } = serviceWith({ viewers });
-        expect((await service.screenshot("g1", owner, {})).shot.from).toBe("server");
-    });
-
-    test("a watcher that throws does not stop the picture being taken", async () => {
-        const viewers = { watching: async () => 1, ask: async () => { throw new Error("the socket went away"); } };
-        const { service } = serviceWith({ viewers });
-        expect((await service.screenshot("g1", owner, {})).shot.from).toBe("server");
-    });
-
-    test("insisting on a viewer, when there is none, says so rather than quietly doing something else", async () => {
-        const viewers = { watching: async () => 0, ask: async () => undefined };
-        const { service, shots } = serviceWith({ viewers });
-        expect(await service.screenshot("g1", owner, { from: "viewer" })).toMatchObject({ code: "UNAVAILABLE" });
-        expect(shots).toEqual([]);
-    });
-
-    test("insisting on the server skips the viewer entirely", async () => {
-        const viewers = { watching: async () => { throw new Error("should not be consulted"); }, ask: async () => undefined };
-        const { service } = serviceWith({ viewers });
-        expect((await service.screenshot("g1", owner, { from: "server" })).shot.from).toBe("server");
+        // nothing in the answer invites a caller to wonder which browser took it
+        expect(r.shot.from).toBeUndefined();
     });
 });

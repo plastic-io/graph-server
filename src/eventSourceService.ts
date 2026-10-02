@@ -31,6 +31,8 @@ import { DelegationStore } from "./policy/delegation";
 import { TemplateStore } from "./iac/templates";
 import { IacService } from "./iac/service";
 import { cloudFormationClient } from "./iac/cloudformation";
+import { CaptureService } from "./view/capture";
+import { LambdaRenderer } from "./view/remote";
 import { policyFromEnv } from "./iac/validator";
 import {
     ensureBuilt,
@@ -95,6 +97,7 @@ export default class EventSourceService {
     delegations: DelegationStore;
     templates: TemplateStore;
     iac: IacService;
+    capture: CaptureService;
     store: S3Service;
     broadcastService: BroadcastService;
     crdtService: CrdtService;
@@ -202,6 +205,19 @@ export default class EventSourceService {
             observe: async (record: any) => {
                 this.broadcastService._sendToChannel("graph-notify-" + record.graphId, { eventType: "deploy", ...record }, () => undefined);
             },
+        });
+        /**
+         * Looking at what a graph serves (PB-149).  The browser is another
+         * function; without one configured this server says it cannot take
+         * pictures rather than pretending it can.
+         */
+        this.capture = new CaptureService((this.crdtStore as any).store, {
+            projection: (graphId: string) => this.crdtStore.projectGraph(graphId),
+            baseUrl: () => process.env.PUBLIC_BASE_URL || "",
+            origins: () => (process.env.VIEW_ORIGINS || "").split(",").map((o) => o.trim()).filter(Boolean),
+            renderer: process.env.SCREENSHOT_FUNCTION
+                ? new LambdaRenderer(process.env.SCREENSHOT_FUNCTION, process.env.API_REGION || "us-west-1")
+                : undefined,
         });
         // Bringing the graphs that already exist into this world (plan §9.5).
         this.migrations = new MigrationService(this.crdtStore.store as any, this.crdtStore, this.tocStore, {
