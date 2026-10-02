@@ -111,6 +111,7 @@ describe("MCP over the Lambda handler", () => {
             "component.consumers", "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
             "iac.plan", "iac.status", "journey.run", "observations.query", "proposal.commit", "proposal.create", "proposal.decide", "proposal.simulate", "proposal.validate",
             "revision.activate", "revision.cut", "revision.rollback", "tasks.cancel", "tasks.get", "tasks.list", "tests.run",
+            "view.screenshot",
         ]);
         const r = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
         expect(r.envelope).toMatchObject({ schemaVersion: "1", principal: { sub: "auth0|u1", kind: "human" }, graphId: "g1", policyVersion: "m1-diff", truncated: false });
@@ -640,6 +641,81 @@ describe("who uses a published component", () => {
         const body = JSON.parse(r.contents[0].text);
         expect(body.publishedId).toBe("c1");
         expect(body.consumers.map((c) => c.graphId)).toEqual(["g1"]);
+        await client.close();
+    });
+});
+
+describe("looking at what a graph serves", () => {
+    /**
+     * The picture comes back as a picture (PB-149).  A tool that described an
+     * image in words would leave the agent exactly where it was: told that
+     * something is fine.
+     */
+    const png = Buffer.from("89504e470d0a1a0a", "hex");
+    const withCapture = async (answer) => {
+        const parts = await setup();
+        const asked = [];
+        const capture = {
+            screenshot: async (graphId, principal, options) => {
+                asked.push({ graphId, sub: principal && principal.sub, options });
+                return answer || { shot: { key: "screenshots/g1/x.png", url: "https://api.test/dev/g1", viewport: { width: 1280, height: 800 }, fullPage: false, format: "png", bytes: png.length, takenAt: "2026-10-02T00:00:00.000Z", by: { sub: "auth0|u1", kind: "human" }, from: "server", title: "Storefront", status: 200, console: [] }, image: png };
+            },
+        };
+        const { makeMcpHandler } = require("../mcp/handler");
+        const { RateLimiter } = require("../admission/limits");
+        const mcp = makeMcpHandler({
+            crdtStore: parts.store, tocStore: parts.tocStore, admission: parts.crdt.admission, revisions: parts.revisions,
+            components: parts.components, proposals: parts.proposals, summaries: parts.summaries, delegations: parts.delegations,
+            capture,
+            rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: 1000 }) },
+        });
+        return { ...parts, mcp, asked };
+    };
+
+    test("the answer carries the image itself, beside what it is a picture of", async () => {
+        const { mcp, asked } = await withCapture();
+        const client = await connect(mcp, owner);
+        const r = await client.callTool({ name: "view.screenshot", arguments: { schemaVersion: 1, graphId: "g1" } });
+        const image = r.content.find((c) => c.type === "image");
+        expect(image).toBeTruthy();
+        expect(image.mimeType).toBe("image/png");
+        expect(Buffer.from(image.data, "base64")).toEqual(png);
+        const answer = parse(r);
+        expect(answer.result).toMatchObject({ from: "server", title: "Storefront", status: 200, url: "https://api.test/dev/g1" });
+        expect(asked[0]).toMatchObject({ graphId: "g1", sub: "auth0|u1" });
+        await client.close();
+    });
+
+    test("what it was asked for is passed through, including which browser to use", async () => {
+        const { mcp, asked } = await withCapture();
+        const client = await connect(mcp, owner);
+        await client.callTool({ name: "view.screenshot", arguments: { schemaVersion: 1, graphId: "g1", nodeUrl: "index", viewport: { width: 375, height: 667 }, fullPage: true, from: "viewer", waitFor: ".bag" } });
+        expect(asked[0].options).toMatchObject({ nodeUrl: "index", viewport: { width: 375, height: 667 }, fullPage: true, from: "viewer", waitFor: ".bag" });
+        await client.close();
+    });
+
+    test("nobody watching, when a viewer was insisted on, is an answer and not a picture", async () => {
+        const { mcp } = await withCapture({ error: "nobody is watching this graph, so nobody can be asked for a picture", code: "UNAVAILABLE" });
+        const client = await connect(mcp, owner);
+        const r = await client.callTool({ name: "view.screenshot", arguments: { schemaVersion: 1, graphId: "g1", from: "viewer" } });
+        expect(r.isError).toBe(true);
+        expect(parse(r).error.code).toBe("UNAVAILABLE");
+        expect(r.content.find((c) => c.type === "image")).toBeUndefined();
+        await client.close();
+    });
+
+    test("an agent with no delegation cannot look", async () => {
+        const { mcp } = await withCapture();
+        const client = await connect(mcp, agent);
+        const r = await client.callTool({ name: "view.screenshot", arguments: { schemaVersion: 1, graphId: "g1" } });
+        expect(parse(r).error.code).toBe("ADMISSION_DENIED");
+        await client.close();
+    });
+
+    test("a server that cannot take pictures says so", async () => {
+        const { mcp } = await setup();
+        const client = await connect(mcp, owner);
+        expect(parse(await client.callTool({ name: "view.screenshot", arguments: { schemaVersion: 1, graphId: "g1" } })).error.code).toBe("UNSUPPORTED");
         await client.close();
     });
 });

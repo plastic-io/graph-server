@@ -21,10 +21,24 @@ export function allowedOrigin(origin: string | undefined): boolean {
     return allowed.includes(origin);
 }
 
+/**
+ * The caller's own bearer, as it arrived.  One tool needs it — the one that
+ * photographs a page, which fetches that page as the caller rather than with
+ * any authority of its own (PB-149).  It is passed along, never stored and
+ * never logged.
+ */
+function bearerOf(request: Request): string {
+    return String(request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+}
+
 export function makeMcpHandler(deps: McpDeps) {
     /** Where a client goes to listen, so a read tool can say so (plan PB-085). */
     const streamUrl = () => process.env.MCP_STREAM_URL || undefined;
-    const handler = createMcpHandler((ctx) => buildServer(deps, (ctx.authInfo && ctx.authInfo.extra && (ctx.authInfo.extra as any).principal) || undefined, { streamUrl: streamUrl() }), {
+    const handler = createMcpHandler((ctx) => buildServer(
+        deps,
+        (ctx.authInfo && ctx.authInfo.extra && (ctx.authInfo.extra as any).principal) || undefined,
+        { streamUrl: streamUrl(), token: (ctx.authInfo && ctx.authInfo.token) || undefined },
+    ), {
         responseMode: "json",
         legacy: "reject",   // 2025-era clients are served below, as JSON, one instance per request
         onerror: (err) => console.error("MCP handler error", err),
@@ -32,12 +46,12 @@ export function makeMcpHandler(deps: McpDeps) {
 
     /** A 2025-era (sessionless, non-envelope) request: one server, one transport, one JSON answer. */
     async function serveLegacy(request: Request, principal: Principal | undefined): Promise<Response> {
-        const server = buildServer(deps, principal, { streamUrl: streamUrl() });
+        const server = buildServer(deps, principal, { streamUrl: streamUrl(), token: bearerOf(request) });
         const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
         await server.connect(transport);
         try {
             return await transport.handleRequest(request, {
-                authInfo: principal ? { token: "", clientId: principal.sub, scopes: principal.scopes || [], extra: { principal } } : undefined,
+                authInfo: principal ? { token: bearerOf(request), clientId: principal.sub, scopes: principal.scopes || [], extra: { principal } } : undefined,
             } as any);
         } finally {
             transport.close().catch(() => undefined);
@@ -54,7 +68,7 @@ export function makeMcpHandler(deps: McpDeps) {
             return serveLegacy(request, principal);
         }
         return handler.fetch(request, {
-            authInfo: principal ? { token: "", clientId: principal.sub, scopes: principal.scopes || [], extra: { principal } } : undefined,
+            authInfo: principal ? { token: bearerOf(request), clientId: principal.sub, scopes: principal.scopes || [], extra: { principal } } : undefined,
         });
     }
 

@@ -44,6 +44,10 @@ export interface McpDeps {
     simulations?: { run(graphId: string, proposalId: string, principal: Principal | undefined, options: any): Promise<any> };
     /** Who carries a published component, and what a version would mean for them (PB-044). */
     consumers?: { consumers(publishedId: string, principal?: Principal): Promise<any[]>; impact(publishedId: string, version: number, principal?: Principal): Promise<any> };
+    /** A picture of what a graph serves (PB-149). */
+    capture?: {
+        screenshot(graphId: string, principal: Principal | undefined, options: any): Promise<any>;
+    };
     /** Asking CloudFormation what a change would do (plan §4.9, M4a). */
     iac?: {
         plan(graphId: string, nodeId: string, principal: Principal | undefined, options?: { revisionId?: string; idempotencyKey?: string }): Promise<any>;
@@ -120,6 +124,11 @@ export interface ServerOptions {
     subscriptions?: boolean;
     /** Where a client goes to listen, when that is somewhere else. */
     streamUrl?: string;
+    /**
+     * The caller's own bearer, for the one tool that fetches a page on their
+     * behalf (PB-149).  Passed along, never stored, never logged.
+     */
+    token?: string;
 }
 
 export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, options: ServerOptions = {}): McpServer {
@@ -332,6 +341,46 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
         const r: any = await deps.iac.status(args.graphId, args.nodeId, rawPrincipal, args.revisionId);
         if (r.error) return fail(r.code, r.error, retryFor(r.code));
         return ok(principal, r, { graphId: args.graphId });
+    }));
+
+    /**
+     * Seeing it (PB-149).
+     *
+     * A proposal being accepted says nothing about whether the page it
+     * describes draws anything.  This is the difference between the two, and
+     * it comes back as an image, so an agent can look rather than infer.
+     */
+    server.registerTool("view.screenshot", {
+        title: "Look at what this graph serves",
+        description: "A picture of the page this graph serves, from a browser somebody already has open if there is one, and otherwise from a browser this server starts. Give a nodeUrl for one node's page, or a url that this deployment serves. Comes back as an image, with the page's title, its status, and anything the page logged on the way up — which is usually the answer when the picture is blank. Accepted and valid are not the same as seen: this is seen.",
+        inputSchema: z.object({
+            schemaVersion: z.literal(1), graphId: ID,
+            nodeUrl: z.string().max(200).optional(),
+            url: z.string().max(2000).optional(),
+            viewport: z.object({ width: z.number().int().min(320).max(2560), height: z.number().int().min(240).max(2000) }).strict().optional(),
+            fullPage: z.boolean().optional(),
+            waitFor: z.string().max(200).optional(),
+            from: z.enum(["viewer", "server", "auto"]).optional(),
+            timeoutMs: z.number().int().min(1000).max(60000).optional(),
+        }).strict(),
+        annotations: { readOnlyHint: true },
+    }, guarded("view.screenshot", "read", (a) => a.graphId, ["graph:read"], async (args, principal) => {
+        if (!deps.capture) {
+            return fail("UNSUPPORTED", "this server cannot take pictures");
+        }
+        const r: any = await deps.capture.screenshot(args.graphId, rawPrincipal, {
+            nodeUrl: args.nodeUrl, url: args.url, viewport: args.viewport, fullPage: args.fullPage,
+            waitFor: args.waitFor, from: args.from, timeoutMs: args.timeoutMs,
+            // the page is fetched as the caller, with the caller's own token
+            token: options.token,
+        });
+        if (r.error) {
+            return fail(r.code, r.error, retryFor(r.code));
+        }
+        const answer = ok(principal, r.shot, { graphId: args.graphId });
+        // the picture itself, beside the description of it
+        answer.content.push({ type: "image", data: r.image.toString("base64"), mimeType: r.shot.format === "png" ? "image/png" : "image/jpeg" } as any);
+        return answer;
     }));
 
     server.registerTool("observations.query", {
