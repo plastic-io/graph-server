@@ -20,8 +20,11 @@
  *
  *   AUTH0_DOMAIN=dev-xxxx.us.auth0.com \
  *   AUTH0_TOKEN=<a Management API token with read:clients delete:clients> \
- *   node scripts/prune-mcp-clients.mjs            # says what it would remove
- *   node scripts/prune-mcp-clients.mjs --delete   # removes it
+ *   node scripts/prune-mcp-clients.mjs                     # says what it would remove
+ *   node scripts/prune-mcp-clients.mjs --delete            # removes it
+ *   node scripts/prune-mcp-clients.mjs --keep-test-apps    # leave the dashboard's own alone
+ *
+ * AUTH0_KEEP=<client id or name>,… keeps anything you name, whatever it is.
  *
  * A token is minted in the Auth0 dashboard: Applications → APIs → Auth0
  * Management API → API Explorer.  It is short-lived, which is the point.
@@ -67,23 +70,39 @@ async function clients() {
 const registered = (client) =>
     /^tpc_/.test(client.client_id) || client.is_first_party === false;
 
+/**
+ * Auth0 makes one of these the first time anybody opens an API's Test tab, and
+ * nothing uses it afterwards.  They are not clients of anything; they are the
+ * residue of having looked at something.  On a tenant of ten applications,
+ * five of them turned out to be these.
+ */
+const leftByTheDashboard = (client) =>
+    !registered(client) && /\(Test Application\)$/.test(String(client.name || "").trim());
+
 (async () => {
     const all = await clients();
     const theirs = all.filter(registered);
-    const mine = all.filter((c) => !registered(c));
-    console.log(`${all.length} applications in this tenant: ${mine.length} yours, ${theirs.length} registered by clients.`);
+    const residue = all.filter(leftByTheDashboard);
+    const mine = all.filter((c) => !registered(c) && !leftByTheDashboard(c));
+    console.log(`${all.length} applications in this tenant: ${mine.length} yours, ${theirs.length} registered by clients, ${residue.length} left behind by the dashboard.`);
     if (mine.length) {
         console.log("\nYours, which are never touched:");
         mine.forEach((c) => console.log(`  ${c.name} (${c.client_id})`));
     }
-    if (!theirs.length) {
-        console.log("\nNothing registered itself; the limit is not this.");
+    if (residue.length) {
+        console.log("\nTest applications, which Auth0 made when somebody opened an API's Test tab:");
+        residue.forEach((c) => console.log(`  ${c.client_id}  ${c.name}`));
+        console.log("  (deleting these deletes no API; the Test tab makes another if it is ever needed)");
+    }
+    if (!theirs.length && !residue.length) {
+        console.log("\nNothing registered itself and nothing was left behind; the limit is not this.");
         return;
     }
 
-    const kept = theirs.filter((c) => keep.includes(c.client_id) || keep.includes(c.name));
-    const candidates = theirs.filter((c) => !kept.includes(c));
-    console.log(`\n${candidates.length} registered by MCP clients${kept.length ? `, ${kept.length} kept by name` : ""}:`);
+    const sweepable = process.argv.includes("--keep-test-apps") ? theirs : theirs.concat(residue);
+    const kept = sweepable.filter((c) => keep.includes(c.client_id) || keep.includes(c.name));
+    const candidates = sweepable.filter((c) => !kept.includes(c));
+    console.log(`\n${candidates.length} to remove${kept.length ? `, ${kept.length} kept by name` : ""}:`);
     candidates.forEach((c) => console.log(`  ${c.client_id}  ${c.name || "(no name)"}`));
 
     if (!remove) {
