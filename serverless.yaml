@@ -68,6 +68,13 @@ provider:
   # WebSocket messages are attributed by the connection record written at $connect.
   # WebSocket execution stays off unless explicitly enabled.
   environment:
+    AUTH_PROVIDER: ${env:AUTH_PROVIDER, 'auth0'}
+    COGNITO_ISSUER: ${env:COGNITO_ISSUER, ''}
+    COGNITO_CLIENT_IDS: ${env:COGNITO_CLIENT_IDS, ''}
+    COGNITO_MACHINE_CLIENT_IDS: ${env:COGNITO_MACHINE_CLIENT_IDS, ''}
+    COGNITO_REQUIRED_SCOPES: ${env:COGNITO_REQUIRED_SCOPES, ''}
+    COGNITO_SCOPE_MAP: ${env:COGNITO_SCOPE_MAP, '{}'}
+    COGNITO_RESOURCE_AUDIENCE: ${env:COGNITO_RESOURCE_AUDIENCE, ''}
     AUTH0_DOMAIN: ${opt:auth0Domain, 'dev-7q-g69up.us.auth0.com'}
     AUTH0_AUDIENCE: ${opt:auth0Audience, 'plastic-io-graph-server'}
     # The resource identifier an MCP client asks for a token for (RFC 8707).
@@ -171,7 +178,7 @@ custom:
     name: authorizer
     type: request
     identitySource: method.request.header.Authorization
-    resultTtlInSeconds: 300
+    resultTtlInSeconds: 0
 
 functions:
   # JWT authorizer shared by the REST API and the WebSocket handshake

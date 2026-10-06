@@ -1,0 +1,103 @@
+import { createRemoteJWKSet, jwtVerify, JWTVerifyGetKey } from "jose";
+import type { Principal } from "../principal";
+import type { AuthenticationAdapter } from "../types";
+import { AUTHORITIES } from "../../policy/decide";
+const TENANT_CLAIM = "https://plastic-io/tenant";
+export function principalFromClaims(payload: any): Principal {
+    const sub = String(payload.sub);
+    const scopes = String(payload.scope || "")
+        .split(" ")
+        .filter(Boolean)
+        .concat(Array.isArray(payload.permissions) ? payload.permissions : []);
+    return {
+        sub,
+        kind: payload.gty === "client-credentials" ? "agent" : "human",
+        tenant: payload[TENANT_CLAIM] || payload.org_id || `personal:${sub}`,
+        email: payload.email,
+        name: payload.name,
+        scopes: Array.from(new Set(scopes)),
+    };
+}
+
+
+export interface JwtConfig {
+    domain: string;      // Auth0 tenant domain, e.g. dev-7q-g69up.us.auth0.com
+    /**
+     * What a token must be for.  More than one is allowed on purpose: a client
+     * that discovers this server asks for a token for the **resource
+     * identifier** it was given (RFC 8707), while the editor has always asked
+     * for the API's name.  Accepting both lets one migrate without the other
+     * stopping, and either can be retired by removing it here.
+     */
+    audience: string | string[];
+    keys?: JWTVerifyGetKey;   // injectable for tests; defaults to the tenant's JWKS
+}
+
+let remoteKeys: JWTVerifyGetKey | undefined;
+let remoteKeysFor = "";
+
+/**
+ * Two different things that were one thing for a while, to everyone's cost:
+ *
+ *   - `MCP_RESOURCE` is what the metadata **advertises**, and an MCP client
+ *     refuses it unless it is the server it is talking to.
+ *   - `MCP_AUDIENCE` is what the authorization server **issues for** — an API
+ *     identifier, which is an opaque string and need not be a real host.
+ *
+ * Conflating them is what made a working Auth0 API look like it needed
+ * replacing.  Any of them is accepted, so the identifier already configured
+ * keeps working whatever the metadata says.
+ */
+export function configFromEnv(): JwtConfig {
+    const audience = [process.env.AUTH0_AUDIENCE, process.env.MCP_AUDIENCE, process.env.MCP_RESOURCE]
+        .filter((value): value is string => !!value);
+    return {
+        domain: process.env.AUTH0_DOMAIN || "",
+        audience: audience.length === 1 ? audience[0] : audience,
+    };
+}
+
+function keysFor(domain: string): JWTVerifyGetKey {
+    if (!remoteKeys || remoteKeysFor !== domain) {
+        remoteKeys = createRemoteJWKSet(new URL(`https://${domain}/.well-known/jwks.json`));
+        remoteKeysFor = domain;
+    }
+    return remoteKeys;
+}
+
+/** Verify an Auth0 access token (RS256, issuer and audience bound) and return the principal it names. */
+async function verify(token: string, config: JwtConfig) {
+    const audiences = Array.isArray(config.audience) ? config.audience : [config.audience];
+    if (!config.domain || !audiences.length || !audiences[0]) {
+        throw new Error("Authentication is not configured (AUTH0_DOMAIN / AUTH0_AUDIENCE)");
+    }
+    const { payload } = await jwtVerify(token, config.keys || keysFor(config.domain), {
+        issuer: `https://${config.domain}/`,
+        audience: audiences,
+        algorithms: ["RS256"],
+        requiredClaims: ["sub", "exp"],
+    });
+    if (!payload.sub) {
+        throw new Error("Token has no subject");
+    }
+    return { principal: principalFromClaims(payload), expiresAt: payload.exp! };
+}
+
+export function createAdapter(config?: JwtConfig): AuthenticationAdapter {
+    return {
+        name: "auth0",
+        verifyAccessToken: (token) => verify(token, config || configFromEnv()),
+        discovery: () => {
+            const domain = config ? config.domain : process.env.AUTH0_DOMAIN;
+            const audience = config ? (Array.isArray(config.audience) ? config.audience[0] : config.audience)
+                : process.env.AUTH0_AUDIENCE || process.env.MCP_AUDIENCE || "";
+            const legacyResource = config ? audience : process.env.AUTH0_AUDIENCE || "";
+            return {
+                authorizationServers: domain ? [`https://${domain}/`] : [], audience,
+                resourceFallback: /^https?:\/\//.test(legacyResource) ? legacyResource : undefined,
+                scopes: AUTHORITIES,
+            };
+        },
+    };
+}
+export default createAdapter();

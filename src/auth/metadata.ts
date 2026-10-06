@@ -20,12 +20,8 @@
  *     That challenge is emitted by the API Gateway itself (the authorizer refuses before
  *     any handler runs), so it is configured beside the routes in `serverless.yaml`.
  */
-const AUTHORITIES = [
-    "graph:read", "graph:inspect-internals", "graph:inspect-payloads", "graph:observe",
-    "graph:propose", "graph:approve", "graph:commit", "graph:activate", "graph:rollback",
-    "graph:execute", "graph:simulate", "graph:test", "graph:connect-privileged",
-    "component:publish", "registry:read", "iac:propose", "iac:approve", "iac:read-status", "policy:admin",
-];
+import adapter from "@graph/auth-provider";
+import type { AuthenticationAdapter } from "./types";
 
 /** Where this deployment answers, as a client would have to address it. */
 export function baseUrlOf(event: any): string {
@@ -44,13 +40,12 @@ export function baseUrlOf(event: any): string {
  * authorization server knows this API as; where it is not set the canonical MCP endpoint
  * is used, which is what the identifier should be.
  */
-export function resourceIdentifier(baseUrl: string): string {
+export function resourceIdentifier(baseUrl: string, provider: AuthenticationAdapter = adapter): string {
     const configured = process.env.MCP_RESOURCE;
     if (configured) {
         return configured;
     }
-    const audience = process.env.AUTH0_AUDIENCE || "";
-    return /^https?:\/\//.test(audience) ? audience : `${baseUrl}/mcp`;
+    return provider.discovery().resourceFallback || `${baseUrl}/mcp`;
 }
 
 /**
@@ -58,19 +53,20 @@ export function resourceIdentifier(baseUrl: string): string {
  * the authorizer accepts, which is not necessarily what `resource` says: the resource
  * indicator names *this server*, while the audience names *the API the tenant knows*.
  */
-export function audienceIdentifier(): string {
-    return process.env.AUTH0_AUDIENCE || process.env.MCP_AUDIENCE || "";
+export function audienceIdentifier(provider: AuthenticationAdapter = adapter): string {
+    return provider.discovery().audience || "";
 }
 
-export function protectedResourceMetadata(baseUrl = "") {
-    const resource = resourceIdentifier(baseUrl);
-    const audience = audienceIdentifier();
+export function protectedResourceMetadata(baseUrl = "", provider: AuthenticationAdapter = adapter) {
+    const resource = resourceIdentifier(baseUrl, provider);
+    const audience = audienceIdentifier(provider);
     return {
         resource,
         ...(audience ? { audience } : {}),
-        authorization_servers: process.env.AUTH0_DOMAIN ? [`https://${process.env.AUTH0_DOMAIN}/`] : [],
+        authorization_servers: provider.discovery().authorizationServers,
+        auth_provider: provider.name,
         bearer_methods_supported: ["header"],
-        scopes_supported: AUTHORITIES,
+        scopes_supported: provider.discovery().scopes,
         resource_documentation: "https://github.com/plastic-io/graph-editor/tree/main/docs/polymorphic-application-plan",
     };
 }

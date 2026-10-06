@@ -1,19 +1,21 @@
 import { extractToken } from "./principal";
-import { verifyBearer, JwtConfig, configFromEnv } from "./jwt";
+import adapter from "@graph/auth-provider";
+import type { AuthenticationAdapter } from "./types";
 
 /**
  * Lambda REQUEST authorizer shared by the REST API (Authorization: Bearer) and the
  * WebSocket $connect route (Sec-WebSocket-Protocol: access_token, <jwt>).  Throwing
  * "Unauthorized" makes API Gateway answer 401; any other failure is a 500.
  */
-export async function authorize(event: any, config: JwtConfig = configFromEnv()) {
+export async function authorize(event: any, provider: AuthenticationAdapter = adapter) {
     const token = extractToken(event);
     if (!token) {
         throw new Error("Unauthorized");
     }
     let principal;
+    let expiresAt;
     try {
-        principal = await verifyBearer(token, config);
+        ({ principal, expiresAt } = await provider.verifyAccessToken(token));
     } catch (err) {
         console.error("Rejected token:", (err && err.message) || err);
         throw new Error("Unauthorized");
@@ -27,6 +29,8 @@ export async function authorize(event: any, config: JwtConfig = configFromEnv())
         // API Gateway only carries strings/numbers/booleans here; lists travel as JSON.
         context: {
             sub: principal.sub,
+            expiresAt,
+            authProvider: provider.name,
             kind: principal.kind,
             tenant: principal.tenant,
             email: principal.email || "",

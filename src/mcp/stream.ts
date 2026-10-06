@@ -1,6 +1,7 @@
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { Principal } from "../auth/principal";
-import { verifyBearer, JwtConfig, configFromEnv } from "../auth/jwt";
+import adapter from "@graph/auth-provider";
+import type { AuthenticationAdapter } from "../auth/types";
 import { baseUrlOf, bearerChallenge, protectedResourceMetadata } from "../auth/metadata";
 import { decide } from "../policy/decide";
 import { buildServer, McpDeps } from "./server";
@@ -22,7 +23,7 @@ import { allowedOrigin } from "./handler";
  *
  *   - **The token is verified in this handler.**  A Function URL is not behind
  *     the API Gateway authorizer, so nothing upstream has established who is
- *     calling; the same Auth0 verification the authorizer does is done here.
+ *     calling; the same provider verification the authorizer does is done here.
  *   - **The subscription is authorized before the SDK sees it.**  The listen
  *     router filters events by URI but knows nothing about who may read what,
  *     so a stream that names a graph its caller cannot read is refused the way
@@ -39,7 +40,7 @@ const DEFAULT_MAX_STREAM_MS = 840000;              // 14 minutes, inside the 15-
 const WIND_DOWN_MS = 20000;
 
 export interface StreamOptions {
-    jwt?: JwtConfig;
+    auth?: AuthenticationAdapter;
     /** The store the feed watches; defaults to the one the CRDT store holds. */
     store?: FeedStore;
     maxStreamMs?: number;
@@ -61,6 +62,7 @@ function jsonRpcError(id: any, code: number, message: string): Response {
 }
 
 export function makeMcpStreamHandler(deps: McpDeps, options: StreamOptions = {}) {
+    const authProvider = options.auth || adapter;
     const maxStreamMs = options.maxStreamMs || Number(process.env.MCP_STREAM_MAX_MS || DEFAULT_MAX_STREAM_MS);
     const store: FeedStore = options.store || ((deps.crdtStore as any).store as FeedStore);
 
@@ -129,7 +131,8 @@ export function makeMcpStreamHandler(deps: McpDeps, options: StreamOptions = {})
         // of an event from before it asked would be noise.
         await feed.prime();
         feed.start();
-        const ends = Math.max(1000, deadlineMs === undefined ? maxStreamMs : Math.min(maxStreamMs, deadlineMs - WIND_DOWN_MS));
+        const tokenRemaining = principal?.expiresAt === undefined ? Infinity : principal.expiresAt * 1000 - Date.now();
+        const ends = Math.max(0, Math.min(tokenRemaining, deadlineMs === undefined ? maxStreamMs : Math.min(maxStreamMs, deadlineMs - WIND_DOWN_MS)));
         let over = false;
         /**
          * Everything this stream was holding, let go of exactly once.  It
@@ -199,7 +202,7 @@ export function makeMcpStreamHandler(deps: McpDeps, options: StreamOptions = {})
              */
             if (String(http.path || "").indexOf("/.well-known/oauth-protected-resource") !== -1) {
                 return finish(200, { ...corsHeaders, "content-type": "application/json", "cache-control": "public, max-age=300" },
-                    JSON.stringify(protectedResourceMetadata(baseUrlOf(event))));
+                    JSON.stringify(protectedResourceMetadata(baseUrlOf(event), authProvider)));
             }
             const headers = new Headers();
             Object.keys(event.headers || {}).forEach((k) => {
@@ -212,7 +215,8 @@ export function makeMcpStreamHandler(deps: McpDeps, options: StreamOptions = {})
             const token = /^Bearer\s+(\S+)$/i.exec(auth.trim());
             if (token) {
                 try {
-                    principal = await verifyBearer(token[1], options.jwt || configFromEnv());
+                    const identity = await authProvider.verifyAccessToken(token[1]);
+                    principal = { ...identity.principal, expiresAt: identity.expiresAt, authProvider: authProvider.name };
                 } catch (err: any) {
                     console.error("Rejected token:", (err && err.message) || err);
                 }

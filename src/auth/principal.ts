@@ -1,3 +1,4 @@
+import adapter from "@graph/auth-provider";
 /**
  * Who is acting.  Every request that reaches a service carries `event.principal`,
  * derived on the server side only: from the API Gateway authorizer context for HTTP
@@ -14,27 +15,15 @@ export interface Principal {
     scopes: string[];
     /** For agents: the human whose delegation the scopes come from (policy/delegation.ts). */
     delegatedBy?: string;
+    /** Present on identities established by an external authentication provider. */
+    expiresAt?: number;
+    authProvider?: string;
 }
 
 export const TENANT_CLAIM = "https://plastic-io/tenant";
 const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const CONNECTION_CACHE_MS = 60000;
 
-export function principalFromClaims(payload: any): Principal {
-    const sub = String(payload.sub);
-    const scopes = String(payload.scope || "")
-        .split(" ")
-        .filter(Boolean)
-        .concat(Array.isArray(payload.permissions) ? payload.permissions : []);
-    return {
-        sub,
-        kind: payload.gty === "client-credentials" ? "agent" : "human",
-        tenant: payload[TENANT_CLAIM] || payload.org_id || `personal:${sub}`,
-        email: payload.email,
-        name: payload.name,
-        scopes: Array.from(new Set(scopes)),
-    };
-}
 
 function lowerHeaders(event: any): Record<string, string> {
     const out: Record<string, string> = {};
@@ -81,7 +70,11 @@ export function principalFromAuthorizerContext(event: any): Principal | undefine
     } catch (err) {
         scopes = [];
     }
+    if (ctx.expiresAt !== undefined && (!Number.isFinite(Number(ctx.expiresAt)) || Number(ctx.expiresAt) * 1000 <= Date.now())) return undefined;
+    if (ctx.authProvider && ctx.authProvider !== adapter.name) return undefined;
     return {
+        ...(ctx.expiresAt !== undefined ? { expiresAt: Number(ctx.expiresAt) } : {}),
+        ...(ctx.authProvider ? { authProvider: ctx.authProvider } : {}),
         sub: ctx.sub,
         kind: ctx.kind || "human",
         tenant: ctx.tenant || `personal:${ctx.sub}`,
@@ -110,17 +103,23 @@ export function connectionKey(ctx: any): string {
 
 const connectionCache: Map<string, { principal: Principal; at: number }> = new Map();
 
+/** Old records without verified expiry are retired when this version is deployed. */
+function connectionIsCurrent(principal: Principal): boolean {
+    return Number.isFinite(principal.expiresAt) && principal.expiresAt! * 1000 > Date.now()
+        && principal.authProvider === adapter.name;
+}
+
 /** The principal recorded for a WebSocket connection at $connect (stored by BroadcastService.connect). */
 export function principalForConnection(store: any, event: any): Promise<Principal | undefined> {
     const ctx = event.requestContext || {};
     const key = connectionKey(ctx);
     const cached = connectionCache.get(key);
     if (cached && Date.now() - cached.at < CONNECTION_CACHE_MS) {
-        return Promise.resolve(cached.principal);
+        return Promise.resolve(connectionIsCurrent(cached.principal) ? cached.principal : undefined);
     }
     return new Promise((resolve) => {
         store.get(key, (err: any, record: any) => {
-            if (err || !record || !record.principal) {
+            if (err || !record || !record.principal || !connectionIsCurrent(record.principal)) {
                 return resolve(undefined);
             }
             connectionCache.set(key, { principal: record.principal, at: Date.now() });

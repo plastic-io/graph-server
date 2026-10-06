@@ -1,4 +1,5 @@
 const { generateKeyPair, exportJWK, SignJWT, createLocalJWKSet } = require("jose");
+const { createAdapter } = require("../auth/providers/auth0");
 const { verifyBearer } = require("../auth/jwt");
 const { authorize, stageResource } = require("../auth/authorizer");
 const { extractToken, subjectOf, withPrincipal, principalFromAuthorizerContext, TENANT_CLAIM } = require("../auth/principal");
@@ -68,15 +69,15 @@ describe("token extraction", () => {
 describe("authorizer", () => {
     test("allows the whole stage and carries the principal as string context", async () => {
         const token = await mint({ scope: "graph:read" });
-        const res = await authorize({ methodArn: "arn:aws:execute-api:us-west-1:123456789012:abc123/dev/GET/toc.json", headers: { authorization: `Bearer ${token}` } }, config);
+        const res = await authorize({ methodArn: "arn:aws:execute-api:us-west-1:123456789012:abc123/dev/GET/toc.json", headers: { authorization: `Bearer ${token}` } }, createAdapter(config));
         expect(res.principalId).toBe("auth0|u1");
         expect(res.policyDocument.Statement[0]).toEqual({ Action: "execute-api:Invoke", Effect: "Allow", Resource: "arn:aws:execute-api:us-west-1:123456789012:abc123/dev/*" });
-        expect(res.context).toEqual({ sub: "auth0|u1", kind: "human", tenant: "personal:auth0|u1", email: "", name: "", scopes: JSON.stringify(["graph:read"]) });
+        expect(res.context).toEqual({ sub: "auth0|u1", kind: "human", tenant: "personal:auth0|u1", email: "", name: "", scopes: JSON.stringify(["graph:read"]), expiresAt: expect.any(Number), authProvider: "auth0" });
         expect(principalFromAuthorizerContext({ requestContext: { authorizer: res.context } })).toMatchObject({ sub: "auth0|u1", scopes: ["graph:read"] });
     });
     test("no token or a bad token is Unauthorized (API Gateway answers 401)", async () => {
-        await expect(authorize({ methodArn: "arn:aws:execute-api:r:a:x/dev/GET/x", headers: {} }, config)).rejects.toThrow("Unauthorized");
-        await expect(authorize({ methodArn: "arn:aws:execute-api:r:a:x/dev/GET/x", headers: { authorization: "Bearer nope.nope.nope" } }, config)).rejects.toThrow("Unauthorized");
+        await expect(authorize({ methodArn: "arn:aws:execute-api:r:a:x/dev/GET/x", headers: {} }, createAdapter(config))).rejects.toThrow("Unauthorized");
+        await expect(authorize({ methodArn: "arn:aws:execute-api:r:a:x/dev/GET/x", headers: { authorization: "Bearer nope.nope.nope" } }, createAdapter(config))).rejects.toThrow("Unauthorized");
     });
     test("stageResource covers the WebSocket $connect arn too", () => {
         expect(stageResource("arn:aws:execute-api:us-west-1:1:ws123/dev/$connect")).toBe("arn:aws:execute-api:us-west-1:1:ws123/dev/*");
@@ -88,7 +89,7 @@ describe("principal on WebSocket messages", () => {
         const service = new BroadcastService();
         service.store = new FakeS3Service();
         const ctx = { connectionId: "c1", domainName: "example.test" };
-        const connectEvent = { requestContext: { ...ctx, authorizer: { sub: "auth0|u1", kind: "human", tenant: "org_abc", scopes: "[]" } }, headers: { "Sec-WebSocket-Protocol": "access_token, eyJ.eyJ.sig" } };
+        const connectEvent = { requestContext: { ...ctx, authorizer: { expiresAt: Math.floor(Date.now() / 1000) + 3600, authProvider: "auth0", sub: "auth0|u1", kind: "human", tenant: "org_abc", scopes: "[]" } }, headers: { "Sec-WebSocket-Protocol": "access_token, eyJ.eyJ.sig" } };
         const connect = withPrincipal(service.store, (e, c, cb) => service.connect(e, c, cb));
         connect(connectEvent, {}, (err, response) => {
             expect(response.statusCode).toBe(200);

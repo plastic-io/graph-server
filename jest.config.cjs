@@ -32,6 +32,7 @@ module.exports = {
   // check the codec relies on.  The deployment bundle avoids this with
   // `resolve.symlinks: false` in webpack.config.js; this is the same fix.
   moduleNameMapper: {
+    "^@graph/auth-provider$": require("./build/auth-provider.cjs").modulePath(),
         ...mcpSubpaths,
     // jest 26 cannot resolve the node: scheme; every core module, nested paths
     // included (node:fs/promises), has a re-exporting shim under nodeCore/
