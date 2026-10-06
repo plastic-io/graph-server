@@ -26,7 +26,7 @@ export function cognitoSubject(issuer: string, sub: string): string {
 
 export function createAdapter(config?: CognitoConfig): AuthenticationAdapter {
     const configuration = (): CognitoConfig => {
-        const c = config || cognitoConfig();
+        const c: CognitoConfig = config || cognitoConfig();
         if (Object.values(c.scopeMap).some((s) => !(AUTHORITIES as string[]).includes(s))) {
             throw new Error("COGNITO_SCOPE_MAP contains an unknown application authority");
         }
@@ -40,6 +40,7 @@ export function createAdapter(config?: CognitoConfig): AuthenticationAdapter {
                 issuer: c.issuer, algorithms: ["RS256"], requiredClaims: ["sub", "exp", "client_id", "token_use"],
                 ...(c.audience ? { audience: c.audience } : {}),
             });
+            if (typeof payload.sub !== "string" || !payload.sub) throw new Error("Missing subject");
             if (payload.token_use !== "access") throw new Error("An access token is required");
             const clientId = payload.client_id;
             if (typeof clientId !== "string") throw new Error("Missing client ID");

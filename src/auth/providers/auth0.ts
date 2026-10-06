@@ -77,7 +77,7 @@ async function verify(token: string, config: JwtConfig) {
         algorithms: ["RS256"],
         requiredClaims: ["sub", "exp"],
     });
-    if (!payload.sub) {
+    if (typeof payload.sub !== "string" || !payload.sub) {
         throw new Error("Token has no subject");
     }
     return { principal: principalFromClaims(payload), expiresAt: payload.exp! };

@@ -1,48 +1,163 @@
-name: Deploy (tagged release)
+name: Deploy configured environment
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub environment containing deployment variables
+        type: environment
+        default: cognito-test
+        required: true
+      editor_ref:
+        description: Full graph-editor commit SHA (overrides the environment EDITOR_REF)
+        type: string
+        required: false
 
 permissions:
-  id-token: write
   contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: dev
+    timeout-minutes: 90
+    environment: ${{ inputs.environment || 'dev' }}
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: graph-server
+        shell: bash
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-west-1' }}
+      AUTH_PROVIDER: ${{ vars.AUTH_PROVIDER || 'auth0' }}
+      SERVICE_NAME: ${{ vars.SERVICE_NAME || 'plastic-io-graph-server' }}
+      STAGE: ${{ vars.STAGE || 'dev' }}
+      API_PREFIX: ${{ vars.API_PREFIX || 'plastic' }}
+      DEPLOY_EDITOR: ${{ vars.DEPLOY_EDITOR || 'false' }}
+      EDITOR_REF: ${{ inputs.editor_ref || vars.EDITOR_REF }}
+      AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN || 'dev-7q-g69up.us.auth0.com' }}
+      AUTH0_AUDIENCE: ${{ vars.AUTH0_AUDIENCE || 'plastic-io-graph-server' }}
+      AUTH0_CLIENT_ID: ${{ vars.AUTH0_CLIENT_ID }}
+      OWNER_SUBS: ${{ vars.OWNER_SUBS }}
     steps:
-      # Siblings inside the workspace: the CRDT package is linked from the
-      # editor by path, and actions/checkout refuses a path outside it.
       - uses: actions/checkout@v4
         with:
           path: graph-server
-      - uses: actions/checkout@v4
-        with:
-          repository: plastic-io/graph-editor
-          path: graph-editor
       - uses: actions/setup-node@v4
         with:
           node-version-file: graph-server/.nvmrc
+      - name: Validate environment and pinned editor revision
+        id: config
+        run: node scripts/ci/deployment-config.cjs configure
+      - uses: actions/checkout@v4
+        with:
+          repository: plastic-io/graph-editor
+          ref: ${{ steps.config.outputs.editor_ref }}
+          path: graph-editor
       - run: npm ci
-        working-directory: graph-server
-      - run: npx jest --ci
-        working-directory: graph-server
+        working-directory: graph-editor
+      - run: npm ci
+      - name: Server tests and type checking
+        env:
+          AUTH_PROVIDER: auth0
+        run: |
+          npx jest --ci --runInBand --forceExit
+          npx tsc --noEmit
+          node --test scripts/ci/deployment-config.test.cjs
+      - name: Editor tests and type checking
+        working-directory: graph-editor
+        env:
+          AUTH_PROVIDER: auth0
+        run: |
+          npm run test:crdt
+          npm run test:integration
+          npm run type-check:ratchet
+      - name: Verify both provider bundles
+        env:
+          AUTH_PROVIDER: auth0
+        run: |
+          node scripts/check-auth-builds.cjs
+          npm --prefix ../graph-editor run test:auth-builds
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate infrastructure source
+        run: |
+          pip install cfn-lint==1.57.1
+          cfn-lint -r "$AWS_REGION" -t infra/auth-environment.yaml infra/github-oidc-deploy-role.yaml
+      - name: Build native Lambda layer in Lambda image
+        run: sh build.sh
+        working-directory: graph-server/layers/isolated-vm
+      - name: Build Chromium layer from lockfile
+        run: sh build.sh
+        working-directory: graph-server/layers/chromium
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: us-west-1
-      # package first: a failed webpack build exits 0 and produces no artifact, so a bare deploy can look like a success
-      - run: npx serverless package --stage dev
-        working-directory: graph-server
-      - run: test -s .serverless/plastic-io-graph-server.zip
-        working-directory: graph-server
-      - run: npx serverless deploy --stage dev --package .serverless
-        working-directory: graph-server
-      # routes removed in this release would otherwise linger in the stage snapshot (see plan task 1 log)
-      - run: |
-          REST=$(aws apigateway get-rest-apis --query "items[?name=='dev-plastic-io-graph-server'].id" --output text)
-          WS=$(aws apigatewayv2 get-apis --query "Items[?Name=='plastic-dev-plastic-ws'].ApiId" --output text)
-          aws apigateway create-deployment --rest-api-id "$REST" --stage-name dev --description "post-deploy re-snapshot" >/dev/null
-          aws apigatewayv2 create-deployment --api-id "$WS" --stage-name dev --description "post-deploy re-snapshot" >/dev/null
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: graph-${{ github.run_id }}
+      - name: Verify target account before any AWS writes
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+      - name: Provision authentication and editor hosting
+        if: steps.config.outputs.deploy_editor == 'true'
+        run: bash scripts/ci/deploy-auth-stack.sh
+      # A webpack failure can exit zero in the installed Serverless plugin.
+      # Check the actual package, then deploy that exact package without rebuilding.
+      - name: Package selected server provider
+        run: |
+          npx serverless package --stage "$STAGE" --region "$AWS_REGION"
+          test -s ".serverless/$SERVICE_NAME.zip"
+          test -s .serverless/chromium.zip
+          test -s .serverless/isolatedVm.zip
+          unzip -p ".serverless/$SERVICE_NAME.zip" auth-provider.json | jq -e --arg provider "$AUTH_PROVIDER" '.provider == $provider'
+          cfn-lint -r "$AWS_REGION" -t .serverless/cloudformation-template-update-stack.json --non-zero-exit-code error
+      - name: Deploy packaged server
+        run: npx serverless deploy --stage "$STAGE" --region "$AWS_REGION" --package .serverless
+      - name: Read endpoints from deployed stack
+        run: |
+          aws cloudformation describe-stacks --stack-name "$SERVICE_NAME" > "$RUNNER_TEMP/server-stack.json"
+          node scripts/ci/deployment-config.cjs server "$RUNNER_TEMP/server-stack.json"
+      - name: Refresh API stage snapshots
+        run: |
+          aws apigateway create-deployment --rest-api-id "$REST_API_ID" --stage-name "$STAGE" --description "$GITHUB_SHA" > /dev/null
+          aws apigatewayv2 create-deployment --api-id "$WS_API_ID" --stage-name "$STAGE" --description "$GITHUB_SHA" > /dev/null
+      - name: Build editor with deployed authentication and API configuration
+        if: steps.config.outputs.deploy_editor == 'true'
+        working-directory: graph-editor
+        run: |
+          npm run build
+          jq -e --arg provider "$AUTH_PROVIDER" '.provider == $provider and .isolated == true' dist/auth-provider.json
+      - name: Record public release configuration
+        run: |
+          node scripts/ci/release-manifest.cjs > "$RUNNER_TEMP/release.json"
+          if [[ "$DEPLOY_EDITOR" == true ]]; then cp "$RUNNER_TEMP/release.json" ../graph-editor/dist/release.json; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: |
+            graph-server/.serverless
+            graph-editor/dist
+            ${{ runner.temp }}/release.json
+          if-no-files-found: error
+      - name: Publish editor assets, then entry point
+        if: steps.config.outputs.deploy_editor == 'true'
+        run: |
+          aws s3 sync ../graph-editor/dist/ "s3://$EDITOR_BUCKET/graph-editor/" --exclude index.html --cache-control 'public,max-age=300'
+          aws s3 cp ../graph-editor/dist/index.html "s3://$EDITOR_BUCKET/graph-editor/index.html" --cache-control 'no-cache'
+          invalidation=$(aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths '/graph-editor/*' --query Invalidation.Id --output text)
+          aws cloudfront wait invalidation-completed --distribution-id "$DISTRIBUTION_ID" --id "$invalidation"
+      - name: Smoke test deployed authentication boundaries
+        run: node scripts/ci/smoke-deployment.mjs
+      - name: Write deployment summary
+        run: |
+          { echo "Provider: $AUTH_PROVIDER"; echo "Account: $AWS_ACCOUNT_ID"; echo "Server: $GRAPH_HTTP_SERVER"; echo "Editor: ${EDITOR_URL:-managed separately}"; echo "Editor revision: $EDITOR_REF"; } >> "$GITHUB_STEP_SUMMARY"

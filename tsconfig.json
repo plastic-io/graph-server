@@ -3,6 +3,7 @@
     "outDir": "./dist",
     "inlineSourceMap": true,
     "moduleResolution": "node",
+    "esModuleInterop": true,
     "module": "commonjs",
     // Without an explicit target TypeScript assumes ES3, and then spreading an
     // iterator such as `[...map.keys()]` compiles to array-like handling and
@@ -11,7 +12,8 @@
     "target": "es2019",
     "lib": [
       "es2019",
-      "esnext.asynciterable"
+      "esnext.asynciterable",
+      "dom"
     ]
   },
   // The shared CRDT package ships compiled JavaScript and its own types now

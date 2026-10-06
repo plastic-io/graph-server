@@ -1,9 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   GitHub Actions OIDC deploy role for plastic-io graph-server (plan PB-125). Lets the
-  graph-server repository deploy the Serverless stack from a tagged release without
-  long-lived AWS keys. Deploy this template once by hand with an administrator profile;
-  it is substrate configuration, never touched by the IaC component (plan §4.10).
+  graph-server repository deploy a configured environment without long-lived AWS keys.
+  Manage this template through the account bootstrap pipeline. The application release
+  workflow cannot create its own initial trust relationship. This role is substrate
+  configuration, never touched by the application's IaC component (plan §4.10).
 Parameters:
   GitHubOrg:
     Type: String
@@ -11,13 +12,20 @@ Parameters:
   GitHubRepo:
     Type: String
     Default: graph-server
-  AllowedRef:
+  GitHubEnvironment:
     Type: String
-    Default: refs/tags/v*
-    Description: Only workflow runs for this ref pattern may assume the role (tags by default).
+    Default: dev
+    Description: GitHub environment name. Restrict allowed deployment branches/tags in that environment.
   ServiceName:
     Type: String
     Default: plastic-io-graph-server
+  Stage:
+    Type: String
+    Default: dev
+  LayerPrefix:
+    Type: String
+    Default: plastic
+    Description: Must match the release environment API_PREFIX.
   CreateProvider:
     Type: String
     AllowedValues: ["true", "false"]
@@ -51,8 +59,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-              StringLike:
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:${AllowedRef}"
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:environment:${GitHubEnvironment}"
       Policies:
         - PolicyName: serverless-deploy
           PolicyDocument:
@@ -69,15 +76,16 @@ Resources:
                   - cloudformation:DescribeStackResources
                   - cloudformation:GetTemplate
                   - cloudformation:ListStackResources
-                  - cloudformation:ValidateTemplate
                   - cloudformation:CreateChangeSet
                   - cloudformation:DescribeChangeSet
                   - cloudformation:ExecuteChangeSet
                   - cloudformation:DeleteChangeSet
-                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ServiceName}/*"
+                Resource:
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ServiceName}/*"
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ServiceName}-auth/*"
               - Sid: DeploymentBucket
                 Effect: Allow
-                Action: [s3:CreateBucket, s3:GetBucketLocation, s3:ListBucket, s3:GetObject, s3:PutObject, s3:DeleteObject, s3:PutBucketPolicy, s3:GetBucketPolicy, s3:PutEncryptionConfiguration, s3:GetEncryptionConfiguration, s3:PutBucketVersioning, s3:GetBucketVersioning, s3:PutLifecycleConfiguration, s3:GetLifecycleConfiguration, s3:PutBucketAcl, s3:GetBucketAcl, s3:PutBucketTagging]
+                Action: [s3:CreateBucket, s3:GetBucketLocation, s3:ListBucket, s3:GetObject, s3:PutObject, s3:DeleteObject, s3:PutBucketPolicy, s3:GetBucketPolicy, s3:DeleteBucketPolicy, s3:PutEncryptionConfiguration, s3:GetEncryptionConfiguration, s3:PutBucketVersioning, s3:GetBucketVersioning, s3:PutLifecycleConfiguration, s3:GetLifecycleConfiguration, s3:PutBucketAcl, s3:GetBucketAcl, s3:PutBucketTagging, s3:GetBucketTagging, s3:PutBucketPublicAccessBlock, s3:GetBucketPublicAccessBlock, s3:GetBucketOwnershipControls, s3:PutBucketOwnershipControls, s3:DeleteBucket]
                 Resource:
                   - !Sub "arn:aws:s3:::${ServiceName}*"
                   - !Sub "arn:aws:s3:::${ServiceName}*/*"
@@ -89,6 +97,58 @@ Resources:
                 Effect: Allow
                 Action: [lambda:GetLayerVersion, lambda:ListLayerVersions]
                 Resource: "*"
+              - Sid: PublishOwnLayers
+                Effect: Allow
+                Action: [lambda:PublishLayerVersion, lambda:DeleteLayerVersion]
+                Resource:
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:${LayerPrefix}-${Stage}-*"
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:${LayerPrefix}-${Stage}-*:*"
+              # IDs are assigned by AWS, so these resources cannot be named before
+              # their first deployment. The role is confined to this repo/environment.
+              - Sid: ManageAuthentication
+                Effect: Allow
+                Action:
+                  - cognito-idp:DescribeUserPool
+                  - cognito-idp:UpdateUserPool
+                  - cognito-idp:DeleteUserPool
+                  - cognito-idp:TagResource
+                  - cognito-idp:UntagResource
+                  - cognito-idp:ListTagsForResource
+                  - cognito-idp:CreateUserPoolClient
+                  - cognito-idp:DescribeUserPoolClient
+                  - cognito-idp:UpdateUserPoolClient
+                  - cognito-idp:DeleteUserPoolClient
+                  - cognito-idp:CreateUserPoolDomain
+                  - cognito-idp:UpdateUserPoolDomain
+                  - cognito-idp:DeleteUserPoolDomain
+                  - cognito-idp:CreateResourceServer
+                  - cognito-idp:DescribeResourceServer
+                  - cognito-idp:UpdateResourceServer
+                  - cognito-idp:DeleteResourceServer
+                Resource: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*"
+              - Sid: CreatePool
+                Effect: Allow
+                Action: [cognito-idp:CreateUserPool, cognito-idp:DescribeUserPoolDomain]
+                Resource: '*'
+              - Sid: EditorHosting
+                Effect: Allow
+                Action:
+                  - cloudfront:CreateDistribution
+                  - cloudfront:GetDistribution
+                  - cloudfront:GetDistributionConfig
+                  - cloudfront:UpdateDistribution
+                  - cloudfront:DeleteDistribution
+                  - cloudfront:TagResource
+                  - cloudfront:UntagResource
+                  - cloudfront:ListTagsForResource
+                  - cloudfront:CreateOriginAccessControl
+                  - cloudfront:GetOriginAccessControl
+                  - cloudfront:GetOriginAccessControlConfig
+                  - cloudfront:UpdateOriginAccessControl
+                  - cloudfront:DeleteOriginAccessControl
+                  - cloudfront:CreateInvalidation
+                  - cloudfront:GetInvalidation
+                Resource: '*'
               - Sid: ApiGateway
                 Effect: Allow
                 Action: [apigateway:*]
@@ -100,22 +160,22 @@ Resources:
                   - !Sub "arn:aws:apigateway:${AWS::Region}::/tags*"
               - Sid: LogGroupsOfThisService
                 Effect: Allow
-                Action: [logs:CreateLogGroup, logs:DeleteLogGroup, logs:DescribeLogGroups, logs:PutRetentionPolicy, logs:DeleteRetentionPolicy, logs:TagLogGroup, logs:TagResource, logs:ListTagsForResource]
+                Action: [logs:CreateLogGroup, logs:DeleteLogGroup, logs:PutRetentionPolicy, logs:DeleteRetentionPolicy, logs:TagLogGroup, logs:TagResource, logs:ListTagsForResource]
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ServiceName}-*"
               - Sid: TheLambdaExecutionRoleOnly
                 Effect: Allow
                 Action: [iam:CreateRole, iam:DeleteRole, iam:GetRole, iam:PutRolePolicy, iam:DeleteRolePolicy, iam:GetRolePolicy, iam:AttachRolePolicy, iam:DetachRolePolicy, iam:TagRole, iam:UntagRole, iam:UpdateAssumeRolePolicy]
-                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-*"
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-lambdaRole"
               - Sid: PassOnlyThatRoleToLambda
                 Effect: Allow
                 Action: iam:PassRole
-                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-*"
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-lambdaRole"
                 Condition:
                   StringEquals:
                     iam:PassedToService: lambda.amazonaws.com
               - Sid: ReadOnlyDescribes
                 Effect: Allow
-                Action: [cloudformation:ListStacks, sts:GetCallerIdentity]
+                Action: [cloudformation:ListStacks, cloudformation:ValidateTemplate, cloudformation:GetTemplateSummary, sts:GetCallerIdentity, logs:DescribeLogGroups]
                 Resource: "*"
 Outputs:
   RoleArn:

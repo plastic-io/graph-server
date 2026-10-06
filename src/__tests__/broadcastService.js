@@ -5,9 +5,21 @@ describe("Broadcast service", () => {
         AWS.mocks.S3.putObject.mockClear();
         AWS.mocks.S3.headObject.mockClear();
         AWS.mocks.S3.getObject.mockClear();
+        AWS.mocks.S3.getObject.mockImplementation((params, cb) => cb(null, { Body: JSON.stringify({ principal: {
+            sub: "auth0|u1", kind: "human", tenant: "personal:auth0|u1", scopes: [],
+            expiresAt: Math.floor(Date.now() / 1000) + 3600, authProvider: "auth0",
+        } }) }));
         AWS.mocks.S3.deleteObject.mockClear();
         AWS.mocks.S3.listObjects.mockClear();
         AWS.mocks.ApiGatewayManagementApi.postToConnection.mockClear();
+    });
+    it("Does not deliver to an expired subscription.", (done) => {
+        const service = new BroadcastService();
+        service.store.get = (key, cb) => cb(null, { principal: { sub: "expired", authProvider: "auth0", expiresAt: 1 } });
+        service.postToClient("example", "expired", { secret: "value" }, () => {
+            expect(AWS.mocks.ApiGatewayManagementApi.postToConnection).not.toHaveBeenCalled();
+            done();
+        });
     });
     it("Connect should store the connection's principal, not the raw event.", (done) => {
         const broadcastService = new BroadcastService();

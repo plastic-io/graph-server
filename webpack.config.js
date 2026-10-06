@@ -3,12 +3,13 @@ const slsw = require('serverless-webpack');
 const auth = require('./build/auth-provider.cjs');
 const deploymentEnv = slsw.lib.serverless?.service?.provider?.environment;
 if (deploymentEnv) auth.validate(deploymentEnv);
-const selectedAuth = auth.providerName();
+const authEnv = deploymentEnv || process.env;
+const selectedAuth = auth.providerName(authEnv);
 
 module.exports = {
   entry: slsw.lib.entries,
   resolve: {
-    alias: { '@graph/auth-provider': auth.modulePath() },
+    alias: { '@graph/auth-provider': auth.modulePath(authEnv) },
     // The shared CRDT package is linked in from the editor repository.  Keeping
     // symlinks unresolved makes it resolve as node_modules/@plastic-io/graph-crdt,
     // so its `yjs` import binds to this project's copy.  Following the symlink

@@ -278,6 +278,22 @@ describe("a stream that has to survive the substrate", () => {
         },
     });
 
+    test("ends a stream at verified token expiry even when the invocation has time left", async () => {
+        const { mcp } = await setup({ keepAliveMs: 20, maxStreamMs: 10000 });
+        const expiring = { ...owner, expiresAt: (Date.now() + 100) / 1000 };
+        const response = await mcp.serve(new Request("https://stream.test/mcp", {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2026-07-28", "mcp-method": "subscriptions/listen" },
+            body: JSON.stringify(listenRequest(["plastic://graph/g1/history"])),
+        }), expiring, 60000);
+        const reader = response.body.getReader();
+        let timer;
+        const finished = (async () => { while (!(await reader.read()).done) {} return true; })();
+        try {
+            expect(await Promise.race([finished, new Promise(resolve => { timer = setTimeout(() => resolve(false), 1500); })])).toBe(true);
+        } finally { clearTimeout(timer); await reader.cancel(); }
+    });
+
     test("keeps itself alive with comment frames, so nothing between them closes it", async () => {
         const { mcp } = await setup({ keepAliveMs: 40 });
         const { headers, text } = await frames(mcp, owner, listenRequest(["plastic://graph/g1"]), 200);

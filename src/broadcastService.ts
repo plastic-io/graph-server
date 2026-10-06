@@ -1,7 +1,7 @@
 import {Context, S3CreateEvent, APIGatewayEvent} from "aws-lambda";
 import {ApiGatewayManagementApi} from "aws-sdk";
 import S3Service from './s3Service';
-import { principalFromAuthorizerContext, connectionKey, forgetConnection } from './auth/principal';
+import { principalFromAuthorizerContext, connectionKey, forgetConnection, connectionIsCurrent } from './auth/principal';
 import {newId} from './eventSourceService';
 const STAGE = process.env.STAGE;
 const BACKOFF_TIMER_ADD = 35;
@@ -31,7 +31,15 @@ export default class BroadcastService {
         }
         return chunks;
     }
-    postToClient(domainName: string, connectionId: string, message: any, callback: (err: any, data: any) => void) {
+    postToClient(domainName: string, connectionId: string, message: any, callback: (err: any, data: any) => void = () => undefined) {
+        // Outbound subscriptions must expire too: a client may leave its socket
+        // open without sending another frame after its token has expired.
+        this.store.get(connectionKey({ domainName, connectionId }), (err, record) => {
+            if (err || !record?.principal || !connectionIsCurrent(record.principal)) return callback(null, this.okResponse);
+            this.postAuthenticatedClient(domainName, connectionId, message, record.principal.expiresAt, callback);
+        });
+    }
+    private postAuthenticatedClient(domainName: string, connectionId: string, message: any, expiresAt: number, callback: (err: any, data: any) => void) {
         const getCircularReplacer = () => {
             const seen = new WeakSet();
             return (key, value) => {
@@ -52,6 +60,7 @@ export default class BroadcastService {
                 endpoint: `https://${domainName}/${STAGE}`,
             });
             const post = () => {
+                if (expiresAt * 1000 <= Date.now()) return callback(null, this.okResponse);
                 client.postToConnection({
                     ConnectionId: connectionId,
                     Data: buffer,

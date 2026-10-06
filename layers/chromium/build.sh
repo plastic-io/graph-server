@@ -8,7 +8,7 @@
 # install is the whole build and no Docker is needed.
 set -e
 cd nodejs
-npm install --omit=dev --no-audit --no-fund
+npm ci --omit=dev --no-audit --no-fund
 cd ..
 echo "layer contents:"
 du -sh nodejs/node_modules

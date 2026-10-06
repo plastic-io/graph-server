@@ -2,22 +2,20 @@
 
 Add AWS Amplify Auth with Amazon Cognito as a selectable authentication provider across `graph-editor` and `graph-server`. Preserve Auth0 as the default provider for existing deployments. Select the provider during the build so each artifact includes its selected implementation and shared authentication code.
 
-Status: implementation in progress, paused for a computer restart. Created October 5, 2026.
+Status: implementation and CI/CD integration in progress. Created October 5, 2026; updated October 6, 2026.
 
-## Restart checkpoint
+## Current implementation and resume point
 
-The checkpoint contains initial server implementation only. It is not ready to deploy.
+- Server adapters, selected build alias, discovery, authorizer, and MCP streaming verification are implemented. Auth0 remains the default and preserves its subject mapping. Cognito validates access tokens and namespaces subjects by issuer.
+- The editor now has an Amplify workspace plugin, build-selected provider installation, shared session lifecycle and authenticated transports. HTTP requests use current credentials; WebSocket refresh/reconnect and logout prevent stale credentials or queued work crossing sessions.
+- Expiry is enforced on server requests, subscription streams, and outbound WebSocket broadcasts. REST authorizer caching is disabled. Scope mappings are validated against shared application authorities.
+- Both production provider variants have passed bundle-isolation checks in both repositories. Server type checking passes. The existing server suite passed 501 tests with 21 skipped before the final focused expiry checks; the broad Jest process retains open handles, so CI uses explicit force-exit after completed tests. Focused authentication/subscription tests passed 56 tests and authentication/broadcast tests passed 37 tests. Editor CRDT/unit tests passed 125 tests. The final editor integration suite passed 77 tests across 7 files, and its type-check ratchet reported zero errors. Both editor production variants were rebuilt with deployed endpoint fixtures and passed isolation checks. Five offline CI configuration tests, actionlint, and cfn-lint 1.57.1 passed. These checks do not substitute for a successful cloud release or live sign-in.
+- Deployment is owned by GitHub Actions, per the user's October 6 instruction. Do not prepare, package, or provision stacks from a workstation. The release pipeline builds layers, provisions the optional authentication/hosting stack, packages the selected server, passes outputs into the editor build, publishes artifacts, and smoke-tests the deployment.
+- The authorized Cognito test target is AWS account `230639770018` (local SSO profile `230639770018_cr-AdminAccess`). Use the existing project default region `us-west-1`. Read-only inspection found no Cognito pools or matching project stacks there. No deployment occurred.
+- `infra/github-oidc-deploy-role.yaml` now trusts the exact GitHub environment used by the release job. The role must be managed by an account-bootstrap pipeline. The local SSO profile cannot authenticate a GitHub runner. The available GitHub CLI session is unauthenticated, so environment configuration and workflow dispatch have not been performed.
+- Next external steps: connect the bootstrap/deployment OIDC role, configure the GitHub environment, publish matching source revisions, and run the CI release. Then record live Cognito sign-in, graph operations, refresh/reconnect/logout, and external MCP results. See [CI/CD deployment and rollback](AUTH_PROVIDER_DEPLOYMENT.md) for concrete variables, release steps, limitations, and identity migration.
 
-- Added the shared authentication adapter contract and initial Auth0 and Cognito adapters. Preserved `src/auth/jwt.ts` as an Auth0 compatibility entry point.
-- Routed the Lambda authorizer, discovery metadata, and MCP streaming verification through the build-selected adapter.
-- Added initial webpack and Jest provider selection, a build manifest, Cognito environment settings, connection-expiry checks, and MCP stream expiry. Disabled REST authorizer caching.
-- Updated the existing authentication fixtures for adapter injection and verified expiry.
-- Validation: `npm test -- --runInBand --watchman=false src/__tests__/auth.js src/__tests__/subscriptions.js` passed both suites, 38 tests total. `git diff --check` passed before the checkpoint.
-- Type checking remains incomplete: `./node_modules/.bin/tsc --noEmit` fails with dependency declaration errors involving Yjs DOM types and Zod interoperability, plus a new `src/auth/providers/cognito.ts:30` error where `Object.values(c.scopeMap)` produces `unknown` rather than `string`. Fix the new error and establish the dependency-error baseline before claiming type-check success.
-- The actual `../graph-editor` worktree is unchanged. `/private/tmp/graph-editor-auth-provider` is only a preparatory source copy, with no implementation changes; it can be recreated from the editor repository if removed during restart. No unique work depends on that temporary directory.
-- Amplify dependency discovery was interrupted: the sandboxed npm registry query failed with `ENOTFOUND`, and the escalated query was aborted. No Amplify dependency was installed.
-
-Resume by reviewing the server diff, fixing the Cognito type error, and adding focused Cognito verification, configuration, expiry, and build-isolation tests. Then implement editor provider selection, the Amplify module, and shared session/transport changes. Finish the full validation matrix and deployment documentation below; the 38 passing existing tests do not prove the new provider works. Frontend edits require filesystem permission for the sibling repository in the current sandbox profile. No deployment, identity migration, or live Cognito/MCP interoperability validation has occurred.
+The editor implementation is committed as `2d44dfc31a2dd13324fccc3df5a308935c5e54f4`; this is the initial CI `EDITOR_REF`. It has not been pushed. All implementation is in the two actual repositories. Temporary copies under `/private/tmp` are disposable test workspaces and are not deployment inputs. The earlier server-only restart checkpoint was commit `0579ed8`; its type-check and frontend-work notes are superseded by this status.
 
 ## Scope and decisions
 
@@ -27,7 +25,7 @@ Resume by reviewing the server diff, fixing the Cognito type error, and adding f
 - Build and deploy matching frontend and server configurations. A deployment accepts its selected provider. Simultaneous acceptance of both issuers is outside the initial scope.
 - Preserve local browser storage and the existing unauthenticated development server. A production configuration error must never silently enable unauthenticated access.
 - Continue using Serverless Framework, API Gateway, Lambda, and the existing storage and graph services. Amplify is the browser authentication library; adopting it does not require replacing the backend deployment system.
-- Complete the implementation and validation in both repositories. Writing this plan does not deploy infrastructure or migrate existing identities.
+- Complete the implementation and validation in both repositories. The user has authorized a test deployment into account `230639770018`, carried out through CI/CD. Infrastructure preparation and deployment must run on CI runners, not locally; identity migration remains a separate operation.
 
 ## Current architecture
 
@@ -166,7 +164,7 @@ Completion requires expired sessions to fail closed consistently and both provid
 
 1. Run the provider and transport matrix below for Auth0 and Cognito builds.
 2. Verify existing graph behavior through focused read, edit, persistence, reconnect, and execution checks.
-3. Package each server variant and inspect its selected provider and infrastructure configuration.
+3. Build-check each provider variant in CI; package the selected release on the CI runner and inspect its provider manifest and infrastructure configuration.
 4. Validate browser sign-in and protected calls against a configured Cognito test deployment when deployment access is available.
 5. Exercise supported external MCP clients separately from the editor. Record any client-registration, discovery, scope, or resource-binding requirements.
 6. Document deployment inputs, rollback, and identity-migration choices before switching an existing instance.

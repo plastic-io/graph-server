@@ -1,4 +1,4 @@
-service: plastic-io-graph-server
+service: ${env:SERVICE_NAME, 'plastic-io-graph-server'}
 plugins:
   - serverless-webpack
 provider:
@@ -75,8 +75,8 @@ provider:
     COGNITO_REQUIRED_SCOPES: ${env:COGNITO_REQUIRED_SCOPES, ''}
     COGNITO_SCOPE_MAP: ${env:COGNITO_SCOPE_MAP, '{}'}
     COGNITO_RESOURCE_AUDIENCE: ${env:COGNITO_RESOURCE_AUDIENCE, ''}
-    AUTH0_DOMAIN: ${opt:auth0Domain, 'dev-7q-g69up.us.auth0.com'}
-    AUTH0_AUDIENCE: ${opt:auth0Audience, 'plastic-io-graph-server'}
+    AUTH0_DOMAIN: ${opt:auth0Domain, env:AUTH0_DOMAIN, 'dev-7q-g69up.us.auth0.com'}
+    AUTH0_AUDIENCE: ${opt:auth0Audience, env:AUTH0_AUDIENCE, 'plastic-io-graph-server'}
     # The resource identifier an MCP client asks for a token for (RFC 8707).
     # It must be a URI and it must be an API identifier the authorization server
     # knows; tokens for it and for AUTH0_AUDIENCE are both accepted, so one can
@@ -106,14 +106,14 @@ provider:
     PUBLIC_BASE_URL: !Sub "https://${ApiGatewayRestApi}.execute-api.${self:provider.region}.amazonaws.com/${self:provider.stage}"
     # Anywhere else a picture may be taken of — an editor, usually.  Empty means
     # this deployment and nothing else.
-    VIEW_ORIGINS: ${opt:viewOrigins, ''}
+    VIEW_ORIGINS: ${opt:viewOrigins, env:VIEW_ORIGINS, ''}
     SCREENSHOT_FUNCTION: ${self:service}-${self:provider.stage}-screenshot
     # An allow-list of resource types, because this runs in a personal account
     # and the expensive corners of AWS are many: empty means the careful
     # default (things that cost what they are used and nothing when idle).
     IAC_ALLOWED_TYPES: ${opt:iacAllowedTypes, ''}
     IAC_MAX_RESOURCES: ${opt:iacMaxResources, '100'}
-    OWNER_SUBS: ${opt:ownerSubs, ''}
+    OWNER_SUBS: ${opt:ownerSubs, env:OWNER_SUBS, ''}
     WS_EXECUTION_ENABLED: ${opt:wsExecution, 'false'}
     API_REGION: ${self:provider.region}
     S3_BUCKET: ${self:custom.s3Bucket}
@@ -142,7 +142,7 @@ provider:
     ISOLATE_TIMEOUT_MS: ${opt:isolateTimeoutMs, '10000'}
     ISOLATE_MEMORY_MB: ${opt:isolateMemoryMb, '128'}
     # browsers that may call /mcp directly (non-browser MCP clients send no Origin)
-    MCP_ALLOWED_ORIGINS: ${opt:mcpAllowedOrigins, 'http://localhost:8080,http://localhost:5173,https://plastic-io.github.io'}
+    MCP_ALLOWED_ORIGINS: ${opt:mcpAllowedOrigins, env:MCP_ALLOWED_ORIGINS, 'http://localhost:8080,http://localhost:5173,https://plastic-io.github.io'}
     # Where subscriptions/listen is served.  It is set by hand after the first
     # deploy (the stack output McpStreamUrl): reading it from the URL resource
     # here would make every function depend on a resource that depends on them.
@@ -172,7 +172,7 @@ layers:
         - '!build.sh'
 
 custom:
-  prefix: ${opt:prefix, 'plastic'}
+  prefix: ${opt:prefix, env:API_PREFIX, 'plastic'}
   s3Bucket: ${self:service}
   jwtAuthorizer:
     name: authorizer
@@ -1294,6 +1294,14 @@ resources:
         Principal: "*"
         InvokedViaFunctionUrl: true
   Outputs:
+    GraphHttpUrl:
+      Value: !Sub 'https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${self:provider.stage}/'
+    GraphWebSocketUrl:
+      Value: !Sub 'wss://${WebsocketsApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${self:provider.stage}'
+    GraphRestApiId:
+      Value: !Ref ApiGatewayRestApi
+    GraphWebSocketApiId:
+      Value: !Ref WebsocketsApi
     McpStreamUrl:
       Description: MCP subscriptions/listen endpoint (response streaming)
       Value: !GetAtt McpStreamUrl.FunctionUrl

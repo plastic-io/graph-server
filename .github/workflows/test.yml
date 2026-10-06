@@ -6,6 +6,16 @@ on:
   pull_request:
 
 jobs:
+  infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install cfn-lint==1.57.1
+      - run: cfn-lint -r us-west-1 -t infra/auth-environment.yaml infra/github-oidc-deploy-role.yaml
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -27,6 +37,11 @@ jobs:
       - run: npm ci
         working-directory: graph-server
       - run: npx jest --ci
+        working-directory: graph-server
+      - run: npx tsc --noEmit && node --test scripts/ci/deployment-config.test.cjs
+        working-directory: graph-server
+      - name: Verify Auth0 and Cognito Lambda bundles
+        run: node scripts/check-auth-builds.cjs
         working-directory: graph-server
 
   # The isolate addon is native and only matters where it will run, so the same

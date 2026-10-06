@@ -104,7 +104,7 @@ export function connectionKey(ctx: any): string {
 const connectionCache: Map<string, { principal: Principal; at: number }> = new Map();
 
 /** Old records without verified expiry are retired when this version is deployed. */
-function connectionIsCurrent(principal: Principal): boolean {
+export function connectionIsCurrent(principal: Principal): boolean {
     return Number.isFinite(principal.expiresAt) && principal.expiresAt! * 1000 > Date.now()
         && principal.authProvider === adapter.name;
 }

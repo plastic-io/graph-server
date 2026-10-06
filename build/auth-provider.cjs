@@ -1,4 +1,5 @@
 const path = require('path');
+const authorities = require('../src/policy/authorities.json');
 
 function providerName(env = process.env) {
   const name = env.AUTH_PROVIDER === undefined ? 'auth0' : env.AUTH_PROVIDER;
@@ -24,6 +25,7 @@ function cognitoConfig(env = process.env) {
   if (!scopeMap || Array.isArray(scopeMap) || typeof scopeMap !== 'object' || Object.values(scopeMap).some((s) => typeof s !== 'string')) {
     throw new Error('COGNITO_SCOPE_MAP must map scope strings to authority strings');
   }
+  if (Object.values(scopeMap).some((s) => !authorities.includes(s))) throw new Error('COGNITO_SCOPE_MAP contains an unknown application authority');
   const audience = env.COGNITO_RESOURCE_AUDIENCE || undefined;
   if (audience && !/^https:\/\//.test(audience)) throw new Error('COGNITO_RESOURCE_AUDIENCE must be an HTTPS resource URL');
   return { issuer, humanClientIds, machineClientIds, requiredScopes, scopeMap, audience };

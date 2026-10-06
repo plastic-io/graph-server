@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CI-managed authentication resources and private S3/CloudFront graph editor hosting
+Parameters:
+  AuthProvider:
+    Type: String
+    AllowedValues: [auth0, cognito]
+    Default: auth0
+  DomainPrefix:
+    Type: String
+    AllowedPattern: '[a-z0-9-]+'
+Conditions:
+  UseCognito: !Equals [!Ref AuthProvider, cognito]
+Resources:
+  EditorBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      VersioningConfiguration: {Status: Enabled}
+  EditorOriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-editor'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  EditorDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        DefaultRootObject: graph-editor/index.html
+        Origins:
+          - Id: editor
+            DomainName: !GetAtt EditorBucket.RegionalDomainName
+            OriginAccessControlId: !Ref EditorOriginAccess
+            S3OriginConfig: {OriginAccessIdentity: ''}
+        DefaultCacheBehavior:
+          TargetOriginId: editor
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          MinTTL: 0
+          DefaultTTL: 0
+          MaxTTL: 86400
+          ForwardedValues:
+            QueryString: false
+            Cookies: {Forward: none}
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /graph-editor/index.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /graph-editor/index.html
+            ErrorCachingMinTTL: 0
+        ViewerCertificate: {CloudFrontDefaultCertificate: true}
+  EditorBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref EditorBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: cloudfront.amazonaws.com}
+            Action: s3:GetObject
+            Resource: !Sub '${EditorBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${EditorDistribution}'
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Condition: UseCognito
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-users'
+      AdminCreateUserConfig: {AllowAdminCreateUserOnly: true}
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 16
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      MfaConfiguration: 'OFF'
+  GraphResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Condition: UseCognito
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: graphs
+      Name: Graph API
+      Scopes:
+        - ScopeName: access
+          ScopeDescription: Access this graph instance
+        - ScopeName: read
+          ScopeDescription: Read graphs through delegated clients
+        - ScopeName: propose
+          ScopeDescription: Propose changes through delegated clients
+  BrowserClient:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: UseCognito
+    DependsOn: GraphResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: graph-editor
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile, graphs/access, graphs/read, graphs/propose]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs:
+        - !Sub 'https://${EditorDistribution.DomainName}/graph-editor/auth-callback'
+      LogoutURLs:
+        - !Sub 'https://${EditorDistribution.DomainName}/graph-editor/'
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      EnableTokenRevocation: true
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 1
+      TokenValidityUnits: {AccessToken: minutes, IdToken: minutes, RefreshToken: days}
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Condition: UseCognito
+    Properties:
+      Domain: !Ref DomainPrefix
+      UserPoolId: !Ref UserPool
+      ManagedLoginVersion: 1
+Outputs:
+  UserPoolId: {Condition: UseCognito, Value: !Ref UserPool}
+  ClientId: {Condition: UseCognito, Value: !Ref BrowserClient}
+  Issuer: {Condition: UseCognito, Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'}
+  LoginDomain: {Condition: UseCognito, Value: !Sub '${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com'}
+  EditorUrl: {Value: !Sub 'https://${EditorDistribution.DomainName}/graph-editor/'}
+  EditorBucket: {Value: !Ref EditorBucket}
+  DistributionId: {Value: !Ref EditorDistribution}
