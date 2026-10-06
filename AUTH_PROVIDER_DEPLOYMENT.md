@@ -18,7 +18,9 @@ The account's bootstrap pipeline must manage `infra/github-oidc-deploy-role.yaml
 | `ServiceName` | `pio-auth-test-230639770018` |
 | `Stage` | `test` |
 | `LayerPrefix` | `pio-auth-test` |
-| `CreateProvider` | `false` if the account already has the GitHub OIDC provider; otherwise `true` |
+| `CreateProvider` | `false` (the GitHub OIDC provider was verified present in account `230639770018`) |
+
+Read-only IAM inspection on October 6 found an existing GitHub OIDC provider, but the only GitHub-trusting role is restricted to another repository. A role for `plastic-io/graph-server` still needs to be provisioned by the account bootstrap process.
 
 The application workflow cannot establish its own initial AWS trust. An existing account-bootstrap pipeline or OIDC role is a prerequisite; do not substitute local SSO credentials or long-lived AWS keys in GitHub secrets. This template grants deployment permissions for the service's two CloudFormation stacks, buckets, Lambda functions/layers, and execution role, plus API Gateway, Cognito, and CloudFront operations. Some creation and discovery permissions require wildcard resources. It does not authorize administering the deployment role itself.
 
@@ -33,7 +35,7 @@ Create the GitHub environment `cognito-test`, restrict its deployment branches/t
 | `SERVICE_NAME` | `pio-auth-test-230639770018` |
 | `STAGE` | `test` |
 | `API_PREFIX` | `pio-auth-test` |
-| `EDITOR_REF` | `2d44dfc31a2dd13324fccc3df5a308935c5e54f4` (publish this editor commit before dispatch) |
+| `EDITOR_REF` | `d0ae57a207c9cb656947182018d7aa38c36aa321` (publish this editor commit before dispatch) |
 | `OWNER_SUBS` | Optional comma-separated normalized subjects; see policy below |
 
 The workflow's **Run workflow** form selects the environment and optionally overrides `EDITOR_REF` with a full commit SHA. A `v*` tag continues to target the `dev` environment. `dev` also needs `AWS_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`, and a pinned `EDITOR_REF`; these inputs now fail closed when missing. Environment-based jobs need an environment-based OIDC subject, as documented by [GitHub](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
