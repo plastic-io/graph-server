@@ -35,7 +35,7 @@ Account ownership and live routing were independently verified:
 
 Use the CloudFront editor URL above to open this environment. Deployment here does not change an editor hosted at another URL or a separately configured local development build.
 
-The [public release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json) records the configuration and file hashes. Deployed server source is `d2aefc54ab2a5f224c2d8e5d71d1f14eeea1ac40`; editor source is `d0ae57a207c9cb656947182018d7aa38c36aa321`. The server ZIP recovered from the deployment bucket matches the deployed Lambda's SHA-256. The later CI-only artifact-retention fix is commit `d3d6c98`.
+The [public release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json) records the configuration and file hashes. Deployed server source is `d2aefc54ab2a5f224c2d8e5d71d1f14eeea1ac40`; editor source is `c82d0b134ec909bcb0a48d160f153ed9f5ba7f6e`. The October 7 editor update hides paired-server connection settings and adds MCP connection instructions. Its manifest preserves the unchanged backend's revision and artifact hashes. The server ZIP recovered from the deployment bucket matches the deployed Lambda's SHA-256. The later CI-only artifact-retention fix is commit `d3d6c98`.
 
 Live checks passed:
 
@@ -44,8 +44,9 @@ Live checks passed:
 - Authenticated REST and browser WebSocket access; editor graph creation, editing, persistence, and reload.
 - Forced Amplify token refresh, WebSocket replacement with the new token, and hosted logout back to an unauthenticated editor.
 - MCP SDK initialization, tool discovery, `graph.summary`, and `graph.invoke` completing server execution with a browser-issued access token.
+- After the October 7 editor publication, the complete browser flow above passed again, including logout. The paired deployment hides the connection gear; the MCP dialog copies the correct URL and Codex command. The unpaired Auth0/Pages build retains working connection controls. Both provider builds passed isolation checks, the editor type check reported zero errors, and all five focused URL/configuration tests passed.
 
-The temporary verification user and graph were removed. No invitation was sent, no permanent login was created, and the pool currently has no users. Create the intended user's account through the Cognito administration process before personal sign-in. External MCP clients' own OAuth registration/login flows, machine clients, and resource binding were not exercised by the SDK bearer-token check.
+The temporary verification user and graph were removed. Verification sends no invitations and creates no permanent login. Create intended users through the Cognito administration process. External MCP clients' own OAuth registration/login flows, machine clients, and resource binding were not exercised by the SDK bearer-token check.
 
 The direct release used no GitHub access. The workflow below is implemented and linted, but its AWS role/environment still need to be connected and the source commits published before CI can run it.
 
@@ -80,7 +81,7 @@ Create the GitHub environment `cognito-test`, restrict its deployment branches/t
 | `SERVICE_NAME` | `pio-auth-test-230639770018` |
 | `STAGE` | `test` |
 | `API_PREFIX` | `pio-auth-test` |
-| `EDITOR_REF` | `d0ae57a207c9cb656947182018d7aa38c36aa321` (publish this editor commit before dispatch) |
+| `EDITOR_REF` | `c82d0b134ec909bcb0a48d160f153ed9f5ba7f6e` (publish this editor commit before dispatch) |
 | `OWNER_SUBS` | Optional comma-separated normalized subjects; see policy below |
 
 The workflow's **Run workflow** form selects the environment and optionally overrides `EDITOR_REF` with a full commit SHA. A `v*` tag continues to target the `dev` environment. `dev` also needs `AWS_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`, and a pinned `EDITOR_REF`; these inputs now fail closed when missing. Environment-based jobs need an environment-based OIDC subject, as documented by [GitHub](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
@@ -118,7 +119,15 @@ The managed test pipeline derives these public Cognito values from CloudFormatio
 
 The managed Cognito release requires `graphs/access` and maps `graphs/read` to `graph:read` and `graphs/propose` to `graph:propose`. It creates a browser client only. Machine clients must be separately registered, listed in `COGNITO_MACHINE_CLIENT_IDS`, and given explicit scope mappings and application delegations. Human and machine client allow-lists cannot overlap.
 
-The editor applies deployment endpoints after stored preferences and remote registry configuration. Endpoint fields are read-only for a configured deployment. With no build endpoint overrides, the existing preferences and local-storage behavior remain available. Provider selection and Cognito SDK configuration always come from the build.
+The editor applies deployment endpoints after stored preferences and remote registry configuration and forces authenticated server storage. When build endpoints are configured, the storage/connection gear is not registered, so users cannot switch the paired deployment to local storage or another server through that UI. GitHub Pages and local builds without endpoint overrides retain the connection controls. This behavior follows the build configuration rather than guessing from the hostname. Provider selection and Cognito SDK configuration always come from the build.
+
+## Connecting ChatGPT or Codex
+
+The editor's **Connect MCP** button appears in the graph manager and as a connection icon in the graph toolbar when server storage is active. It derives the MCP URL from the effective graph HTTP endpoint, preserving the API stage. For this environment, use `https://9pzgloz773.execute-api.us-west-1.amazonaws.com/test/mcp`, not the streaming Function URL. The dialog provides Copy URL, a link to ChatGPT Plugins, ChatGPT setup steps, and a copyable Codex CLI command. It does not copy the editor's access token or store client secrets.
+
+The dialog reads public protected-resource metadata to show the provider, authorization server, scopes, and administrator setup requirements. A Cognito deployment requires a separately registered external OAuth client; the browser client above allows only the editor's callback. Register each client's exact callback and permitted scopes, and include its human client ID in the server's `COGNITO_CLIENT_IDS`. Use a public client for local Codex. Manage additional app clients and server allow-lists through deployment configuration; the current managed test template provisions only the browser client.
+
+The native Cognito issuer's discovery document was inspected on October 7. It does not advertise `code_challenge_methods_supported` with `S256`, which [OpenAI's OAuth requirements](https://developers.openai.com/plugins/build/auth) require for ChatGPT. Its advertised token authentication methods also need to match the external client. A compatible OAuth adapter or other discovery integration is required before claiming ChatGPT interoperability. The UI documents this prerequisite; it does not provision that integration. Client-specific OAuth login remains unverified. Follow the current [ChatGPT MCP instructions](https://developers.openai.com/api/docs/guides/custom-mcp-server) and [Codex MCP instructions](https://learn.chatgpt.com/docs/extend/mcp) for registration and callbacks.
 
 ## Policy, sessions, and identity transitions
 
