@@ -1,0 +1,60 @@
+const fs = require('fs');
+const path = require('path');
+const YAML = require('yaml');
+const read = file => fs.readFileSync(path.join(__dirname, '../..', file), 'utf8');
+const service = YAML.parse(read('serverless.yaml'), {logLevel:'silent'});
+const identity = YAML.parse(read('infra/auth-environment.yaml'), {logLevel:'silent'});
+const handlers = read('src/handler.ts');
+
+// These checks protect the deployment boundary, where forgetting an authorizer
+// on just one new route would bypass otherwise-correct token verification.
+describe('private deployment access boundaries', () => {
+  test('every HTTP data or execution route has the JWT authorizer; only discovery is public', () => {
+    const publicRoutes = [];
+    for (const [name, fn] of Object.entries(service.functions)) {
+      for (const event of fn.events || []) {
+        if (!event.http) continue;
+        const route = event.http;
+        if (name === 'protectedResourceMetadata') {
+          publicRoutes.push([String(route.method).toUpperCase(),route.path]);
+        } else {
+          expect({name, authorizer:route.authorizer}).toEqual({name,authorizer:'${self:custom.jwtAuthorizer}'});
+          const handler = fn.handler.split('.').pop();
+          expect(handlers).toMatch(new RegExp(`const ${handler} = withPrincipal\\(`));
+        }
+      }
+    }
+    expect(publicRoutes).toEqual([['GET','/.well-known/oauth-protected-resource']]);
+    expect(service.custom.jwtAuthorizer.resultTtlInSeconds).toBe(0);
+  });
+  test('WebSocket connect authenticates and every later client route resolves a server principal', () => {
+    for (const fn of Object.values(service.functions)) {
+      for (const event of fn.events || []) {
+        if (!event.websocket || event.websocket.route === '$disconnect') continue;
+        if (event.websocket.route === '$connect') expect(event.websocket.authorizer).toBeTruthy();
+        const handler = fn.handler.split('.').pop();
+        expect(handlers).toMatch(new RegExp(`const ${handler} = withPrincipal\\(`));
+      }
+    }
+  });
+  test('the only Function URL is the token-verifying MCP stream and direct public invocation is restricted', () => {
+    const resources = service.resources.Resources;
+    const urls = Object.entries(resources).filter(([,r]) => r.Type === 'AWS::Lambda::Url');
+    expect(urls.map(([name])=>name)).toEqual(['McpStreamUrl']);
+    expect(service.functions.mcpStream.handler).toBe('src/handler.mcpStream');
+    expect(resources.McpStreamInvokePermission.Properties.InvokedViaFunctionUrl).toBe(true);
+    expect(resources.McpStreamUrlPermission.Properties.FunctionUrlAuthType).toBe('NONE');
+    // Signature, expiry, issuer, client, token-use and scope enforcement at this
+    // URL are exercised by cognitoAuth.js and the streaming transport tests.
+  });
+  test('graph storage stays private and Cognito self-signup stays disabled', () => {
+    expect(service.resources.Resources.StaticSite.Properties.AccessControl).toBe('Private');
+    expect(service.resources.Resources.StaticSite.Properties.PublicAccessBlockConfiguration).toEqual({
+      BlockPublicAcls:true,IgnorePublicAcls:true,BlockPublicPolicy:true,RestrictPublicBuckets:true,
+    });
+    expect(identity.Resources.UserPool.Properties.AdminCreateUserConfig.AllowAdminCreateUserOnly).toBe(true);
+    expect(identity.Resources.EditorBucket.Properties.PublicAccessBlockConfiguration).toEqual({
+      BlockPublicAcls:true,IgnorePublicAcls:true,BlockPublicPolicy:true,RestrictPublicBuckets:true,
+    });
+  });
+});

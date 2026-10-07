@@ -73,6 +73,7 @@ jobs:
           npx jest --ci --runInBand --forceExit
           npx tsc --noEmit
           node --test scripts/ci/deployment-config.test.cjs
+          npm audit --omit=dev --audit-level=high
       - name: Editor tests and type checking
         working-directory: graph-editor
         env:

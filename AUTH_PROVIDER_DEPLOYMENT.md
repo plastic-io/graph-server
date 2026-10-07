@@ -35,7 +35,7 @@ Account ownership and live routing were independently verified:
 
 Use the CloudFront editor URL above to open this environment. Deployment here does not change an editor hosted at another URL or a separately configured local development build.
 
-The [public release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json) records the configuration and file hashes. Deployed server source is `d2aefc54ab2a5f224c2d8e5d71d1f14eeea1ac40`; editor source is `c82d0b134ec909bcb0a48d160f153ed9f5ba7f6e`. The October 7 editor update hides paired-server connection settings and adds MCP connection instructions. Its manifest preserves the unchanged backend's revision and artifact hashes. The server ZIP recovered from the deployment bucket matches the deployed Lambda's SHA-256. The later CI-only artifact-retention fix is commit `d3d6c98`.
+The [public release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json) records the deployed server/editor revisions, configuration, and file hashes. The October 7 chat release uses editor source `e11ea5f74257ba21d860eb996181845633fa8f87`. It includes paired-server connection settings, MCP connection instructions, graph chat, and private messaging. Always use the manifest's server revision when selecting a matching rollback package; subsequent server security updates also refresh this manifest.
 
 Live checks passed:
 
@@ -45,10 +45,19 @@ Live checks passed:
 - Forced Amplify token refresh, WebSocket replacement with the new token, and hosted logout back to an unauthenticated editor.
 - MCP SDK initialization, tool discovery, `graph.summary`, and `graph.invoke` completing server execution with a browser-issued access token.
 - After the October 7 editor publication, the complete browser flow above passed again, including logout. The paired deployment hides the connection gear; the MCP dialog copies the correct URL and Codex command. The unpaired Auth0/Pages build retains working connection controls. Both provider builds passed isolation checks, the editor type check reported zero errors, and all five focused URL/configuration tests passed.
+- The chat release passed three independent Cognito browser logins, graph-room delivery, private mentions with no third-party delivery, TOC notifications, durable history after reload, two MCP agents acknowledging interruptions independently, authenticated graph execution, and token refresh with Yjs history recovery.
 
 The temporary verification user and graph were removed. Verification sends no invitations and creates no permanent login. Create intended users through the Cognito administration process. External MCP clients' own OAuth registration/login flows, machine clients, and resource binding were not exercised by the SDK bearer-token check.
 
-The direct release used no GitHub access. The workflow below is implemented and linted, but its AWS role/environment still need to be connected and the source commits published before CI can run it.
+The source commits are published to both Git remotes. The direct AWS release used no GitHub API credentials. The workflow below is implemented and linted, but its AWS role/environment still need to be connected before CI can deploy this account.
+
+## Private-access security checks
+
+The October 7 live review found all 60 REST data/execution methods protected by the JWT authorizer, with authorizer caching disabled. The WebSocket connect route authenticates, and subsequent client routes resolve the stored, unexpired verified principal. The only public Lambda Function URL is the MCP stream, whose handler verifies the bearer token before serving data; its public invocation permission is restricted to invocation through that URL. All 69 project Lambda policies and Function URL configurations were inspected.
+
+All 207 negative live probes were rejected with HTTP 401 or 403: missing, malformed, and forged credentials on REST and streaming requests; anonymous/forged WebSocket handshakes; and direct S3 graph/chat reads and bucket listing. Public OAuth discovery, CORS preflight, and the static login application carry no graph data and remain available for authentication. Cognito self-signup is disabled; only administrator-created users can sign in. The graph bucket has all four S3 public-access blocks enabled, now also declared explicitly in the application template.
+
+`src/__tests__/privateAccess.js` guards authorizer coverage, handler principal wrappers, Function URL permissions, private buckets, and administrator-only signup. Compatible lockfile updates cleared all reported production dependency advisories, including two critical and one high finding. CI rejects high/critical production advisories with `npm audit --omit=dev --audit-level=high`. Development-tool advisories are outside that production audit. The patched dependencies passed all 560 server tests, type checking, configuration tests, and both Auth0/Cognito Lambda bundle checks.
 
 ## Account and GitHub setup
 
@@ -81,7 +90,7 @@ Create the GitHub environment `cognito-test`, restrict its deployment branches/t
 | `SERVICE_NAME` | `pio-auth-test-230639770018` |
 | `STAGE` | `test` |
 | `API_PREFIX` | `pio-auth-test` |
-| `EDITOR_REF` | `c82d0b134ec909bcb0a48d160f153ed9f5ba7f6e` (publish this editor commit before dispatch) |
+| `EDITOR_REF` | `e11ea5f74257ba21d860eb996181845633fa8f87` |
 | `OWNER_SUBS` | Optional comma-separated normalized subjects; see policy below |
 
 The workflow's **Run workflow** form selects the environment and optionally overrides `EDITOR_REF` with a full commit SHA. A `v*` tag continues to target the `dev` environment. `dev` also needs `AWS_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`, and a pinned `EDITOR_REF`; these inputs now fail closed when missing. Environment-based jobs need an environment-based OIDC subject, as documented by [GitHub](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
@@ -91,7 +100,7 @@ For an Auth0 release, set `AUTH_PROVIDER=auth0` (or omit it). Existing server-on
 ## Release sequence
 
 1. Validate the environment, target account, role ARN, and pinned editor SHA.
-2. Install from lockfiles; run server/editor tests and type checks; build both providers and check that bundles exclude the unselected provider.
+2. Install from lockfiles; reject high/critical production dependency advisories; run server/editor tests and type checks; build both providers and check that bundles exclude the unselected provider. The paired Playwright check exercises chat with three browsers and two MCP agents.
 3. Lint infrastructure definitions and build Lambda layers on the runner, including the native layer inside the Lambda Node 22 image.
 4. Assume the environment's OIDC role and independently confirm the AWS account before writes.
 5. For Cognito or managed Auth0 editor hosting, deploy `infra/auth-environment.yaml`. The Cognito branch creates the user pool, public browser client, resource server, and login domain. Both branches create private S3 hosting behind CloudFront.

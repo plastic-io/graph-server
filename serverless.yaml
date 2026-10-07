@@ -1249,6 +1249,11 @@ resources:
       Properties:
         AccessControl: Private
         BucketName: ${self:custom.s3Bucket}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          IgnorePublicAcls: true
+          BlockPublicPolicy: true
+          RestrictPublicBuckets: true
         # Every graph document, projection and artifact is recoverable for 30 days
         # after an overwrite or delete (a poisoned CRDT log can be rolled back).
         VersioningConfiguration:

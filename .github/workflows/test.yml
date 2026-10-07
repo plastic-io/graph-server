@@ -36,6 +36,9 @@ jobs:
           node-version-file: graph-server/.nvmrc
       - run: npm ci
         working-directory: graph-server
+      - name: Reject high or critical production dependency advisories
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: graph-server
       - run: npx jest --ci
         working-directory: graph-server
       - run: npx tsc --noEmit && node --test scripts/ci/deployment-config.test.cjs
