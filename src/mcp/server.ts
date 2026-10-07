@@ -324,10 +324,8 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
     }));
 
     /**
-      * Infrastructure (plan §4.9, M4a).  A plan is a question — what would
-      * this change do — and the answer is the only thing this milestone can
-      * produce: there is no tool here that applies one, because the code that
-      * would apply one does not exist yet (D-43).
+      * Agents can preview infrastructure and read deployment results. Applying
+      * a retained review is a separate, human-approved editor operation.
       */
     server.registerTool("iac.plan", {
         title: "What this infrastructure change would do",
@@ -346,7 +344,7 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
 
     server.registerTool("iac.status", {
         title: "What happened to this stack",
-        description: "The durable status of the stack a node describes: what was last asked for, at which revision, what the template validated as, and what the last plan found. Says 'never-planned' rather than nothing when there is no history.",
+        description: "The durable status of the stack a node describes, including the editor's latest review, human approval, deployment outcome and stack outputs. Falls back to the last preview and says 'never-planned' when there is no history.",
         inputSchema: z.object({ schemaVersion: z.literal(1), graphId: ID, agentSessionId: ID.optional(), nodeId: ID, revisionId: REV.optional() }).strict(),
         annotations: { readOnlyHint: true },
     }, guarded("iac.status", "read", (a) => a.graphId, ["iac:read-status"], async (args, principal) => {

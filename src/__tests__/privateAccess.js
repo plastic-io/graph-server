@@ -73,4 +73,19 @@ describe('private deployment access boundaries', () => {
       BlockPublicAcls:true,IgnorePublicAcls:true,BlockPublicPolicy:true,RestrictPublicBuckets:true,
     });
   });
+  test('only the isolated infrastructure worker can execute a reviewed change set',()=>{
+    const shared=JSON.stringify(service.provider.iamRoleStatements);
+    expect(shared).not.toContain('cloudformation:ExecuteChangeSet');
+    expect(shared).not.toContain('iam:PassRole');
+    expect(service.functions.iacWorker.events).toBeUndefined();
+    expect(service.functions.iacWorker.handler).toBe('src/iacWorker.handler');
+    const worker=service.resources.Resources.IacWorkerRole.Properties.Policies[0].PolicyDocument.Statement;
+    expect(worker.some(s=>s.Action.includes('cloudformation:ExecuteChangeSet'))).toBe(true);
+    expect(worker.find(s=>s.Action==='iam:PassRole').Condition.StringEquals['iam:PassedToService']).toBe('cloudformation.amazonaws.com');
+    const execution=JSON.stringify(service.resources.Resources.IacExecutionRole);
+    expect(execution).not.toMatch(/iam:PassRole|lambda:InvokeFunction|iam:CreateRole|cloudformation:ExecuteChangeSet/);
+    const machine=service.resources.Resources.IacReviewStateMachine.Properties;
+    expect(machine.StateMachineType).toBe('STANDARD');
+    expect(machine.Definition.States.Wait.Type).toBe('Wait');
+  });
 });

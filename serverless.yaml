@@ -11,6 +11,12 @@ provider:
   region: ${opt:region, 'us-west-1'}
   iamRoleStatements:
     - Fn::If:
+        - IacReviewEnabled
+        - Effect: Allow
+          Action: states:StartExecution
+          Resource: !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${self:service}-${self:provider.stage}-iac-review'
+        - !Ref AWS::NoValue
+    - Fn::If:
         - CognitoMcpEnabled
         - Effect: Allow
           Action: dynamodb:GetItem
@@ -109,6 +115,7 @@ provider:
     # The account this stack is deployed into, which is the one it plans
     # against (D-45 resolved: the same account, scoped by the stack prefix).
     IAC_ACCOUNTS: ${opt:iacAccounts, '${aws:accountId}'}
+    IAC_REVIEW_STATE_MACHINE: !If [IacReviewEnabled, !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${self:service}-${self:provider.stage}-iac-review', '']
     IAC_REGIONS: ${opt:iacRegions, 'us-west-1'}
     IAC_STACK_PREFIX: ${opt:iacStackPrefix, 'pio-dev-'}
     IAC_BOUNDARY_ARN: ${opt:iacBoundaryArn, ''}
@@ -984,6 +991,39 @@ functions:
           cors:
             origin: '*'
 
+  iacReview:
+    handler: src/handler.iacReview
+    timeout: 30
+    events:
+      - http:
+          method: GET
+          path: /crdt/{id}/iac/{nodeId}/template
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: GET
+          path: /crdt/{id}/iac/{nodeId}/review
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: POST
+          path: /crdt/{id}/iac/{nodeId}/apply
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: POST
+          path: /crdt/{id}/iac/{nodeId}/discard
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+
+  iacWorker:
+    handler: src/iacWorker.handler
+    timeout: 60
+    role: !If [IacReviewEnabled, !GetAtt IacWorkerRole.Arn, !GetAtt IamRoleLambdaExecution.Arn]
+    environment:
+      IAC_REVIEW_STATE_MACHINE: ''
+      IAC_EXECUTION_ROLE_ARN: !If [IacReviewEnabled, !GetAtt IacExecutionRole.Arn, '']
+
   # A picture of what a graph serves (PB-149).  Nothing routes to it: the
   # protocol handler invokes it when somebody asks to look.
   screenshot:
@@ -1241,10 +1281,150 @@ functions:
 
 resources:
   Conditions:
+    IacReviewEnabled: !Equals ['${env:IAC_REVIEW_ENABLED, "true"}', 'true']
     CognitoMcpEnabled: !And
       - !Equals ['${env:AUTH_PROVIDER, "auth0"}', cognito]
       - !Equals ['${env:COGNITO_MCP_REGISTRATION, "false"}', 'true']
   Resources:
+    IacExecutionRole:
+      Type: AWS::IAM::Role
+      Condition: IacReviewEnabled
+      Properties:
+        RoleName: ${self:service}-${self:provider.stage}-${self:provider.region}-iacExecutionRole
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal: {Service: cloudformation.amazonaws.com}
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: prefixed-data-resources
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: ['s3:*']
+                  Resource: !Sub 'arn:${AWS::Partition}:s3:::${opt:iacStackPrefix, "pio-dev-"}*'
+                - Effect: Deny
+                  Action: ['s3:*']
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:service}*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:service}*/*'
+                - Effect: Allow
+                  Action: ['dynamodb:*']
+                  Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${opt:iacStackPrefix, "pio-dev-"}*'
+                - Effect: Allow
+                  Action: ['sqs:*']
+                  Resource: !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${opt:iacStackPrefix, "pio-dev-"}*'
+                - Effect: Allow
+                  Action: ['sns:*']
+                  Resource: !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${opt:iacStackPrefix, "pio-dev-"}*'
+                - Effect: Allow
+                  Action: ['logs:CreateLogGroup','logs:DeleteLogGroup','logs:PutRetentionPolicy','logs:DeleteRetentionPolicy','logs:TagResource','logs:UntagResource','logs:ListTagsForResource']
+                  Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${opt:iacStackPrefix, "pio-dev-"}*'
+                - Effect: Allow
+                  Action: logs:DescribeLogGroups
+                  Resource: '*'
+    IacWorkerRole:
+      Type: AWS::IAM::Role
+      Condition: IacReviewEnabled
+      Properties:
+        RoleName: ${self:service}-${self:provider.stage}-${self:provider.region}-iacWorkerRole
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal: {Service: lambda.amazonaws.com}
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: reviewed-change-sets
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: [s3:GetObject, s3:PutObject]
+                  Resource: !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/iac/*'
+                - Effect: Allow
+                  Action: [cloudformation:CreateChangeSet, cloudformation:DescribeChangeSet, cloudformation:DeleteChangeSet, cloudformation:ExecuteChangeSet, cloudformation:DescribeStacks]
+                  Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${opt:iacStackPrefix, "pio-dev-"}*/*'
+                - Effect: Deny
+                  Action: ['cloudformation:*']
+                  Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${self:service}*/*'
+                - Effect: Allow
+                  Action: iam:PassRole
+                  Resource: !GetAtt IacExecutionRole.Arn
+                  Condition:
+                    StringEquals: {iam:PassedToService: cloudformation.amazonaws.com}
+                - Effect: Allow
+                  Action: [logs:CreateLogStream, logs:PutLogEvents]
+                  Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${self:service}-${self:provider.stage}-iacWorker:*'
+    IacStateMachineRole:
+      Type: AWS::IAM::Role
+      Condition: IacReviewEnabled
+      Properties:
+        RoleName: ${self:service}-${self:provider.stage}-${self:provider.region}-iacStateMachineRole
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal: {Service: states.amazonaws.com}
+              Action: sts:AssumeRole
+              Condition:
+                StringEquals: {aws:SourceAccount: !Ref AWS::AccountId}
+        Policies:
+          - PolicyName: invoke-isolated-worker
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource: !GetAtt IacWorkerLambdaFunction.Arn
+    IacReviewStateMachine:
+      Type: AWS::StepFunctions::StateMachine
+      Condition: IacReviewEnabled
+      Properties:
+        StateMachineName: ${self:service}-${self:provider.stage}-iac-review
+        StateMachineType: STANDARD
+        RoleArn: !GetAtt IacStateMachineRole.Arn
+        Definition:
+          StartAt: Step
+          TimeoutSeconds: 21600
+          States:
+            Step:
+              Type: Task
+              Resource: !GetAtt IacWorkerLambdaFunction.Arn
+              TimeoutSeconds: 65
+              Retry:
+                - ErrorEquals: [States.ALL]
+                  IntervalSeconds: 5
+                  BackoffRate: 2
+                  MaxAttempts: 3
+              Catch:
+                - ErrorEquals: [States.ALL]
+                  ResultPath: $.fatal
+                  Next: RecordFailure
+              Next: Finished
+            Finished:
+              Type: Choice
+              Choices:
+                - Variable: $.done
+                  BooleanEquals: true
+                  Next: Complete
+              Default: Wait
+            Wait:
+              Type: Wait
+              SecondsPath: $.waitSeconds
+              Next: Step
+            RecordFailure:
+              Type: Task
+              Resource: !GetAtt IacWorkerLambdaFunction.Arn
+              TimeoutSeconds: 65
+              Retry:
+                - ErrorEquals: [States.ALL]
+                  IntervalSeconds: 5
+                  MaxAttempts: 3
+              End: true
+            Complete: {Type: Succeed}
     # MCP resource indicators and custom scopes must identify the same API URL.
     # This lives with the API so new environments need no precomputed API ID.
     CognitoMcpResourceServer:

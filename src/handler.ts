@@ -373,10 +373,24 @@ function _componentConsumers(event: any, context: any, callback: (err: any, resp
     eventSourceService.consumers.route(event, context, callback);
 }
 function _iac(event: any, context: any, callback: (err: any, response: any) => void) {
+    if (event.httpMethod==='POST' && eventSourceService.iacReviews.enabled) return eventSourceService.iacReviews.route(event,context,callback);
     eventSourceService.iac.route(event, context, callback);
+}
+function _iacReview(event: any, context: any, callback: any) {
+    eventSourceService.iacReviews.route(event,context,callback);
 }
 function _iacOverview(event: any, context: any, callback: (err: any, response: any) => void) {
     eventSourceService.iac.overview(event.pathParameters.id, event.principal)
+        .then(async (body: any) => {
+            if (!body.error) {
+                for (const stack of body.stacks) {
+                    const review=await eventSourceService.iacReviews.current(event.pathParameters.id,stack.nodeId,event.principal);
+                    if (review) stack.status=review;
+                }
+                body.canReview=eventSourceService.iacReviews.enabled;
+            }
+            return body;
+        })
         .then((body: any) => callback(null, {
             statusCode: body && body.error ? (body.code === "ADMISSION_DENIED" ? 403 : 404) : 200,
             headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": true },
@@ -474,6 +488,7 @@ const componentsList = withPrincipal(broadcastService.store, _componentsList);
 const componentConsumers = withPrincipal(broadcastService.store, _componentConsumers);
 const componentConsumersRebuild = withPrincipal(broadcastService.store, _componentConsumersRebuild);
 const iac = withPrincipal(broadcastService.store, _iac);
+const iacReview = withPrincipal(broadcastService.store, _iacReview);
 const iacOverview = withPrincipal(broadcastService.store, _iacOverview);
 const componentGet = withPrincipal(broadcastService.store, _componentGet);
 const crdtSync = withPrincipal(broadcastService.store, _crdtSync);
@@ -530,6 +545,7 @@ export {
     componentConsumers,
     componentConsumersRebuild,
     iac,
+    iacReview,
     iacOverview,
     componentGet,
     publishGraphWs,

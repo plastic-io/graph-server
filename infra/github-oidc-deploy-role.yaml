@@ -173,6 +173,9 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-lambdaRole"
                   - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-oauthRole"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacWorkerRole"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacExecutionRole"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacStateMachineRole"
               - Sid: PassOnlyThatRoleToLambda
                 Effect: Allow
                 Action: iam:PassRole
@@ -186,6 +189,22 @@ Resources:
                 Effect: Allow
                 Action: [cloudformation:ListStacks, cloudformation:ValidateTemplate, cloudformation:GetTemplateSummary, sts:GetCallerIdentity, logs:DescribeLogGroups]
                 Resource: "*"
+              - Sid: ManageIacWorkflow
+                Effect: Allow
+                Action: [states:CreateStateMachine, states:UpdateStateMachine, states:DeleteStateMachine, states:DescribeStateMachine, states:TagResource, states:UntagResource, states:ListTagsForResource]
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${ServiceName}-${Stage}-iac-review"
+              - Sid: PassIacWorkerRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacWorkerRole"
+                Condition:
+                  StringEquals: {iam:PassedToService: lambda.amazonaws.com}
+              - Sid: PassIacStateMachineRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacStateMachineRole"
+                Condition:
+                  StringEquals: {iam:PassedToService: states.amazonaws.com}
               - Sid: McpClientRegistry
                 Effect: Allow
                 Action: [dynamodb:CreateTable, dynamodb:DescribeTable, dynamodb:UpdateTable, dynamodb:DeleteTable, dynamodb:TagResource, dynamodb:UntagResource, dynamodb:ListTagsOfResource, dynamodb:UpdateContinuousBackups, dynamodb:DescribeContinuousBackups, dynamodb:DescribeTimeToLive]

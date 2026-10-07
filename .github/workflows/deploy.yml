@@ -48,6 +48,7 @@ jobs:
       AUTH0_AUDIENCE: ${{ vars.AUTH0_AUDIENCE || 'plastic-io-graph-server' }}
       AUTH0_CLIENT_ID: ${{ vars.AUTH0_CLIENT_ID }}
       OWNER_SUBS: ${{ vars.OWNER_SUBS }}
+      IAC_REVIEW_ENABLED: ${{ vars.IAC_REVIEW_ENABLED || 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,7 +95,7 @@ jobs:
           AUTH_PROVIDER: auth0
         run: |
           npx playwright install --with-deps chromium
-          npx playwright test chat.spec.ts
+          npx playwright test chat.spec.ts infra-review.spec.ts
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

@@ -30,6 +30,8 @@ import { ExecutionRunner } from "./runtime/executor";
 import { DelegationStore } from "./policy/delegation";
 import { TemplateStore } from "./iac/templates";
 import { IacService } from "./iac/service";
+import {IacReviewService} from './iac/review';
+import {StepFunctions} from 'aws-sdk';
 import { cloudFormationClient } from "./iac/cloudformation";
 import { CaptureService } from "./view/capture";
 import { LambdaRenderer } from "./view/remote";
@@ -97,6 +99,7 @@ export default class EventSourceService {
     delegations: DelegationStore;
     templates: TemplateStore;
     iac: IacService;
+    iacReviews: IacReviewService;
     capture: CaptureService;
     store: S3Service;
     broadcastService: BroadcastService;
@@ -189,8 +192,13 @@ export default class EventSourceService {
          */
         const iacPolicy = policyFromEnv();
         this.iac = new IacService((this.crdtStore as any).store, {
+            reviewStatus: (graphId,nodeId,principal) => this.iacReviews.current(graphId,nodeId,principal),
             policy: () => policyFromEnv(),
             projection: async (graphId: string, revisionId?: string) => {
+                if (revisionId === 'live') {
+                    const live = await this.crdtStore.projectGraph(graphId);
+                    return live ? {revisionId:'live',projection:live} : null;
+                }
                 const revision = revisionId ? await this.revisions.get(graphId, revisionId) : await this.revisions.head(graphId);
                 const id = revision && (revision as any).revisionId;
                 if (!id) {
@@ -206,11 +214,15 @@ export default class EventSourceService {
                 this.broadcastService._sendToChannel("graph-notify-" + record.graphId, { eventType: "deploy", ...record }, () => undefined);
             },
         });
-        /**
-         * Looking at what a graph serves (PB-149).  The browser is another
-         * function; without one configured this server says it cannot take
-         * pictures rather than pretending it can.
-         */
+        this.iacReviews = new IacReviewService(this.crdtStore.store, {
+            projection: (graphId: string) => this.crdtStore.projectGraph(graphId),
+            enabled: !!process.env.IAC_REVIEW_STATE_MACHINE,
+            start: async (operationId: string) => {
+                await new StepFunctions().startExecution({stateMachineArn:process.env.IAC_REVIEW_STATE_MACHINE,
+                    name:operationId,input:JSON.stringify({operationId})}).promise();
+            },
+        });
+        /** Browser rendering is isolated from the request-serving functions. */
         this.capture = new CaptureService((this.crdtStore as any).store, {
             projection: (graphId: string) => this.crdtStore.projectGraph(graphId),
             baseUrl: () => process.env.PUBLIC_BASE_URL || "",

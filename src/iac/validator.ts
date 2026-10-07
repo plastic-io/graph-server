@@ -111,7 +111,7 @@ function accountsIn(value: any): string[] {
     return Array.from(found);
 }
 
-function parseTemplate(text: string, format: "yaml" | "json"): { doc?: any; error?: string } {
+export function parseTemplate(text: string, format: "yaml" | "json"): { doc?: any; error?: string } {
     try {
         if (format === "json") {
             return { doc: JSON.parse(text) };

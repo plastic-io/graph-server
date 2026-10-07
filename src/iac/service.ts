@@ -52,6 +52,7 @@ interface Store {
 }
 
 export interface IacServiceDeps {
+    reviewStatus?: (graphId: string, nodeId: string, principal: Principal | undefined) => Promise<any>;
     /** The graph as a named revision projects it. */
     projection: (graphId: string, revisionId?: string) => Promise<{ revisionId: string; projection: any } | null>;
     /** The template as it was committed, by digest. */
@@ -139,6 +140,10 @@ export class IacService {
         const allowed = decide(principal, ["iac:read-status"]);
         if (!allowed.allow) {
             return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
+        }
+        if (!revisionId && this.deps.reviewStatus) {
+            const reviewed=await this.deps.reviewStatus(graphId,nodeId,principal);
+            if (reviewed) return reviewed;
         }
         const found = await this.resolve(graphId, nodeId, revisionId);
         if (found.error) {
@@ -337,7 +342,7 @@ export class IacService {
         if (!allowed.allow) {
             return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
         }
-        const at = await this.deps.projection(graphId, revisionId);
+        const at = await this.deps.projection(graphId, revisionId || 'live');
         if (!at) {
             return { error: `no graph ${graphId}`, code: "NOT_FOUND" };
         }
