@@ -1,7 +1,7 @@
 import { createRemoteJWKSet, jwtVerify, JWTVerifyGetKey } from "jose";
 import type { AuthenticationAdapter } from "../types";
 import { AUTHORITIES } from "../../policy/decide";
-import {createRegistrationHandler, registeredMcpClient, registrationConfig, RegisteredClient} from '../cognitoRegistration';
+import {createRegistrationHandler, mcpScopeConfig, registeredMcpClient, registrationConfig, RegisteredClient} from '../cognitoRegistration';
 const { cognitoConfig } = require("../../../build/auth-provider.cjs");
 
 export interface CognitoConfig {
@@ -47,20 +47,22 @@ export function createAdapter(config?: CognitoConfig): AuthenticationAdapter {
             const clientId = payload.client_id;
             if (typeof clientId !== "string") throw new Error("Missing client ID");
             const machine = c.machineClientIds.includes(clientId);
+            let scopePolicy = {requiredScopes:c.requiredScopes, scopeMap:c.scopeMap};
             if (!machine && !c.humanClientIds.includes(clientId)) {
                 const registered = await (c.registeredClient || (config ? async () => undefined : registeredMcpClient))(clientId);
                 if (!registered) throw new Error("Unrecognized app client");
                 // A dynamically registered app is never a machine principal. Its
                 // Cognito token must name this MCP resource, not another API.
                 if (payload.aud !== registered.resource) throw new Error('Incorrect MCP resource audience');
+                scopePolicy = mcpScopeConfig(registered.resource);
             }
             // User-pool access tokens for people contain a username. Dedicated machine
             // clients are configured separately; an ambiguous identity never becomes an owner.
             if (!machine && (typeof payload.username !== "string" || !payload.username)) throw new Error("Not a human access token");
             const tokenScopes = typeof payload.scope === "string" ? payload.scope.split(/\s+/).filter(Boolean) : [];
-            if (!c.requiredScopes.every((scope) => tokenScopes.includes(scope))) throw new Error("Missing API scope");
+            if (!scopePolicy.requiredScopes.every((scope) => tokenScopes.includes(scope))) throw new Error("Missing API scope");
             const sub = cognitoSubject(c.issuer, payload.sub!);
-            const scopes = [...new Set(tokenScopes.filter((scope) => Object.prototype.hasOwnProperty.call(c.scopeMap, scope)).map((scope) => c.scopeMap[scope]))];
+            const scopes = [...new Set(tokenScopes.filter((scope) => Object.prototype.hasOwnProperty.call(scopePolicy.scopeMap, scope)).map((scope) => scopePolicy.scopeMap[scope]))];
             // An empty agent scope list means "delegation only" to the existing policy
             // resolver. Do not let unmapped OAuth scopes accidentally remove narrowing.
             if (machine && !scopes.length) throw new Error("Machine token has no mapped authority");

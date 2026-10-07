@@ -1,7 +1,7 @@
-const {createRegistrationHandler, permittedRedirect, registeredMcpClient} = require('../auth/cognitoRegistration');
+const {createRegistrationHandler, permittedRedirect, registeredMcpClient, registrationConfig} = require('../auth/cognitoRegistration');
 const config = {issuer:'https://cognito-idp.us-west-1.amazonaws.com/us-west-1_Test', userPoolId:'us-west-1_Test',
   loginDomain:'graphs.auth.us-west-1.amazoncognito.com', baseUrl:'https://api.example/test', table:'clients',
-  scopes:['graphs/access','graphs/read','graphs/propose']};
+  scopes:['access','read','propose'].map(scope=>'https://api.example/test/mcp/'+scope)};
 const uri = 'https://chatgpt.com/connector/oauth/test_callback';
 function fixture() {
   const records = new Map();
@@ -51,10 +51,21 @@ test('registers and reuses a public code-only client without passwords, tokens, 
   expect(f.cognito.createUserPoolClient).toHaveBeenCalledWith(expect.objectContaining({
     UserPoolId:config.userPoolId,GenerateSecret:false,AllowedOAuthFlows:['code'],
     ExplicitAuthFlows:['ALLOW_REFRESH_TOKEN_AUTH'],CallbackURLs:[uri],
-    AllowedOAuthScopes:['graphs/access','graphs/propose','graphs/read'],
+    AllowedOAuthScopes:[...config.scopes].sort(),
   }));
   expect(await registeredMcpClient('generated123',config,f.store)).toMatchObject({resource:config.baseUrl+'/mcp'});
   expect(await registeredMcpClient('unknown',config,f.store)).toBeUndefined();
+});
+test('discovery and registration scopes belong to the resource URL provisioned by CloudFormation',()=>{
+  const previous={...process.env};
+  try {
+    Object.assign(process.env,{COGNITO_MCP_REGISTRATION:'true',COGNITO_ISSUER:config.issuer,
+      COGNITO_LOGIN_DOMAIN:config.loginDomain,PUBLIC_BASE_URL:config.baseUrl,COGNITO_MCP_CLIENT_TABLE:config.table,
+      COGNITO_MCP_RESOURCE:config.baseUrl+'/mcp',COGNITO_REQUIRED_SCOPES:'graphs/access',COGNITO_SCOPE_MAP:'{"graphs/read":"graph:read"}'});
+    expect(registrationConfig().scopes).toEqual(config.scopes);
+    process.env.COGNITO_MCP_RESOURCE='https://another-api/mcp';
+    expect(()=>registrationConfig()).toThrow(/resource configuration/);
+  } finally {process.env=previous;}
 });
 test.each([
   {redirect_uris:['https://evil.example/callback']},{redirect_uris:[]},{redirect_uris:[uri],token_endpoint_auth_method:'client_secret_basic'},

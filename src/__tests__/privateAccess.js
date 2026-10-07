@@ -32,6 +32,10 @@ describe('private deployment access boundaries', () => {
       ['logs:CreateLogStream','logs:PutLogEvents'],
     ]);
     expect(read('src/oauthHandler.ts')).not.toMatch(/graphService|eventSourceService|mcp\/handler/);
+    const resourceServer=service.resources.Resources.CognitoMcpResourceServer;
+    expect(resourceServer.Condition).toBe('CognitoMcpEnabled');
+    expect(resourceServer.Properties.Identifier).toBe('https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${self:provider.stage}/mcp');
+    expect(resourceServer.Properties.Scopes.map(scope=>scope.ScopeName)).toEqual(['access','read','propose']);
     expect(service.custom.jwtAuthorizer.resultTtlInSeconds).toBe(0);
   });
   test('WebSocket connect authenticates and every later client route resolves a server principal', () => {

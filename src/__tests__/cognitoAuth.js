@@ -48,7 +48,13 @@ test('automatic clients require a verified human token bound to this graph resou
     await expect(adapter.verifyAccessToken(await mint({client_id:'automatic',aud:'https://other-api'}))).rejects.toThrow(/audience/);
     await expect(adapter.verifyAccessToken(await mint({client_id:'automatic',aud:resource,username:undefined}))).rejects.toThrow(/human/);
     await expect(adapter.verifyAccessToken(await mint({client_id:'automatic',aud:resource,scope:'openid'}))).rejects.toThrow(/scope/);
-    expect((await adapter.verifyAccessToken(await mint({client_id:'automatic',aud:resource}))).principal.kind).toBe('human');
+    await expect(adapter.verifyAccessToken(await mint({client_id:'automatic',aud:resource}))).rejects.toThrow(/scope/);
+    const boundScope=resource+'/access '+resource+'/read '+resource+'/propose';
+    expect((await adapter.verifyAccessToken(await mint({client_id:'automatic',aud:resource,scope:boundScope}))).principal)
+        .toMatchObject({kind:'human',scopes:['graph:read','graph:propose']});
+    // The editor still uses the original client and scopes, without a resource indicator.
+    expect((await adapter.verifyAccessToken(await mint())).principal.scopes).toEqual(['graph:read']);
+    await expect(adapter.verifyAccessToken(await mint({scope:boundScope}))).rejects.toThrow(/scope/);
     lookup.mockClear();
     await expect(adapter.verifyAccessToken(await mint({client_id:'automatic',aud:resource},otherKey))).rejects.toThrow();
     expect(lookup).not.toHaveBeenCalled();

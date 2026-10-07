@@ -29,6 +29,13 @@ export interface RegistrationStore {
     complete(key: string, client: RegisteredClient): Promise<void>;
 }
 
+/** Cognito resource binding requires custom scopes under the requested URL. */
+export function mcpScopeConfig(resource: string) {
+    return {requiredScopes:[resource+'/access'], scopeMap:{
+        [resource+'/read']:'graph:read', [resource+'/propose']:'graph:propose',
+    }};
+}
+
 export function registrationConfig(): RegistrationConfig | undefined {
     if (process.env.COGNITO_MCP_REGISTRATION !== 'true') return undefined;
     const issuer = process.env.COGNITO_ISSUER || '';
@@ -39,11 +46,10 @@ export function registrationConfig(): RegistrationConfig | undefined {
     if (!/^https:\/\/cognito-idp\.[a-z0-9-]+\.amazonaws\.com\/[a-z0-9-]+_[A-Za-z0-9]+$/.test(issuer)
         || !/^[a-z0-9-]+\.auth\.[a-z0-9-]+\.amazoncognito\.com$/.test(loginDomain)
         || !/^https:\/\/[^?#]+$/.test(baseUrl) || !table) throw new Error('Incomplete Cognito MCP registration configuration');
-    const scopes = [...new Set([
-        ...(process.env.COGNITO_REQUIRED_SCOPES || '').split(/[\s,]+/).filter(Boolean),
-        ...Object.keys(JSON.parse(process.env.COGNITO_SCOPE_MAP || '{}')),
-    ])];
-    if (!scopes.length) throw new Error('MCP registration requires API scopes');
+    const resource = process.env.COGNITO_MCP_RESOURCE || baseUrl+'/mcp';
+    if (resource !== baseUrl+'/mcp') throw new Error('Incorrect Cognito MCP resource configuration');
+    const policy = mcpScopeConfig(resource);
+    const scopes = [...policy.requiredScopes, ...Object.keys(policy.scopeMap)];
     const authorizationIssuer = (process.env.COGNITO_MCP_OAUTH_ISSUER || '').replace(/\/$/, '') || undefined;
     return {issuer, userPoolId, loginDomain, baseUrl, table, scopes, authorizationIssuer};
 }

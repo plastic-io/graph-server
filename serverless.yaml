@@ -84,6 +84,7 @@ provider:
     COGNITO_MCP_REGISTRATION: ${env:COGNITO_MCP_REGISTRATION, 'false'}
     COGNITO_LOGIN_DOMAIN: ${env:COGNITO_LOGIN_DOMAIN, ''}
     COGNITO_MCP_CLIENT_TABLE: !If [CognitoMcpEnabled, !Ref CognitoMcpClients, '']
+    COGNITO_MCP_RESOURCE: !If [CognitoMcpEnabled, !Ref CognitoMcpResourceServer, '']
     COGNITO_MCP_OAUTH_ISSUER: !If [CognitoMcpEnabled, !GetAtt CognitoMcpOAuthUrl.FunctionUrl, '']
     AUTH0_DOMAIN: ${opt:auth0Domain, env:AUTH0_DOMAIN, 'dev-7q-g69up.us.auth0.com'}
     AUTH0_AUDIENCE: ${opt:auth0Audience, env:AUTH0_AUDIENCE, 'plastic-io-graph-server'}
@@ -1244,6 +1245,19 @@ resources:
       - !Equals ['${env:AUTH_PROVIDER, "auth0"}', cognito]
       - !Equals ['${env:COGNITO_MCP_REGISTRATION, "false"}', 'true']
   Resources:
+    # MCP resource indicators and custom scopes must identify the same API URL.
+    # This lives with the API so new environments need no precomputed API ID.
+    CognitoMcpResourceServer:
+      Type: AWS::Cognito::UserPoolResourceServer
+      Condition: CognitoMcpEnabled
+      Properties:
+        UserPoolId: ${env:COGNITO_USER_POOL_ID, 'disabled'}
+        Identifier: !Sub 'https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${self:provider.stage}/mcp'
+        Name: ${self:service}-${self:provider.stage}-mcp
+        Scopes:
+          - {ScopeName: access, ScopeDescription: Access the graph MCP API}
+          - {ScopeName: read, ScopeDescription: Read graphs through MCP}
+          - {ScopeName: propose, ScopeDescription: Propose graph changes through MCP}
     CognitoMcpOAuthUrl:
       Type: AWS::Lambda::Url
       Condition: CognitoMcpEnabled

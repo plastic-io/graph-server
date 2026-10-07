@@ -15,6 +15,11 @@ if (AUTH_PROVIDER === 'cognito') {
     assert.ok(oauth.code_challenge_methods_supported.includes('S256'));
     assert.ok(oauth.token_endpoint_auth_methods_supported.includes('none'));
     assert.equal(oauth.registration_endpoint, issuer+'/oauth/register');
+    const resource = new URL('mcp', GRAPH_HTTP_SERVER).href;
+    const scopes = ['access','read','propose'].map(scope=>resource+'/'+scope);
+    assert.equal(discovery.resource, resource);
+    assert.deepEqual(discovery.scopes_supported, scopes);
+    assert.deepEqual(oauth.scopes_supported, scopes, 'Resource-bound scopes must belong to this MCP API');
     const invalid = await request(oauth.registration_endpoint, {method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({redirect_uris:['https://untrusted.example/callback']})});
     assert.equal(invalid.status, 400, 'Registration must reject untrusted redirects');
@@ -24,6 +29,7 @@ if (AUTH_PROVIDER === 'cognito') {
     assert.equal(registration.status, 201, 'Automatic registration must work without a supplied client ID');
     const registered = await registration.json();
     assert.ok(registered.client_id);assert.equal(registered.client_secret, undefined);
+    assert.deepEqual(registered.scope.split(/\s+/).sort(), [...scopes].sort());
     const unlinked = await request(new URL('toc.json', GRAPH_HTTP_SERVER), {headers:{Authorization:'Bearer '+registered.client_id}});
     assert.ok([401,403].includes(unlinked.status), 'Registering a client does not authenticate a user');
   } else assert.deepEqual(discovery.authorization_servers, [COGNITO_ISSUER]);
