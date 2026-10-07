@@ -2,7 +2,42 @@
 
 Use GitHub Actions **Deploy configured environment** (`.github/workflows/deploy.yml`). All stack provisioning, Lambda layer builds, Serverless packaging, AWS deployment, and editor publishing run on the runner. There is no workstation stack-preparation step. Pull requests run source tests, provider bundle checks, and CloudFormation linting without AWS credentials.
 
+The user subsequently authorized a direct deployment from this workstation using profile `230639770018_cr-AdminAccess`, without granting GitHub access. This is an explicit exception for the initial test rollout; the committed CI workflow remains available for later automation. Verify the AWS account before writes and use the same templates and output-to-build configuration mapping. GitHub credentials and a GitHub deployment role are not prerequisites for this direct rollout.
+
 Auth0 remains the default. `AUTH_PROVIDER=cognito` selects the Cognito verifier and Amplify editor plugin. Both variants are tested before releasing either one. A release uses the selected server revision and a full, immutable `graph-editor` commit SHA.
+
+## Deployed Cognito test environment
+
+The initial deployment completed October 6, 2026 (October 7 UTC), using the authorized SSO profile in account `230639770018`, region `us-west-1`. The authentication stack is `CREATE_COMPLETE`; the server stack is `UPDATE_COMPLETE`.
+
+| Resource | Value |
+| --- | --- |
+| Editor | <https://d2fqgid0yzbc85.cloudfront.net/graph-editor/> |
+| REST API | <https://9pzgloz773.execute-api.us-west-1.amazonaws.com/test/> |
+| WebSocket API | `wss://hwx4k4af87.execute-api.us-west-1.amazonaws.com/test` |
+| MCP HTTP endpoint | <https://9pzgloz773.execute-api.us-west-1.amazonaws.com/test/mcp> |
+| MCP streaming endpoint | <https://njp2jgk6whco24g3dv62funlny0iigge.lambda-url.us-west-1.on.aws/> |
+| Authentication/hosting stack | `pio-auth-test-230639770018-auth` |
+| Server stack / stage | `pio-auth-test-230639770018` / `test` |
+| Cognito user pool | `us-west-1_yrWcLvFQD` |
+| Public browser client | `4oad1er5hee1a67f3u4uq764ib` |
+| Login domain | `graphs-230639770018-441eb7b91246.auth.us-west-1.amazoncognito.com` |
+| CloudFront distribution | `E3COPJU0703FA1` |
+| Editor bucket | `pio-auth-test-230639770018-auth-editorbucket-frcka3yk1ov2` |
+
+The [public release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json) records the configuration and file hashes. Deployed server source is `d2aefc54ab2a5f224c2d8e5d71d1f14eeea1ac40`; editor source is `d0ae57a207c9cb656947182018d7aa38c36aa321`. The server ZIP recovered from the deployment bucket matches the deployed Lambda's SHA-256. The later CI-only artifact-retention fix is commit `d3d6c98`.
+
+Live checks passed:
+
+- Provider discovery and rejection of missing/invalid tokens on REST, WebSocket handshakes, and the streaming Function URL.
+- Cognito hosted sign-in with authorization code/PKCE, callback cleanup, and normalized Amplify session identity.
+- Authenticated REST and browser WebSocket access; editor graph creation, editing, persistence, and reload.
+- Forced Amplify token refresh, WebSocket replacement with the new token, and hosted logout back to an unauthenticated editor.
+- MCP SDK initialization, tool discovery, `graph.summary`, and `graph.invoke` completing server execution with a browser-issued access token.
+
+The temporary verification user and graph were removed. No invitation was sent, no permanent login was created, and the pool currently has no users. Create the intended user's account through the Cognito administration process before personal sign-in. External MCP clients' own OAuth registration/login flows, machine clients, and resource binding were not exercised by the SDK bearer-token check.
+
+The direct release used no GitHub access. The workflow below is implemented and linted, but its AWS role/environment still need to be connected and the source commits published before CI can run it.
 
 ## Account and GitHub setup
 
@@ -49,7 +84,7 @@ For an Auth0 release, set `AUTH_PROVIDER=auth0` (or omit it). Existing server-on
 3. Lint infrastructure definitions and build Lambda layers on the runner, including the native layer inside the Lambda Node 22 image.
 4. Assume the environment's OIDC role and independently confirm the AWS account before writes.
 5. For Cognito or managed Auth0 editor hosting, deploy `infra/auth-environment.yaml`. The Cognito branch creates the user pool, public browser client, resource server, and login domain. Both branches create private S3 hosting behind CloudFront.
-6. Feed stack outputs into the selected server configuration. Package once, inspect the actual archive's provider manifest, and deploy that package.
+6. Feed stack outputs into the selected server configuration. Package once, inspect the actual archive's provider manifest, and retain/deploy that package from `$RUNNER_TEMP/server-package`. Serverless deletes `.serverless` after `deploy --package`; the retained directory avoids losing the release inputs. `SERVER_PACKAGE_DIR` points the manifest generator to that directory.
 7. Read REST, WebSocket, and streaming endpoints from the deployed stack, refresh API stage snapshots, and build the editor with those endpoints and matching authentication settings.
 8. Archive the server package, editor build, source revisions, public configuration, and file hashes. Upload editor assets followed by the entry point and wait for CloudFront invalidation.
 9. Smoke-test discovery, selected provider, and rejection of missing/invalid credentials on REST, WebSocket handshakes, and the streaming Function URL. Record URLs in the Actions run summary.
@@ -91,4 +126,4 @@ Use the Actions workflow at a previous known-good server revision and pin its ma
 
 Server and editor deployments are sequential, not an atomic cross-service transaction. If publishing or smoke tests fail after the backend deploys, the workflow fails visibly; rerun the release or deploy the known-good matching revisions. Identity changes require their own migration, and old provider tokens/connections cannot be assumed compatible.
 
-Deterministic verification covers provider validation, signature/claim rejection, lifecycle and transport boundaries, expiry, build isolation, configuration validation, and preference precedence. The workflow's deployed smoke tests do not establish successful browser login, graph editing, refresh/logout, or external MCP interoperability. Those live checks remain pending until the CI role and environment are connected and a workflow run succeeds. No AWS stack was created or deployed from this workstation during this change.
+Deterministic verification covers provider validation, signature/claim rejection, lifecycle and transport boundaries, expiry, build isolation, configuration validation, and preference precedence. The workflow's smoke tests check discovery and credential rejection. Successful browser login, graph operations, refresh/logout, and MCP bearer-token interoperability were additionally verified during the initial direct rollout as recorded above; these browser checks are not yet part of the CI smoke script. CI activation and client-specific OAuth onboarding remain separate from the completed deployment.
