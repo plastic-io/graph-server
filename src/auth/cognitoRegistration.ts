@@ -2,7 +2,8 @@
  * No passwords, authorization codes, refresh tokens or signing keys are stored here.
  */
 import {createHash} from 'crypto';
-import {CognitoIdentityServiceProvider, DynamoDB} from 'aws-sdk';
+import {DynamoDB} from 'aws-sdk';
+import {CognitoIdentityProvider} from '@aws-sdk/client-cognito-identity-provider';
 
 export interface RegistrationConfig {
     issuer: string;
@@ -20,6 +21,7 @@ export interface RegisteredClient {
     scope: string;
     issuer: string;
     resource: string;
+    managedLogin?: boolean;
 }
 export interface RegistrationStore {
     get(key: string): Promise<any>;
@@ -110,7 +112,11 @@ const response = (statusCode: number, value: any) => ({statusCode, headers:{
 }, body:JSON.stringify(value)});
 
 export function createRegistrationHandler(config: RegistrationConfig, store: RegistrationStore = new DynamoRegistrationStore(config.table),
-    cognito = new CognitoIdentityServiceProvider()) {
+    cognito = new CognitoIdentityProvider({})) {
+    const ensureBranding = async (clientId: string) => {
+        try { await cognito.createManagedLoginBranding({UserPoolId:config.userPoolId,ClientId:clientId,UseCognitoProvidedValues:true}); }
+        catch (e) { if (e.name !== 'ManagedLoginBrandingExistsException') throw e; }
+    };
     return async (event: any) => {
         const method = event.httpMethod || event.requestContext?.http?.method;
         const path = event.resource || event.rawPath || event.path;
@@ -159,17 +165,22 @@ export function createRegistrationHandler(config: RegistrationConfig, store: Reg
                         EnableTokenRevocation:true, PreventUserExistenceErrors:'ENABLED',
                         AccessTokenValidity:60, IdTokenValidity:60, RefreshTokenValidity:1,
                         TokenValidityUnits:{AccessToken:'minutes',IdToken:'minutes',RefreshToken:'days'},
-                    }).promise();
+                    });
                     const id = created.UserPoolClient?.ClientId;
                     if (!id) throw new Error('Registration returned no client ID');
+                    await ensureBranding(id);
                     const client: RegisteredClient = {client_id:id, client_id_issued_at:Math.floor(Date.now()/1000),
-                        redirect_uris:redirects, scope:scopes.join(' '), issuer:config.issuer, resource:config.baseUrl+'/mcp'};
+                        redirect_uris:redirects, scope:scopes.join(' '), issuer:config.issuer, resource:config.baseUrl+'/mcp', managedLogin:true};
                     await store.complete(key, client);
                     row = {status:'active',client};
                 }
             }
             if (row.status !== 'active') return response(503, {error:'temporarily_unavailable'});
-            const {issuer,resource,...client} = row.client;
+            // Upgrade registrations created before managed login was enabled.
+            if (!row.client.managedLogin) {
+                await ensureBranding(row.client.client_id);
+            }
+            const {issuer,resource,managedLogin,...client} = row.client;
             return response(201, {...client, token_endpoint_auth_method:'none', grant_types:['authorization_code','refresh_token'], response_types:['code']});
         } catch {
             // Never log request bodies, AWS responses, or credentials at this boundary.

@@ -89,6 +89,7 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       UserPoolName: !Sub '${AWS::StackName}-users'
+      UserPoolTier: ESSENTIALS
       AdminCreateUserConfig: {AllowAdminCreateUserOnly: true}
       Policies:
         PasswordPolicy:
@@ -135,13 +136,21 @@ Resources:
       IdTokenValidity: 60
       RefreshTokenValidity: 1
       TokenValidityUnits: {AccessToken: minutes, IdToken: minutes, RefreshToken: days}
+  BrowserLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    Condition: UseCognito
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientId: !Ref BrowserClient
+      UseCognitoProvidedValues: true
   UserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
     Condition: UseCognito
+    DependsOn: BrowserLoginBranding
     Properties:
       Domain: !Ref DomainPrefix
       UserPoolId: !Ref UserPool
-      ManagedLoginVersion: 1
+      ManagedLoginVersion: 2
 Outputs:
   UserPoolId: {Condition: UseCognito, Value: !Ref UserPool}
   ClientId: {Condition: UseCognito, Value: !Ref BrowserClient}

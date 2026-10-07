@@ -115,6 +115,11 @@ Resources:
                   - cognito-idp:UntagResource
                   - cognito-idp:ListTagsForResource
                   - cognito-idp:CreateUserPoolClient
+                  - cognito-idp:CreateManagedLoginBranding
+                  - cognito-idp:DescribeManagedLoginBranding
+                  - cognito-idp:DescribeManagedLoginBrandingByClient
+                  - cognito-idp:UpdateManagedLoginBranding
+                  - cognito-idp:DeleteManagedLoginBranding
                   - cognito-idp:DescribeUserPoolClient
                   - cognito-idp:UpdateUserPoolClient
                   - cognito-idp:DeleteUserPoolClient

@@ -27,7 +27,8 @@ describe('private deployment access boundaries', () => {
     expect(publicRoutes).toEqual([['GET','/.well-known/oauth-protected-resource']]);
     const registrationRole = service.resources.Resources.CognitoMcpRegistrationRole.Properties;
     expect(registrationRole.Policies[0].PolicyDocument.Statement.map(s=>s.Action)).toEqual([
-      ['dynamodb:GetItem','dynamodb:PutItem','dynamodb:UpdateItem'], 'cognito-idp:CreateUserPoolClient',
+      ['dynamodb:GetItem','dynamodb:PutItem','dynamodb:UpdateItem'],
+      ['cognito-idp:CreateUserPoolClient','cognito-idp:CreateManagedLoginBranding'],
       ['logs:CreateLogStream','logs:PutLogEvents'],
     ]);
     expect(read('src/oauthHandler.ts')).not.toMatch(/graphService|eventSourceService|mcp\/handler/);
@@ -62,6 +63,8 @@ describe('private deployment access boundaries', () => {
       BlockPublicAcls:true,IgnorePublicAcls:true,BlockPublicPolicy:true,RestrictPublicBuckets:true,
     });
     expect(identity.Resources.UserPool.Properties.AdminCreateUserConfig.AllowAdminCreateUserOnly).toBe(true);
+    expect(identity.Resources.UserPoolDomain.Properties.ManagedLoginVersion).toBe(2);
+    expect(identity.Resources.BrowserLoginBranding.Properties.UseCognitoProvidedValues).toBe(true);
     expect(identity.Resources.EditorBucket.Properties.PublicAccessBlockConfiguration).toEqual({
       BlockPublicAcls:true,IgnorePublicAcls:true,BlockPublicPolicy:true,RestrictPublicBuckets:true,
     });

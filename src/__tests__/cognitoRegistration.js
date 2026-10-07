@@ -10,7 +10,8 @@ function fixture() {
     reserve:jest.fn(async key=>{if(records.has(key))return false;records.set(key,{status:'pending'});return true;}),
     complete:jest.fn(async (key,client)=>{records.set(key,{status:'active',client});records.set('client#'+client.client_id,{status:'active',client});}),
   };
-  const cognito = {createUserPoolClient:jest.fn(()=>({promise:async()=>({UserPoolClient:{ClientId:'generated123'}})}))};
+  const cognito = {createUserPoolClient:jest.fn(async()=>({UserPoolClient:{ClientId:'generated123'}})),
+    createManagedLoginBranding:jest.fn(async()=>({}))};
   const handler=createRegistrationHandler(config,store,cognito);
   const register=async data=>handler({httpMethod:'POST',resource:'/oauth/register',body:JSON.stringify(data)});
   return {records,store,cognito,handler,register};
@@ -46,6 +47,7 @@ test('registers and reuses a public code-only client without passwords, tokens, 
   expect(JSON.parse(first.body)).toMatchObject({client_id:'generated123',redirect_uris:[uri],token_endpoint_auth_method:'none'});
   expect(first.body).not.toMatch(/client_secret|password|refresh_token"\s*:/);
   expect(f.cognito.createUserPoolClient).toHaveBeenCalledTimes(1);
+  expect(f.cognito.createManagedLoginBranding).toHaveBeenCalledWith({UserPoolId:config.userPoolId,ClientId:'generated123',UseCognitoProvidedValues:true});
   expect(f.cognito.createUserPoolClient).toHaveBeenCalledWith(expect.objectContaining({
     UserPoolId:config.userPoolId,GenerateSecret:false,AllowedOAuthFlows:['code'],
     ExplicitAuthFlows:['ALLOW_REFRESH_TOKEN_AUTH'],CallbackURLs:[uri],
@@ -75,6 +77,13 @@ test('disabled, foreign, incomplete, or revoked registry entries never become ac
   for(const change of [{status:'pending'},{client:{...row.client,issuer:'foreign'}},{client:{...row.client,resource:'https://another-api'}}]){
     f.records.set('client#generated123',{...row,...change});expect(await registeredMcpClient('generated123',config,f.store)).toBeUndefined();
   }
+});
+test('older registrations acquire managed-login branding without changing their client ID', async()=>{
+  const f=fixture();await f.register({redirect_uris:[uri]});
+  for(const row of f.records.values())if(row.client)delete row.client.managedLogin;
+  f.cognito.createManagedLoginBranding.mockRejectedValue(Object.assign(new Error('exists'),{name:'ManagedLoginBrandingExistsException'}));
+  const r=await f.register({redirect_uris:[uri]});expect(r.statusCode).toBe(201);
+  expect(JSON.parse(r.body).client_id).toBe('generated123');expect(f.cognito.createUserPoolClient).toHaveBeenCalledTimes(1);
 });
 test('malformed requests and unexpected paths do not expose implementation details', async()=>{
   const f=fixture();

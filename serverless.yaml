@@ -1302,7 +1302,7 @@ resources:
                   Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
                   Resource: !GetAtt CognitoMcpClients.Arn
                 - Effect: Allow
-                  Action: cognito-idp:CreateUserPoolClient
+                  Action: [cognito-idp:CreateUserPoolClient, cognito-idp:CreateManagedLoginBranding]
                   Resource: !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${env:COGNITO_USER_POOL_ID, "disabled"}'
                 - Effect: Allow
                   Action: [logs:CreateLogStream, logs:PutLogEvents]
