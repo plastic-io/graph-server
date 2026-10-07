@@ -20,5 +20,5 @@ const configuration = Object.fromEntries([
 console.log(JSON.stringify({serverRevision:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
   editorRevision:execFileSync('git',['-C','../graph-editor','rev-parse','HEAD'],{encoding:'utf8'}).trim(),
   run:env.GITHUB_RUN_ID, configuration,
-  artifacts:{server:files('.serverless'), ...(env.DEPLOY_EDITOR === 'true' ? {editor:files('../graph-editor/dist')} : {})},
+  artifacts:{server:files(env.SERVER_PACKAGE_DIR || '.serverless'), ...(env.DEPLOY_EDITOR === 'true' ? {editor:files('../graph-editor/dist')} : {})},
 }, null, 2));

@@ -120,8 +120,12 @@ jobs:
           test -s .serverless/isolatedVm.zip
           unzip -p ".serverless/$SERVICE_NAME.zip" auth-provider.json | jq -e --arg provider "$AUTH_PROVIDER" '.provider == $provider'
           cfn-lint -r "$AWS_REGION" -t .serverless/cloudformation-template-update-stack.json --non-zero-exit-code error
+          # Serverless removes .serverless after deploy --package, even when it
+          # is the input directory. Retain the exact package outside that path.
+          cp -R .serverless "$RUNNER_TEMP/server-package"
+          echo "SERVER_PACKAGE_DIR=$RUNNER_TEMP/server-package" >> "$GITHUB_ENV"
       - name: Deploy packaged server
-        run: npx serverless deploy --stage "$STAGE" --region "$AWS_REGION" --package .serverless
+        run: npx serverless deploy --stage "$STAGE" --region "$AWS_REGION" --package "$SERVER_PACKAGE_DIR"
       - name: Read endpoints from deployed stack
         run: |
           aws cloudformation describe-stacks --stack-name "$SERVICE_NAME" > "$RUNNER_TEMP/server-stack.json"
@@ -145,7 +149,7 @@ jobs:
           name: release-${{ github.run_id }}-${{ github.run_attempt }}
           include-hidden-files: true
           path: |
-            graph-server/.serverless
+            ${{ runner.temp }}/server-package
             graph-editor/dist
             ${{ runner.temp }}/release.json
           if-no-files-found: error
