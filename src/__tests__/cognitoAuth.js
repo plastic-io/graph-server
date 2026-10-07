@@ -40,6 +40,19 @@ test.each([
 test('rejects a foreign signature', async () => {
     await expect(createAdapter(config).verifyAccessToken(await mint({}, otherKey))).rejects.toThrow();
 });
+test('automatic clients require a verified human token bound to this graph resource', async () => {
+    const resource='https://graphs.example/test/mcp';
+    const lookup=jest.fn(async id=>id==='automatic' ? {resource} : undefined);
+    const adapter=createAdapter({...config,registeredClient:lookup});
+    await expect(adapter.verifyAccessToken(await mint({client_id:'automatic'}))).rejects.toThrow(/audience/);
+    await expect(adapter.verifyAccessToken(await mint({client_id:'automatic',aud:'https://other-api'}))).rejects.toThrow(/audience/);
+    await expect(adapter.verifyAccessToken(await mint({client_id:'automatic',aud:resource,username:undefined}))).rejects.toThrow(/human/);
+    await expect(adapter.verifyAccessToken(await mint({client_id:'automatic',aud:resource,scope:'openid'}))).rejects.toThrow(/scope/);
+    expect((await adapter.verifyAccessToken(await mint({client_id:'automatic',aud:resource}))).principal.kind).toBe('human');
+    lookup.mockClear();
+    await expect(adapter.verifyAccessToken(await mint({client_id:'automatic',aud:resource},otherKey))).rejects.toThrow();
+    expect(lookup).not.toHaveBeenCalled();
+});
 test('enforces configured resource binding independently of client_id', async () => {
     const adapter = createAdapter({...config, audience: 'https://graphs.example/api'});
     await expect(adapter.verifyAccessToken(await mint())).rejects.toThrow();

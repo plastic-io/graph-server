@@ -16,7 +16,7 @@ async function run(name) {
   delete require.cache[require.resolve('../webpack.config.js')];
   const base = require('../webpack.config.js');
   const config = {...base, context: root, mode:'production', devtool:false,
-    optimization: {minimize:false}, entry: {handler:path.join(root,'src/handler.ts')},
+    optimization: {minimize:false}, entry: {handler:path.join(root,'src/handler.ts'), oauth:path.join(root,'src/oauthHandler.ts')},
     output:{...base.output,path:path.join(output,name)},
   };
   const stats = await new Promise((resolve,reject) => {
@@ -31,6 +31,7 @@ async function run(name) {
   const wanted=`/auth/providers/${name}.ts`;
   const other=`/auth/providers/${name==='auth0'?'cognito':'auth0'}.ts`;
   if(!modules.some(m=>m.includes(wanted)) || modules.some(m=>m.includes(other))) throw new Error(`Provider isolation failed for ${name}`);
+  if(name==='auth0' && modules.some(m=>m.includes('/auth/cognitoRegistration.ts'))) throw new Error('Cognito registration leaked into Auth0 bundle');
   fs.writeFileSync(path.join(output,name,'modules.json'),JSON.stringify(modules,null,2));
   const manifest=JSON.parse(fs.readFileSync(path.join(output,name,'auth-provider.json'),'utf8'));
   if(manifest.provider!==name) throw new Error('Incorrect provider manifest');

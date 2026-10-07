@@ -10,10 +10,12 @@ export interface ProviderDiscovery {
     scopes: string[];
     audience?: string;
     resourceFallback?: string;
+    clientRegistration?: 'dynamic';
 }
 
 export interface AuthenticationAdapter {
     readonly name: "auth0" | "cognito";
     verifyAccessToken(token: string): Promise<VerifiedIdentity>;
     discovery(): ProviderDiscovery;
+    oauthRequest?(event: any): Promise<any>;
 }

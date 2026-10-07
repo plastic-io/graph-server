@@ -9,7 +9,7 @@ const handlers = read('src/handler.ts');
 // These checks protect the deployment boundary, where forgetting an authorizer
 // on just one new route would bypass otherwise-correct token verification.
 describe('private deployment access boundaries', () => {
-  test('every HTTP data or execution route has the JWT authorizer; only discovery is public', () => {
+  test('every HTTP data or execution route has the JWT authorizer; only authentication routes are public', () => {
     const publicRoutes = [];
     for (const [name, fn] of Object.entries(service.functions)) {
       for (const event of fn.events || []) {
@@ -25,6 +25,12 @@ describe('private deployment access boundaries', () => {
       }
     }
     expect(publicRoutes).toEqual([['GET','/.well-known/oauth-protected-resource']]);
+    const registrationRole = service.resources.Resources.CognitoMcpRegistrationRole.Properties;
+    expect(registrationRole.Policies[0].PolicyDocument.Statement.map(s=>s.Action)).toEqual([
+      ['dynamodb:GetItem','dynamodb:PutItem','dynamodb:UpdateItem'], 'cognito-idp:CreateUserPoolClient',
+      ['logs:CreateLogStream','logs:PutLogEvents'],
+    ]);
+    expect(read('src/oauthHandler.ts')).not.toMatch(/graphService|eventSourceService|mcp\/handler/);
     expect(service.custom.jwtAuthorizer.resultTtlInSeconds).toBe(0);
   });
   test('WebSocket connect authenticates and every later client route resolves a server principal', () => {
@@ -37,13 +43,16 @@ describe('private deployment access boundaries', () => {
       }
     }
   });
-  test('the only Function URL is the token-verifying MCP stream and direct public invocation is restricted', () => {
+  test('Function URLs only serve verified MCP requests or the isolated registration service', () => {
     const resources = service.resources.Resources;
     const urls = Object.entries(resources).filter(([,r]) => r.Type === 'AWS::Lambda::Url');
-    expect(urls.map(([name])=>name)).toEqual(['McpStreamUrl']);
+    expect(urls.map(([name])=>name)).toEqual(['CognitoMcpOAuthUrl','McpStreamUrl']);
     expect(service.functions.mcpStream.handler).toBe('src/handler.mcpStream');
     expect(resources.McpStreamInvokePermission.Properties.InvokedViaFunctionUrl).toBe(true);
     expect(resources.McpStreamUrlPermission.Properties.FunctionUrlAuthType).toBe('NONE');
+    expect(resources.CognitoMcpOAuthInvokePermission.Properties.InvokedViaFunctionUrl).toBe(true);
+    expect(resources.CognitoMcpOAuthUrlPermission.Properties.FunctionUrlAuthType).toBe('NONE');
+    expect(resources.CognitoMcpOAuthUrl.Condition).toBe('CognitoMcpEnabled');
     // Signature, expiry, issuer, client, token-use and scope enforcement at this
     // URL are exercised by cognitoAuth.js and the streaming transport tests.
   });

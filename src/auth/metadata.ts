@@ -65,6 +65,7 @@ export function protectedResourceMetadata(baseUrl = "", provider: Authentication
         ...(audience ? { audience } : {}),
         authorization_servers: provider.discovery().authorizationServers,
         auth_provider: provider.name,
+        ...(provider.discovery().clientRegistration ? {client_registration:provider.discovery().clientRegistration} : {}),
         bearer_methods_supported: ["header"],
         scopes_supported: provider.discovery().scopes,
         resource_documentation: "https://github.com/plastic-io/graph-editor/tree/main/docs/polymorphic-application-plan",

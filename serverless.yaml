@@ -10,6 +10,12 @@ provider:
   stage: ${opt:stage, 'dev'}
   region: ${opt:region, 'us-west-1'}
   iamRoleStatements:
+    - Fn::If:
+        - CognitoMcpEnabled
+        - Effect: Allow
+          Action: dynamodb:GetItem
+          Resource: !GetAtt CognitoMcpClients.Arn
+        - !Ref AWS::NoValue
     - Effect: Allow
       Action:
         - lambda:GetLayerVersion
@@ -75,6 +81,10 @@ provider:
     COGNITO_REQUIRED_SCOPES: ${env:COGNITO_REQUIRED_SCOPES, ''}
     COGNITO_SCOPE_MAP: ${env:COGNITO_SCOPE_MAP, '{}'}
     COGNITO_RESOURCE_AUDIENCE: ${env:COGNITO_RESOURCE_AUDIENCE, ''}
+    COGNITO_MCP_REGISTRATION: ${env:COGNITO_MCP_REGISTRATION, 'false'}
+    COGNITO_LOGIN_DOMAIN: ${env:COGNITO_LOGIN_DOMAIN, ''}
+    COGNITO_MCP_CLIENT_TABLE: !If [CognitoMcpEnabled, !Ref CognitoMcpClients, '']
+    COGNITO_MCP_OAUTH_ISSUER: !If [CognitoMcpEnabled, !GetAtt CognitoMcpOAuthUrl.FunctionUrl, '']
     AUTH0_DOMAIN: ${opt:auth0Domain, env:AUTH0_DOMAIN, 'dev-7q-g69up.us.auth0.com'}
     AUTH0_AUDIENCE: ${opt:auth0Audience, env:AUTH0_AUDIENCE, 'plastic-io-graph-server'}
     # The resource identifier an MCP client asks for a token for (RFC 8707).
@@ -196,6 +206,17 @@ functions:
           path: /.well-known/oauth-protected-resource
           cors:
             origin: '*'
+
+  # Provider-selected OAuth metadata and automatic public-client registration.
+  # This function has no graph permissions and returns 404 in Auth0 deployments.
+  oauth:
+    handler: src/oauthHandler.handler
+    timeout: 15
+    reservedConcurrency: 2
+    role: !If [CognitoMcpEnabled, !GetAtt CognitoMcpRegistrationRole.Arn, !GetAtt IamRoleLambdaExecution.Arn]
+    environment:
+      # The OAuth function obtains its issuer from AWS's trusted request context.
+      COGNITO_MCP_OAUTH_ISSUER: ''
 
   # manage connection and disconnection of clients
   connect:
@@ -1218,7 +1239,74 @@ functions:
               - X-Session-Id
 
 resources:
+  Conditions:
+    CognitoMcpEnabled: !And
+      - !Equals ['${env:AUTH_PROVIDER, "auth0"}', cognito]
+      - !Equals ['${env:COGNITO_MCP_REGISTRATION, "false"}', 'true']
   Resources:
+    CognitoMcpOAuthUrl:
+      Type: AWS::Lambda::Url
+      Condition: CognitoMcpEnabled
+      Properties:
+        AuthType: NONE
+        TargetFunctionArn: !GetAtt OauthLambdaFunction.Arn
+        Cors:
+          AllowOrigins: ['*']
+          AllowMethods: [GET, POST]
+          AllowHeaders: [content-type]
+    CognitoMcpOAuthUrlPermission:
+      Type: AWS::Lambda::Permission
+      Condition: CognitoMcpEnabled
+      Properties:
+        FunctionName: !GetAtt OauthLambdaFunction.Arn
+        Action: lambda:InvokeFunctionUrl
+        Principal: '*'
+        FunctionUrlAuthType: NONE
+    CognitoMcpOAuthInvokePermission:
+      Type: AWS::Lambda::Permission
+      Condition: CognitoMcpEnabled
+      Properties:
+        FunctionName: !GetAtt OauthLambdaFunction.Arn
+        Action: lambda:InvokeFunction
+        Principal: '*'
+        InvokedViaFunctionUrl: true
+    CognitoMcpClients:
+      Type: AWS::DynamoDB::Table
+      Condition: CognitoMcpEnabled
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-oauth-clients
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions: [{AttributeName: id, AttributeType: S}]
+        KeySchema: [{AttributeName: id, KeyType: HASH}]
+        SSESpecification: {SSEEnabled: true}
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+    CognitoMcpRegistrationRole:
+      Type: AWS::IAM::Role
+      Condition: CognitoMcpEnabled
+      Properties:
+        RoleName: ${self:service}-${self:provider.stage}-${self:provider.region}-oauthRole
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal: {Service: lambda.amazonaws.com}
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: register-mcp-clients
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+                  Resource: !GetAtt CognitoMcpClients.Arn
+                - Effect: Allow
+                  Action: cognito-idp:CreateUserPoolClient
+                  Resource: !Sub 'arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${env:COGNITO_USER_POOL_ID, "disabled"}'
+                - Effect: Allow
+                  Action: [logs:CreateLogStream, logs:PutLogEvents]
+                  Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${self:service}-${self:provider.stage}-oauth:*'
     # What a client with no token is told (RFC 9728).  The authorizer refuses
     # before any handler runs, so this challenge cannot come from code — an
     # unauthorized request would otherwise get a bare 401 and an MCP client

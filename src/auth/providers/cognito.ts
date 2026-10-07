@@ -1,6 +1,7 @@
 import { createRemoteJWKSet, jwtVerify, JWTVerifyGetKey } from "jose";
 import type { AuthenticationAdapter } from "../types";
 import { AUTHORITIES } from "../../policy/decide";
+import {createRegistrationHandler, registeredMcpClient, registrationConfig, RegisteredClient} from '../cognitoRegistration';
 const { cognitoConfig } = require("../../../build/auth-provider.cjs");
 
 export interface CognitoConfig {
@@ -11,6 +12,7 @@ export interface CognitoConfig {
     scopeMap: Record<string, string>;
     audience?: string;
     keys?: JWTVerifyGetKey;
+    registeredClient?: (id: string) => Promise<RegisteredClient | undefined>;
 }
 
 const keySets = new Map<string, JWTVerifyGetKey>();
@@ -45,7 +47,13 @@ export function createAdapter(config?: CognitoConfig): AuthenticationAdapter {
             const clientId = payload.client_id;
             if (typeof clientId !== "string") throw new Error("Missing client ID");
             const machine = c.machineClientIds.includes(clientId);
-            if (!machine && !c.humanClientIds.includes(clientId)) throw new Error("Unrecognized app client");
+            if (!machine && !c.humanClientIds.includes(clientId)) {
+                const registered = await (c.registeredClient || (config ? async () => undefined : registeredMcpClient))(clientId);
+                if (!registered) throw new Error("Unrecognized app client");
+                // A dynamically registered app is never a machine principal. Its
+                // Cognito token must name this MCP resource, not another API.
+                if (payload.aud !== registered.resource) throw new Error('Incorrect MCP resource audience');
+            }
             // User-pool access tokens for people contain a username. Dedicated machine
             // clients are configured separately; an ambiguous identity never becomes an owner.
             if (!machine && (typeof payload.username !== "string" || !payload.username)) throw new Error("Not a human access token");
@@ -64,7 +72,22 @@ export function createAdapter(config?: CognitoConfig): AuthenticationAdapter {
         },
         discovery() {
             const c = configuration();
+            const registration = config ? undefined : registrationConfig();
+            if (registration) return {authorizationServers:[registration.authorizationIssuer || registration.baseUrl], scopes:registration.scopes,
+                resourceFallback:registration.baseUrl+'/mcp', clientRegistration:'dynamic'};
             return { authorizationServers: [c.issuer], scopes: [...new Set([...c.requiredScopes, ...Object.keys(c.scopeMap)])], audience: c.audience };
+        },
+        async oauthRequest(event) {
+            const registration = config ? undefined : registrationConfig();
+            if (registration && event.requestContext?.http) {
+                // Function URL context is supplied by AWS, never by a Host header
+                // or request body. Avoid a circular Lambda -> URL -> Lambda ref.
+                const domain = event.requestContext.domainName;
+                if (!/^[a-z0-9]+\.lambda-url\.[a-z0-9-]+\.on\.aws$/.test(domain || '')) throw new Error('Invalid OAuth host');
+                registration.authorizationIssuer = 'https://'+domain;
+            }
+            return registration ? createRegistrationHandler(registration)(event)
+                : {statusCode:404, body:'{"error":"not_found"}'};
         },
     };
 }

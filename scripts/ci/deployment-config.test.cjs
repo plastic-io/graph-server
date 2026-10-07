@@ -25,6 +25,7 @@ test('one infrastructure output set configures both verifier and browser', () =>
   assert.ok(config.COGNITO_SCOPES.split(' ').includes(config.COGNITO_REQUIRED_SCOPES));
   assert.equal(config.COGNITO_REDIRECT_SIGN_IN, 'https://editor.example/graph-editor/auth-callback');
   assert.equal(config.COGNITO_MACHINE_CLIENT_IDS, '');
+  assert.equal(config.COGNITO_MCP_REGISTRATION, 'true');
   assert.equal(config.VIEW_ORIGINS, 'https://editor.example');
 });
 test('missing outputs and insecure endpoints fail the release', () => {

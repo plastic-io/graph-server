@@ -165,11 +165,15 @@ Resources:
               - Sid: TheLambdaExecutionRoleOnly
                 Effect: Allow
                 Action: [iam:CreateRole, iam:DeleteRole, iam:GetRole, iam:PutRolePolicy, iam:DeleteRolePolicy, iam:GetRolePolicy, iam:AttachRolePolicy, iam:DetachRolePolicy, iam:TagRole, iam:UntagRole, iam:UpdateAssumeRolePolicy]
-                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-lambdaRole"
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-lambdaRole"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-oauthRole"
               - Sid: PassOnlyThatRoleToLambda
                 Effect: Allow
                 Action: iam:PassRole
-                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-lambdaRole"
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-lambdaRole"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-oauthRole"
                 Condition:
                   StringEquals:
                     iam:PassedToService: lambda.amazonaws.com
@@ -177,6 +181,10 @@ Resources:
                 Effect: Allow
                 Action: [cloudformation:ListStacks, cloudformation:ValidateTemplate, cloudformation:GetTemplateSummary, sts:GetCallerIdentity, logs:DescribeLogGroups]
                 Resource: "*"
+              - Sid: McpClientRegistry
+                Effect: Allow
+                Action: [dynamodb:CreateTable, dynamodb:DescribeTable, dynamodb:UpdateTable, dynamodb:DeleteTable, dynamodb:TagResource, dynamodb:UntagResource, dynamodb:ListTagsOfResource, dynamodb:UpdateContinuousBackups, dynamodb:DescribeContinuousBackups, dynamodb:DescribeTimeToLive]
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ServiceName}-${Stage}-oauth-clients"
 Outputs:
   RoleArn:
     Value: !GetAtt DeployRole.Arn

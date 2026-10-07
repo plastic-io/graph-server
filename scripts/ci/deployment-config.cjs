@@ -53,6 +53,7 @@ function authEnvironment(document, provider) {
     COGNITO_REQUIRED_SCOPES: 'graphs/access', COGNITO_SCOPES: 'openid email profile graphs/access graphs/read graphs/propose',
     COGNITO_SCOPE_MAP: JSON.stringify({'graphs/read':'graph:read','graphs/propose':'graph:propose'}),
     COGNITO_LOGIN_DOMAIN: get('LoginDomain'), COGNITO_RESOURCE_AUDIENCE: '',
+    COGNITO_MCP_REGISTRATION: 'true',
     COGNITO_REDIRECT_SIGN_IN: `${editor.href}auth-callback`, COGNITO_REDIRECT_SIGN_OUT: editor.href};
   validate({AUTH_PROVIDER: provider, ...cognito});
   if (!cognito.COGNITO_ISSUER.endsWith(`/${cognito.COGNITO_USER_POOL_ID}`)) throw new Error('User pool does not match issuer');
