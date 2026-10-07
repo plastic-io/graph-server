@@ -62,9 +62,9 @@ provider:
       Action:
         - secretsmanager:GetSecretValue
       Resource:
-        - "arn:aws:secretsmanager:us-west-1:695527765921:secret:OPENAI_API_KEY-kcvByO"
+        - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:OPENAI_API_KEY-*"
   # Identity (plan §4.4, M1): every HTTP route and the WebSocket $connect route are
-  # behind the JWT authorizer below (Auth0 access tokens for AUTH0_AUDIENCE).  Later
+  # behind the selected provider's JWT authorizer below. Later
   # WebSocket messages are attributed by the connection record written at $connect.
   # WebSocket execution stays off unless explicitly enabled.
   environment:
@@ -101,7 +101,7 @@ provider:
     IAC_REGIONS: ${opt:iacRegions, 'us-west-1'}
     IAC_STACK_PREFIX: ${opt:iacStackPrefix, 'pio-dev-'}
     IAC_BOUNDARY_ARN: ${opt:iacBoundaryArn, ''}
-    IAC_SUBSTRATE_STACKS: 'plastic-io-graph-server,plastic-io-iac-orchestrator'
+    IAC_SUBSTRATE_STACKS: '${self:service},${self:service}-auth,plastic-io-iac-orchestrator'
     # Where this deployment answers, so a picture can be taken of what it serves.
     PUBLIC_BASE_URL: !Sub "https://${ApiGatewayRestApi}.execute-api.${self:provider.region}.amazonaws.com/${self:provider.stage}"
     # Anywhere else a picture may be taken of — an editor, usually.  Empty means
@@ -655,7 +655,7 @@ functions:
   # this function is reached through a Lambda Function URL invoked with response
   # streaming (RESPONSE_STREAM, declared under resources: below because this
   # Serverless version predates the property).  No authorizer stands in front of
-  # a Function URL: the handler verifies the same Auth0 bearer itself.
+  # a Function URL: the handler verifies the selected provider's bearer itself.
   mcpStream:
     handler: src/handler.mcpStream
     timeout: 900
@@ -1270,7 +1270,7 @@ resources:
         # two Access-Control-Allow-Origin headers and a refusal.  One place owns
         # them, and it is the handler.  It answers the preflight as well.
     # AuthType NONE means the URL is reachable; it does not mean the endpoint is
-    # open.  Every request must carry an Auth0 bearer, which the handler
+    # open. Every request must carry the selected provider's bearer, which the handler
     # verifies before it serves anything (src/mcp/stream.ts).
     #
     # Two statements, not one: since October 2025 a function URL needs
