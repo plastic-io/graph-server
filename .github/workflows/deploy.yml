@@ -87,6 +87,13 @@ jobs:
         run: |
           node scripts/check-auth-builds.cjs
           npm --prefix ../graph-editor run test:auth-builds
+      - name: Verify chat with browsers and MCP agents
+        working-directory: graph-editor
+        env:
+          AUTH_PROVIDER: auth0
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test chat.spec.ts
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

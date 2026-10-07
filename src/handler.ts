@@ -3,6 +3,7 @@
 // listSubscriptions) and the deprecated addEvent write path are no longer exported.
 // The BroadcastService/EventSourceService methods remain for internal use and tests.
 import EventSourceService from './eventSourceService';
+import {ChatService} from './chat/service';
 import BroadcastService from './broadcastService';
 import CrdtService from './crdtService';
 import { RevisionService } from './revisions/service';
@@ -87,7 +88,11 @@ async function cancelExecution(graphId: string, principal: any, executionId: str
     return { executionId, requested: true, reason };
 }
 
+const chatService = new ChatService(broadcastService.store, broadcastService, id => eventSourceService.crdtStore.exists(id));
+const chat = withPrincipal(broadcastService.store, (event, context, callback) => chatService.route(event, context, callback));
+
 const mcpDeps = {
+    chat: chatService,
     crdtStore: eventSourceService.crdtStore,
     tocStore: eventSourceService.tocStore,
     admission: eventSourceService.crdtService.admission,
@@ -494,6 +499,7 @@ function authorize(event: any) {
 
 export {
     authorize,
+    chat,
     protectedResourceMetadata,
     revisionsList,
     revisionsCut,

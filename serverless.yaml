@@ -214,6 +214,13 @@ functions:
       - websocket:
           route: $disconnect
 
+  chat:
+    handler: src/handler.chat
+    timeout: 29
+    events:
+      - websocket:
+          route: chat
+
   subscribe:
     handler: src/handler.subscribe
     events:

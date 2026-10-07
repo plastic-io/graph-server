@@ -68,10 +68,12 @@ async function setup(opts = {}) {
         const { decide } = require("../policy/decide");
         consumers = new ConsumerIndex(s3, { readable: async (graphId, principal) => decide(await delegations.resolve(principal, graphId), ["graph:read"]).allow });
     }
+    const chat = opts.chat ? new (require("../chat/service").ChatService)(s3, broadcast, id => store.exists(id)) : undefined;
     const mcp = makeMcpHandler({
+        chat,
         crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys, tests, tasks, simulations, consumers,
         // the brake is tested in its own suite; here it would only stop the test
-        rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: 1000 }) },
+        rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: opts.writeLimit ?? 1000 }), chat: new RateLimiter({ maxMutations: 1000 }) },
         invoke: async (graphId, principal, request) => {
             invoked.push({ graphId, principal: principal && principal.sub, request });
             const graph = await store.projectGraph(graphId);
@@ -86,7 +88,7 @@ async function setup(opts = {}) {
             return { executionId, requested: true, reason };
         },
     });
-    return { s3, store, tocStore, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, simulations, consumers, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled };
+    return { s3, store, tocStore, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, simulations, consumers, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled, chat };
 }
 
 /** a real MCP client whose fetch goes straight into the handler, as the Lambda would */
@@ -887,5 +889,39 @@ describe("what an agent needs to find its way around", () => {
         await expect(client.readResource({ uri: "plastic://graph/g1/revisions" })).rejects.toThrow(/not found/);
         await expect(client.readResource({ uri: "plastic://graph/g1/proposals" })).rejects.toThrow(/not found/);
         await client.close();
+    });
+});
+
+
+describe("MCP chat workflow", () => {
+    test("agent status updates do not consume the graph mutation budget", async () => {
+        const {mcp} = await setup({chat:true,writeLimit:1}); const client = await connect(mcp,owner);
+        const call = async (name,args={}) => parse(await client.callTool({name,arguments:{schemaVersion:1,graphId:"g1",agentSessionId:"separate-budget",...args}}));
+        try {
+            expect((await call("chat.join",{name:"Planner"})).error).toBeUndefined();
+            for (const phase of ["thinking","doing","done"]) expect((await call("chat.post",{messageId:phase,text:`@here ${phase}`,phase})).error).toBeUndefined();
+            expect((await call("revision.cut")).error).toBeUndefined();
+            expect((await call("revision.cut")).error.code).toBe("RATE_LIMITED");
+        } finally {await client.close();}
+    });
+    test("real MCP tools enforce interruption acknowledgements before graph writes", async () => {
+        const {mcp,chat} = await setup({chat:true}); const client = await connect(mcp,owner);
+        const call = async (name,args) => parse(await client.callTool({name,arguments:{schemaVersion:1,graphId:"g1",...args}}));
+        try {
+            expect((await client.listTools()).tools.some(t => t.name === "chat.wait")).toBe(true);
+            expect((await call("revision.cut",{})).error.code).toBe("SESSION_REQUIRED");
+            await call("chat.join",{agentSessionId:"mcp-test",name:"Test agent"});
+            await call("chat.post",{agentSessionId:"mcp-test",messageId:"thinking",text:"@here Planning",phase:"thinking"});
+            const interruption = await chat.post(owner,{graphId:"g1",messageId:"feedback",text:"Wait for the new schema",interrupt:true});
+            expect((await call("revision.cut",{agentSessionId:"mcp-test"})).error.code).toBe("CHAT_INTERRUPTED");
+            const history = await call("chat.read",{agentSessionId:"mcp-test"});
+            expect(history.result.pendingInterruptions[0].id).toBe(interruption.message.id);
+            const waited = await call("chat.wait",{agentSessionId:"mcp-test",after:0,timeoutMs:0});
+            expect(waited.result.messages.length).toBe(2);
+            await call("chat.post",{agentSessionId:"mcp-test",messageId:"ack",text:"I will use the revised schema.",phase:"acknowledged",acknowledges:[interruption.message.id]});
+            expect((await call("revision.cut",{agentSessionId:"mcp-test"})).error).toBeUndefined();
+            const resource = await client.readResource({uri:"plastic://graph/g1/chat"});
+            expect(JSON.parse(resource.contents[0].text).messages).toHaveLength(3);
+        } finally {await client.close();}
     });
 });

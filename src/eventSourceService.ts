@@ -900,6 +900,12 @@ export default class EventSourceService {
         });
     }
     _deleteGraph(id: string, callback: (err: any, response: any) => void) {
+        this.store.removePath(`chat/rooms/graph-${id}/`, err => {
+            if (err) return callback(err, null);
+            this._deleteGraphData(id, callback);
+        });
+    }
+    private _deleteGraphData(id: string, callback: (err: any, response: any) => void) {
         this.crdtStore.removeAll(id).catch((err) => {
             console.error("Cannot remove the collaborative document.", id, err);
         });

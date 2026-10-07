@@ -1,6 +1,9 @@
 import {Context, S3CreateEvent, APIGatewayEvent} from "aws-lambda";
 import {ApiGatewayManagementApi} from "aws-sdk";
 import S3Service from './s3Service';
+import {DelegationStore} from './policy/delegation';
+import {decide} from './policy/decide';
+import {personalChannel} from './chat/service';
 import { principalFromAuthorizerContext, connectionKey, forgetConnection, connectionIsCurrent } from './auth/principal';
 import {newId} from './eventSourceService';
 const STAGE = process.env.STAGE;
@@ -36,7 +39,13 @@ export default class BroadcastService {
         // open without sending another frame after its token has expired.
         this.store.get(connectionKey({ domainName, connectionId }), (err, record) => {
             if (err || !record?.principal || !connectionIsCurrent(record.principal)) return callback(null, this.okResponse);
-            this.postAuthenticatedClient(domainName, connectionId, message, record.principal.expiresAt, callback);
+            if (!/^(graph-chat-|chat-user-)/.test(message?.channelId || "")) {
+                return this.postAuthenticatedClient(domainName, connectionId, message, record.principal.expiresAt, callback);
+            }
+            this.chatAllowed(record.principal, message.channelId).then(allowed => {
+                if (!allowed) return callback(null, this.okResponse);
+                this.postAuthenticatedClient(domainName, connectionId, message, record.principal.expiresAt, callback);
+            }).catch(err => callback(err, null));
         });
     }
     private postAuthenticatedClient(domainName: string, connectionId: string, message: any, expiresAt: number, callback: (err: any, data: any) => void) {
@@ -176,7 +185,25 @@ export default class BroadcastService {
         });
         callback(null, this.okResponse);
     }
+    async chatAllowed(principal: any, channel: string): Promise<boolean> {
+        if (String(channel).startsWith("chat-user-")) return !!principal && channel === personalChannel(principal);
+        if (String(channel).startsWith("graph-chat-")) {
+            const graphId = channel.slice("graph-chat-".length);
+            if (!/^[A-Za-z0-9_.-]{1,64}$/.test(graphId)) return false;
+            return decide(await new DelegationStore(this.store).resolve(principal, graphId), ["graph:read"]).allow;
+        }
+        return true;
+    }
     subscribe(event: any, context: Context, callback: (err: any, response: any) => void) {
+        let body: any;
+        try {body = JSON.parse(event.body);} catch {return callback(null, {statusCode: 400});}
+        if (!/^(graph-chat-|chat-user-)/.test(body.channelId || "")) return this.subscribeAllowed(event, context, callback);
+        this.chatAllowed(event.principal, body.channelId).then(allowed => {
+            if (!allowed) return callback(null, {statusCode: 403});
+            this.subscribeAllowed(event, context, callback);
+        }).catch(err => callback(err, null));
+    }
+    private subscribeAllowed(event: any, context: Context, callback: (err: any, response: any) => void) {
         const ctx = event.requestContext;
         const body = JSON.parse(event.body);
         if (!body.channelId) {

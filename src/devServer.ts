@@ -18,14 +18,16 @@ import * as http from "http";
 import { URL, URLSearchParams } from "url";
 import { WebSocketServer, WebSocket } from "ws";
 import CrdtService from "./crdtService";
+import {ChatService, personalChannel} from "./chat/service";
+import type {Principal} from "./auth/principal";
 import CrdtStore from "./crdtStore";
 import EventSourceService from "./eventSourceService";
 import { makeMcpStreamHandler } from "./mcp/stream";
 import { ExecutionRunner } from "./runtime/executor";
 
 const PORT = Number(process.env.PORT || 3030);
-/** Nothing here authenticates; every request is the same local person. */
-const DEV_PRINCIPAL = { sub: "dev:http", kind: "human", tenant: "personal:dev", scopes: [] };
+/** Nothing here authenticates; HTTP uses this local person, WSS may select a test account. */
+const DEV_PRINCIPAL: Principal = { sub: "dev:http", kind: "human", tenant: "personal:dev", scopes: [] };
 
 /* ------------------------------------------------------------------ *
  * an object store that lives in memory
@@ -58,6 +60,15 @@ class MemoryStore {
     this.objects.set(key, Buffer.from(JSON.stringify(value)));
     this.meta.set(key, meta || {});
     callback(null, null);
+  }
+  getVersioned(key: string, callback: any) {
+    this.get(key, (err: any, value: any) => callback(err, err ? null : {value, etag: require("crypto").createHash("sha256").update(JSON.stringify(value)).digest("hex")}));
+  }
+  compareAndSet(key: string, value: any, etag: any, callback: any) {
+    const current = this.objects.get(key);
+    const actual = current ? require("crypto").createHash("sha256").update(current).digest("hex") : null;
+    if (actual !== etag) return callback(Object.assign(new Error("PreconditionFailed"), {statusCode: 412}));
+    this.set(key, value, {}, callback);
   }
   head(key: string, callback: (err: any, data: any) => void) {
     if (!this.objects.has(key)) {
@@ -92,6 +103,7 @@ class MemoryStore {
  * ------------------------------------------------------------------ */
 
 const sockets = new Map<string, WebSocket>();
+const devPrincipals = new Map<string, any>();
 const channels = new Map<string, Set<string>>();
 
 class DevBroadcastService {
@@ -175,7 +187,9 @@ async function runTaskLocally(task: any, cancelled: () => Promise<boolean>): Pro
  * Function URL; here it is this process, so a client can be pointed at
  * http://localhost:PORT/mcp and watch a graph change while it edits it.
  */
+const chatService = new ChatService(store, broadcastService, id => crdtStore.exists(id));
 const mcp = makeMcpStreamHandler({
+  chat: chatService,
   crdtStore,
   tocStore: (eventSourceService as any).tocStore,
   admission: crdtService.admission,
@@ -195,12 +209,13 @@ const mcp = makeMcpStreamHandler({
 
 function apiEvent(connectionId: string, body: any) {
   return {
+    principal: devPrincipals.get(connectionId),
     body: JSON.stringify(body),
     requestContext: {
       connectionId,
       domainName: "localhost",
       identity: { userArn: "dev:" + connectionId },
-      authorizer: { sub: "dev:" + connectionId, kind: "human", tenant: "personal:dev", scopes: "[]" },
+      authorizer: {...devPrincipals.get(connectionId), scopes: "[]"},
     },
   };
 }
@@ -490,9 +505,16 @@ const server = http.createServer(async (request, response) => {
 const wss = new WebSocketServer({ server });
 let nextConnectionId = 0;
 
-wss.on("connection", (socket) => {
+wss.on("connection", (socket, request) => {
   const connectionId = "conn-" + (nextConnectionId += 1);
   sockets.set(connectionId, socket);
+  // Local-only test identities, so reload/reconnect behaves like one account.
+  // This server is deliberately unauthenticated; production uses JWT principals.
+  const requested = new URL(request.url || "/", `http://localhost:${PORT}`).searchParams.get("user");
+  const user = requested && /^[a-zA-Z0-9_-]{1,40}$/.test(requested) ? requested : connectionId;
+  const principal = {...DEV_PRINCIPAL, sub: "dev:" + user, name: "Local " + user, expiresAt: Math.floor(Date.now()/1000)+3600, authProvider:"auth0"};
+  devPrincipals.set(connectionId, principal);
+  store.set(`connections/${connectionId}/localhost`, {principal}, {}, () => undefined);
   console.log("connected", connectionId);
 
   socket.on("message", (raw) => {
@@ -505,7 +527,10 @@ wss.on("connection", (socket) => {
     const event = apiEvent(connectionId, message);
     const reply = (_err: any, _result: any) => undefined;
     switch (message.action) {
+      case "chat":
+        return chatService.route(event, {}, reply);
       case "subscribe":
+        if (String(message.channelId).startsWith("chat-user-") && message.channelId !== personalChannel(principal)) return;
         return broadcastService.subscribe(connectionId, message.channelId);
       case "unsubscribe":
         return broadcastService.unsubscribe(connectionId, message.channelId);
@@ -527,6 +552,8 @@ wss.on("connection", (socket) => {
   socket.on("close", () => {
     console.log("disconnected", connectionId);
     broadcastService.dropConnection(connectionId);
+    devPrincipals.delete(connectionId);
+    store.remove(`connections/${connectionId}/localhost`, () => undefined);
   });
 });
 

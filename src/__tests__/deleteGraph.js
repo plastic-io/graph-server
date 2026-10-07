@@ -58,6 +58,8 @@ describe("deleting a graph", () => {
         };
         seed(store, sampleGraph("keep-me", "KeepMe"));
         seed(store, sampleGraph("hide-me", "HideMe"));
+        store.set("chat/rooms/graph-hide-me/HEAD.json", {seq: 1}, {}, () => undefined);
+        store.set("chat/rooms/direct-private/HEAD.json", {seq: 1}, {}, () => undefined);
     });
 
     /**
@@ -105,6 +107,7 @@ describe("deleting a graph", () => {
         // Everything it was made of is still there.
         expect(store.objects.has("graphs/projections/latest/hide-me.json")).toBe(true);
         expect(store.objects.has("graphs/hide-me/events/ev1.json")).toBe(true);
+        expect(store.objects.has("chat/rooms/graph-hide-me/HEAD.json")).toBe(true);
         expect(store.objects.has("graphs/projections/endpoints/HideMe.json")).toBe(true);
     });
 
@@ -160,6 +163,8 @@ describe("deleting a graph", () => {
 
         expect(store.objects.has("graphs/projections/latest/hide-me.json")).toBe(false);
         expect(store.objects.has("graphs/hide-me/events/ev1.json")).toBe(false);
+        expect(store.objects.has("chat/rooms/graph-hide-me/HEAD.json")).toBe(false);
+        expect(store.objects.has("chat/rooms/direct-private/HEAD.json")).toBe(true);
         expect(store.objects.has("graphs/projections/endpoints/HideMe.json")).toBe(false);
         // and the graph beside it is untouched
         expect(store.objects.has("graphs/projections/latest/keep-me.json")).toBe(true);

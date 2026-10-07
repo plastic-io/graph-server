@@ -29,6 +29,15 @@ class FakeS3Service {
         this.meta.set(key, meta || {});
         callback(null, null);
     }
+  getVersioned(key, callback) {
+    this.get(key, (err, value) => callback(err, err ? null : {value, etag: require("crypto").createHash("sha256").update(JSON.stringify(value)).digest("hex")}));
+  }
+  compareAndSet(key, value, etag, callback) {
+    const current = this.objects.get(key);
+    const actual = current ? require("crypto").createHash("sha256").update(current).digest("hex") : null;
+    if (actual !== etag) return callback(Object.assign(new Error("PreconditionFailed"), {statusCode: 412}));
+    this.set(key, value, {}, callback);
+  }
     head(key, callback) {
         this.calls.head += 1;
         if (!this.objects.has(key)) {

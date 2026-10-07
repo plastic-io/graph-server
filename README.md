@@ -24,6 +24,11 @@ This server provides graph services to the [Plastic-IO IDE](https://github.com/p
 
 Additionally, this server provides a multi user environment to develop, share, and monitor Plastic-IO graphs.
 
+Graph chat and private messages use Yjs sidecar documents on the same authenticated
+WebSocket bus. People and MCP agents can coordinate work, request interruptions,
+and retrieve conversation history. See [Graph chat and private messaging](CHAT.md)
+for the protocol, agent workflow, and paired CI deployment.
+
 # What are Plastic-IO Graphs?
 
 Plastic-IO graphs are a high level graph programming language built on top of JavaScript and executed with the [Plastic-IO Scheduling Engine](https://github.com/plastic-io/plastic-io).  Plastic-IO graphs are stored as JSON files.  The GUI for Plastic-IO is the [Plastic-IO Graph Editor IDE](https://github.com/plastic-io/graph-editor).

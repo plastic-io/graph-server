@@ -22,6 +22,20 @@ export default class S3Service {
             callback(null, parsedData);
         });
     }
+    /** The version and value must be read together for a compare-and-swap. */
+    getVersioned(key: string, callback: (err: any, data: any) => void) {
+        this.s3.getObject({Bucket: this.bucketName, Key: key}, (err, data) => {
+            if (err) return callback(err, null);
+            try { callback(null, {value: JSON.parse(data.Body.toString()), etag: data.ETag}); }
+            catch (error) { callback(error, null); }
+        });
+    }
+    /** AWS SDK v2's older model omits these headers; add them before signing. */
+    compareAndSet(key: string, value: any, etag: string | null, callback: (err: any, data: any) => void) {
+        const request = this.s3.putObject({Bucket: this.bucketName, Key: key, Body: JSON.stringify(value), ContentType: "application/json"});
+        request.on("build", () => { request.httpRequest.headers[etag ? "If-Match" : "If-None-Match"] = etag || "*"; });
+        request.send(callback);
+    }
     removePath(path: string, callback: (err: any, data: any) => void) {
         this.list(path, (err, items) => {
             Promise.all(items.map((item) => {

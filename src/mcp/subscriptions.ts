@@ -33,6 +33,7 @@ export interface Watch {
     graphId: string;
     /** Whether anything subscribed needs the execution index polled as well. */
     executions: boolean;
+    chat?: boolean;
 }
 
 const GRAPH_URI = /^plastic:\/\/graph\/([A-Za-z0-9_.:|-]+)(?:\/(.*))?$/;
@@ -59,6 +60,7 @@ export function watchesFor(uris: string[]): Watch[] {
         if (rest === "executions" || rest.indexOf("execution/") === 0) {
             watch.executions = true;
         }
+        if (rest === "chat") watch.chat = true;
         byGraph.set(graphId, watch);
     });
     return [...byGraph.values()];
@@ -119,6 +121,7 @@ export class ChangeFeed implements ServerEventBus {
     private listeners = new Set<(event: ServerEvent) => void>();
     /** The newest audit record already accounted for, per graph. */
     private auditCursor = new Map<string, string>();
+    private chatCursor = new Map<string, number>();
     /**
      * The executions already accounted for, by id rather than by a high-water
      * mark.  An execution id is made wherever the execution started — the
@@ -194,6 +197,13 @@ export class ChangeFeed implements ServerEventBus {
         for (const watch of this.watches) {
             try {
                 await this.passAudit(watch, announce);
+                if (watch.chat) {
+                    const head = await this.getJson(`chat/rooms/graph-${watch.graphId}/HEAD.json`);
+                    const seq = head?.seq || 0;
+                    const before = this.chatCursor.get(watch.graphId);
+                    this.chatCursor.set(watch.graphId, seq);
+                    if (announce && seq !== before) this.publish({kind: "resource_updated", uri: `plastic://graph/${watch.graphId}/chat`});
+                }
                 if (watch.executions) {
                     await this.passExecutions(watch, announce);
                 }
