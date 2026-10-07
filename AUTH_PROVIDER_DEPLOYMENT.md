@@ -25,6 +25,16 @@ The initial deployment completed October 6, 2026 (October 7 UTC), using the auth
 | CloudFront distribution | `E3COPJU0703FA1` |
 | Editor bucket | `pio-auth-test-230639770018-auth-editorbucket-frcka3yk1ov2` |
 
+This deployment includes all three logical services: Cognito authentication, the graph server, and the graph editor. They are managed by two CloudFormation stacks. `pio-auth-test-230639770018` owns the graph server's Lambda functions, REST/WebSocket APIs, and graph data bucket. `pio-auth-test-230639770018-auth` owns both Cognito and the editor's S3/CloudFront hosting; its `-auth` suffix does not mean it contains only authentication resources.
+
+Account ownership and live routing were independently verified:
+
+- The graph update function is `arn:aws:lambda:us-west-1:230639770018:function:pio-auth-test-230639770018-test-crdtUpdate`, using an execution role in the same account and `S3_BUCKET=pio-auth-test-230639770018`.
+- Editor hosting is `arn:aws:cloudfront::230639770018:distribution/E3COPJU0703FA1`. Both the graph data bucket and editor bucket passed S3's `ExpectedBucketOwner=230639770018` check.
+- An authenticated browser with the old REST endpoint deliberately saved in its preferences still used REST API `9pzgloz773` and WebSocket API `hwx4k4af87`. Both its active settings and actual network requests matched the deployed server outputs; no request was made to the saved old graph endpoint. The audit's temporary Cognito user was deleted afterward.
+
+Use the CloudFront editor URL above to open this environment. Deployment here does not change an editor hosted at another URL or a separately configured local development build.
+
 The [public release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json) records the configuration and file hashes. Deployed server source is `d2aefc54ab2a5f224c2d8e5d71d1f14eeea1ac40`; editor source is `d0ae57a207c9cb656947182018d7aa38c36aa321`. The server ZIP recovered from the deployment bucket matches the deployed Lambda's SHA-256. The later CI-only artifact-retention fix is commit `d3d6c98`.
 
 Live checks passed:
