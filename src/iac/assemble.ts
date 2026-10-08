@@ -30,6 +30,7 @@ export interface ResourceFragment {
     properties: Record<string, any>;
     dependsOn?: string[];
     deletionPolicy?: string;
+    updateReplacePolicy?: string;
     condition?: string;
     metadata?: Record<string, any>;
 }
@@ -72,6 +73,7 @@ export function fragmentOf(node: any): ResourceFragment | null {
         properties: (resource.properties && typeof resource.properties === "object") ? resource.properties : {},
         dependsOn: Array.isArray(resource.dependsOn) ? resource.dependsOn.map(String) : undefined,
         deletionPolicy: typeof resource.deletionPolicy === "string" ? resource.deletionPolicy : undefined,
+        updateReplacePolicy: typeof resource.updateReplacePolicy === "string" ? resource.updateReplacePolicy : undefined,
         condition: typeof resource.condition === "string" ? resource.condition : undefined,
         metadata: resource.metadata && typeof resource.metadata === "object" ? resource.metadata : undefined,
     };
@@ -220,6 +222,7 @@ export function assemble(projection: any, stackNodeId: string, policy?: IacPolic
             Properties: fragment.properties,
             ...(fragment.dependsOn ? { DependsOn: fragment.dependsOn } : {}),
             ...(fragment.deletionPolicy ? { DeletionPolicy: fragment.deletionPolicy } : {}),
+            ...(fragment.updateReplacePolicy ? { UpdateReplacePolicy: fragment.updateReplacePolicy } : {}),
             ...(fragment.condition ? { Condition: fragment.condition } : {}),
             ...(fragment.metadata ? { Metadata: fragment.metadata } : {}),
         };

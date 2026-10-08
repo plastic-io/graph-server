@@ -46,7 +46,7 @@ interface Store {
 }
 
 export class DeliveryService {
-    constructor(private store: Store, private crdtStore: CrdtStore, private deps: { runner: (live: (o: Observation) => void) => ExecutionRunner }) {}
+    constructor(private store: Store, private crdtStore: CrdtStore, private deps: { runner: (live: (o: Observation) => void) => ExecutionRunner; revision?:(graph:any)=>Promise<string> }) {}
 
     static key(executionId: string, delivery: { connectorId?: string; nodeId: string; seq: number }): string {
         return `executions/${executionId}/deliveries/${deliveryKey({ ...delivery, executionId })}.json`;
@@ -61,7 +61,7 @@ export class DeliveryService {
 
     /** Run one node here on behalf of a browser-owned execution. */
     async deliver(graphId: string, principal: Principal | undefined, body: any): Promise<DeliveryResult | DeliveryError> {
-        const allowed = decide(principal, ["graph:read"]);
+        const allowed = decide(principal, ["graph:execute"]);
         if (!allowed.allow || !principal) {
             return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
         }
@@ -76,6 +76,7 @@ export class DeliveryService {
         const key = DeliveryService.key(delivery.executionId, delivery);
         const existing = await this.getJson(key);
         if (existing) {
+            if(existing.graphId!==graphId || existing.by!==principal.sub)return {error:'Delivery belongs to another graph or caller',code:'ADMISSION_DENIED'};
             return { ...existing.result, replayed: true };
         }
         const graph: any = await this.crdtStore.projectGraph(graphId).catch(() => null);
@@ -103,9 +104,9 @@ export class DeliveryService {
             nodeUrl: isolatedNode.url,
             field: delivery.field,
             value: wire.value,
-            principal: { sub: principal.sub, kind: principal.kind, tenant: principal.tenant },
+            principal: { sub: principal.sub, kind: principal.kind, tenant: principal.tenant,scopes:principal.scopes },
             executionId: delivery.executionId,
-            revisionId: ULID.test(String(delivery.revisionId)) ? delivery.revisionId : "live",
+            revisionId: this.deps.revision ? await this.deps.revision(graph) : 'live',
             correlationId: ULID.test(String(delivery.correlationId)) ? delivery.correlationId : delivery.executionId,
             budget: { wallMs: (delivery.budgetSlice && delivery.budgetSlice.wallMs) || 25000, hops: 1000, fanOut: 1000, depth: 8 },
             onEdgeWrite: (field: string, value: any) => {

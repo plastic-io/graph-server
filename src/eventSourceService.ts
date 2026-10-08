@@ -1,3 +1,5 @@
+import {applicationInvoker} from './application/runtime';
+import {executionRevision} from './runtime/source';
 import { subjectOf } from "./auth/principal";
 import {Context, S3CreateEvent, APIGatewayEvent} from "aws-lambda";
 import {diff, applyChange} from "deep-diff";
@@ -172,7 +174,8 @@ export default class EventSourceService {
         this.executions = new ExecutionIngest(this.crdtStore.store as any);
         // A browser running a graph reaches a server-placed node through here.
         this.deliveries = new DeliveryService(this.crdtStore.store as any, this.crdtStore, {
-            runner: (live) => new ExecutionRunner(this.crdtStore.store as any, { live }),
+            revision:graph=>executionRevision(graph,this.revisions),
+            runner: (live) => new ExecutionRunner(this.crdtStore.store as any, { live, application:applicationInvoker(this.crdtStore.store,(id,value)=>new Promise((resolve,reject)=>this.broadcastService._sendToChannel('graph-notify-'+id,value,err=>err?reject(err):resolve()))) }),
         });
         // A delivery handed to the browsers waits here until one takes it.
         this.parking = new ParkingService(this.crdtStore.store as any);

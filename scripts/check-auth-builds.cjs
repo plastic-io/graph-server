@@ -16,7 +16,7 @@ async function run(name) {
   delete require.cache[require.resolve('../webpack.config.js')];
   const base = require('../webpack.config.js');
   const config = {...base, context: root, mode:'production', devtool:false,
-    optimization: {minimize:false}, entry: {handler:path.join(root,'src/handler.ts'), oauth:path.join(root,'src/oauthHandler.ts'), iacWorker:path.join(root,'src/iacWorker.ts')},
+    optimization: {minimize:false}, entry: {handler:path.join(root,'src/handler.ts'), oauth:path.join(root,'src/oauthHandler.ts'), iacWorker:path.join(root,'src/iacWorker.ts'), applicationBridge:path.join(root,'src/applicationWorker.ts')},
     output:{...base.output,path:path.join(output,name)},
   };
   const stats = await new Promise((resolve,reject) => {

@@ -39,7 +39,7 @@ export default class BroadcastService {
         // open without sending another frame after its token has expired.
         this.store.get(connectionKey({ domainName, connectionId }), (err, record) => {
             if (err || !record?.principal || !connectionIsCurrent(record.principal)) return callback(null, this.okResponse);
-            if (!/^(graph-chat-|chat-user-)/.test(message?.channelId || "")) {
+            if (!/^(graph-chat-|chat-user-|graph-notify-)/.test(message?.channelId || "")) {
                 return this.postAuthenticatedClient(domainName, connectionId, message, record.principal.expiresAt, callback);
             }
             this.chatAllowed(record.principal, message.channelId).then(allowed => {
@@ -187,8 +187,8 @@ export default class BroadcastService {
     }
     async chatAllowed(principal: any, channel: string): Promise<boolean> {
         if (String(channel).startsWith("chat-user-")) return !!principal && channel === personalChannel(principal);
-        if (String(channel).startsWith("graph-chat-")) {
-            const graphId = channel.slice("graph-chat-".length);
+        if (/^(graph-chat-|graph-notify-)/.test(String(channel))) {
+            const graphId = channel.replace(/^(graph-chat-|graph-notify-)/, "");
             if (!/^[A-Za-z0-9_.-]{1,64}$/.test(graphId)) return false;
             return decide(await new DelegationStore(this.store).resolve(principal, graphId), ["graph:read"]).allow;
         }
@@ -197,7 +197,7 @@ export default class BroadcastService {
     subscribe(event: any, context: Context, callback: (err: any, response: any) => void) {
         let body: any;
         try {body = JSON.parse(event.body);} catch {return callback(null, {statusCode: 400});}
-        if (!/^(graph-chat-|chat-user-)/.test(body.channelId || "")) return this.subscribeAllowed(event, context, callback);
+        if (!/^(graph-chat-|chat-user-|graph-notify-)/.test(body.channelId || "")) return this.subscribeAllowed(event, context, callback);
         this.chatAllowed(event.principal, body.channelId).then(allowed => {
             if (!allowed) return callback(null, {statusCode: 403});
             this.subscribeAllowed(event, context, callback);

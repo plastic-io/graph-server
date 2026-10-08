@@ -1,3 +1,5 @@
+import {ObservationJournal} from './journal';
+import {redactCredentials} from '../security/credentials';
 import { Observation, ExecutionRecord, ObservationRecorder, byteLength } from "./observe";
 import { readObservations } from "./executor";
 import { Principal } from "../auth/principal";
@@ -83,7 +85,7 @@ export class ExecutionIngest {
             connectorId: str(raw.connectorId, 128),
             spanId: str(raw.spanId, 64),
             parentSpanId: str(raw.parentSpanId, 64),
-            payload: raw.payload === undefined ? undefined : raw.payload,
+            payload: raw.payload === undefined ? undefined : redactCredentials(raw.payload),
             capability: raw.capability && typeof raw.capability === "object" ? {
                 kind: String(raw.capability.kind || "").slice(0, 64),
                 scope: Array.isArray(raw.capability.scope) ? raw.capability.scope.slice(0, 8).map((s: any) => String(s).slice(0, 256)) : [],
@@ -115,6 +117,7 @@ export class ExecutionIngest {
             return { error: `at most ${MAX_OBSERVATIONS} observations per execution`, code: "LIMIT_EXCEEDED", details: { count: observations.length, limit: MAX_OBSERVATIONS } };
         }
         const existing = await this.getJson(ExecutionRunner.executionKey(executionId));
+        if(existing && existing.graphId!==graphId)return {error:'Execution belongs to a different graph',code:'ADMISSION_DENIED'};
         const owner = { sub: principal.sub, kind: principal.kind, tenant: principal.tenant };
         const revisionId = ULID.test(String(incoming.revisionId)) ? String(incoming.revisionId) : "live";
         const correlationId = ULID.test(String(incoming.correlationId)) ? String(incoming.correlationId) : executionId;
@@ -142,7 +145,7 @@ export class ExecutionIngest {
             startedAt,
             endedAt: typeof incoming.endedAt === "string" && !isNaN(Date.parse(incoming.endedAt)) ? incoming.endedAt : new Date().toISOString(),
             state: STATES.has(incoming.state) ? incoming.state : "unknown",
-            reason: str(incoming.reason, 512),
+            reason: redactCredentials(str(incoming.reason, 512)),
             duration: num(incoming.duration),
             hops: num(incoming.hops),
             errors: num(incoming.errors),
@@ -170,6 +173,7 @@ export class ExecutionIngest {
             }
             const observationsKey = key.replace(/\.ndjson$/, `-browser-${session}.ndjson`);
             await this.putRaw(observationsKey, cleaned, graphId, executionId);
+            await new ObservationJournal(this.store).append(graphId,cleaned,{revisionId,executionId,correlationId,provenance:'browser-report',reportedBy:principal.sub});
             await this.putJson(reportKey, {
                 at: new Date().toISOString(), by: principal.sub, graphId, domain: "browser",
                 sessionId: session, count: cleaned.length, observationsKey,
@@ -180,6 +184,7 @@ export class ExecutionIngest {
         if (cleaned.length) {
             await this.putRaw(key, cleaned, graphId, executionId);
         }
+        await new ObservationJournal(this.store).append(graphId,cleaned,{revisionId,executionId,correlationId,provenance:'browser-report',reportedBy:principal.sub});
         await this.putJson(ExecutionRunner.executionKey(executionId), record);
         await this.putJson(ExecutionRunner.byGraphKey(graphId, executionId), record);
         return { record, observations: cleaned.length, replayed: false };

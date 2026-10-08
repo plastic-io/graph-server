@@ -32,6 +32,15 @@ if (!isolationAvailable()) {
 describeIfAvailable("a contained node", () => {
     jest.setTimeout(30000);
 
+    test('the contained identity helper receives only the verified caller, with a usable clock',async()=>{
+        const store=new FakeS3Service(),writes=[];
+        const runner=new ExecutionRunner(store);
+        const graph=graphOf([contained('identity','const first=host.identity(); first.sub="changed locally"; edges.out={caller:host.identity(),at:host.now()};')]);
+        const summary=await runner.run({graph,nodeUrl:'identity',field:'in',principal:{...owner,access_token:'must-not-cross'},now:()=>1234,onEdgeWrite:(_f,v)=>writes.push(v)});
+        expect(summary.errors).toBe(0);expect(writes).toEqual([{caller:owner,at:1234}]);
+        expect(JSON.stringify(await observationsOf(store,summary))).not.toContain('must-not-cross');
+    });
+
     test("runs ordinary node code, routes its edges and writes state back", async () => {
         const s3 = new FakeS3Service();
         const runner = new ExecutionRunner(s3);

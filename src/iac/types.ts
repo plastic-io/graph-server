@@ -84,7 +84,7 @@ export const CHEAP_RESOURCE_TYPES: string[] = [
     "AWS::Logs::LogGroup", "AWS::Logs::LogStream", "AWS::Logs::SubscriptionFilter", "AWS::Logs::MetricFilter",
     "AWS::Events::Rule", "AWS::Events::EventBus", "AWS::Scheduler::Schedule", "AWS::Scheduler::ScheduleGroup",
     "AWS::ApiGateway::RestApi", "AWS::ApiGateway::Resource", "AWS::ApiGateway::Method", "AWS::ApiGateway::Deployment",
-    "AWS::ApiGateway::Stage", "AWS::ApiGateway::Account", "AWS::ApiGatewayV2::Api", "AWS::ApiGatewayV2::Route",
+    "AWS::ApiGateway::Stage", "AWS::ApiGateway::Account", "AWS::ApiGateway::Authorizer", "AWS::ApiGatewayV2::Api", "AWS::ApiGatewayV2::Route",
     "AWS::ApiGatewayV2::Integration", "AWS::ApiGatewayV2::Stage", "AWS::ApiGatewayV2::Deployment",
     "AWS::StepFunctions::StateMachine", "AWS::StepFunctions::Activity",
     "AWS::SSM::Parameter", "AWS::CloudWatch::Alarm", "AWS::CloudWatch::Dashboard",

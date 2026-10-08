@@ -1,3 +1,5 @@
+import {applicationInvoker} from './application/runtime';
+import {executionRevision} from './runtime/source';
 // Interim hardening (2026-09-20): the client-callable fan-out routes (sendToChannel,
 // sendToConnection, broadcast), the connection-enumeration routes (listSubscribers,
 // listSubscriptions) and the deprecated addEvent write path are no longer exported.
@@ -47,11 +49,12 @@ async function invokeForAgent(graphId: string, principal: any, request: { nodeUr
     if (!node) {
         return { error: `no node ${request.nodeUrl} in ${graphId}`, code: "NOT_FOUND" };
     }
-    const active: any = await eventSourceService.crdtStore.activeRevision(graphId).catch(() => null);
+    const revisionId=await executionRevision(graph,eventSourceService.revisions);
     const runner = new ExecutionRunner(eventSourceService.crdtStore.store as any, {
         live: (observation) => { broadcastService._sendToChannel("graph-notify-" + graphId, { ...observation, eventType: "observation" }, () => undefined); },
         // a node holding aws:cfn can ask what its change would do; the service
         // decides whether this principal may, and it can only plan (D-41, D-43)
+        application:applicationInvoker(eventSourceService.crdtStore.store,(id,value)=>new Promise((resolve,reject)=>broadcastService._sendToChannel('graph-notify-'+id,value,err=>err?reject(err):resolve()))),
         deploy: (request: any) => eventSourceService.iac.fromHost({ ...request, principal }),
     });
     const summary = await runner.run({
@@ -59,8 +62,8 @@ async function invokeForAgent(graphId: string, principal: any, request: { nodeUr
         nodeUrl: node.url,
         field: request.field || ((node.properties && node.properties.inputs && node.properties.inputs[0] && node.properties.inputs[0].name) || "in"),
         value: request.value,
-        principal: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant } : null,
-        revisionId: active && active.revisionId ? active.revisionId : "live",
+        principal: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant,scopes:principal.scopes } : null,
+        revisionId,
         budget: { wallMs: 25000, hops: 10000, fanOut: 1000, depth: 64, ...(request.budget || {}) },
         defaultContainment: process.env.DEFAULT_CONTAINMENT === "isolate" ? "isolate" : "worker",
         deliver: async (delivery: any) => {
@@ -109,6 +112,7 @@ const mcpDeps = {
     simulations: eventSourceService.simulations,
     consumers: eventSourceService.consumers,
     iac: eventSourceService.iac,
+    reviews:eventSourceService.iacReviews,
     capture: eventSourceService.capture,
 };
 const mcp = makeMcpHandler(mcpDeps);

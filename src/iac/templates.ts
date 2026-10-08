@@ -1,3 +1,5 @@
+import {isolationEnabled} from './capabilities';
+import {scopedPolicy,stackScope,validateIsolation} from './isolation';
 import { createHash } from "crypto";
 import { IacPolicy, IacProblem } from "./types";
 import { policyFromEnv, validateStack, validateTemplate } from "./validator";
@@ -73,9 +75,12 @@ export class TemplateStore {
         for (const { nodeId, iac } of carriers) {
             const format: "yaml" | "json" = iac.template.format === "json" ? "json" : "yaml";
             const text: string = iac.template.text;
-            const validation = validateTemplate(text, format, policy);
+            const scope=stackScope(projection.id,nodeId,policy);
+            const effective=isolationEnabled()?scopedPolicy(scope,policy):policy;
+            const validation = validateTemplate(text, format, effective);
+            if(isolationEnabled())validateIsolation(text,format,scope).forEach(problem=>problems.push({...problem,nodeId}));
             validation.problems.forEach((problem) => problems.push({ ...problem, nodeId }));
-            validateStack(iac.stack, policy).forEach((problem) => problems.push({ ...problem, nodeId }));
+            validateStack(iac.stack, effective).forEach((problem) => problems.push({ ...problem, nodeId }));
             if (!validation.ok) {
                 continue;
             }

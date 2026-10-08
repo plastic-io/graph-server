@@ -73,6 +73,16 @@ describe('private deployment access boundaries', () => {
       BlockPublicAcls:true,IgnorePublicAcls:true,BlockPublicPolicy:true,RestrictPublicBuckets:true,
     });
   });
+  test('every synchronous execution entry point has containment and the bridge has no public route',()=>{
+    expect(service.provider.environment.REQUIRE_CONTAINMENT).toBe('true');
+    // YAML's generic parser preserves !Ref as its scalar value, while the
+    // equivalent long form remains {Ref: ...}.
+    for(const name of ['mcpRoute','mcpStream','edgeDeliver','taskWorker','revisionActivate','publish','default','httpDefault'])expect(service.functions[name].layers.map(layer=>layer.Ref||layer)).toContain('IsolatedVmLambdaLayer');
+    expect(service.functions.applicationBridge.events).toBeUndefined();
+    const role=JSON.stringify(service.resources.Resources.ApplicationBridgeRole);
+    expect(role).not.toContain('iam:PassRole');expect(role).not.toContain('states:StartExecution');
+    expect(role).toContain('function:gapp-*');
+  });
   test('only the isolated infrastructure worker can execute a reviewed change set',()=>{
     const shared=JSON.stringify(service.provider.iamRoleStatements);
     expect(shared).not.toContain('cloudformation:ExecuteChangeSet');

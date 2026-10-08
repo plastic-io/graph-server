@@ -115,8 +115,12 @@ describe('private messaging and graph access', () => {
     expect(await broadcast.chatAllowed(alice,personalChannel(alice))).toBe(true);
     expect(await broadcast.chatAllowed(agent,graphChannel('g1'))).toBe(true);
     expect(await broadcast.chatAllowed(agent,graphChannel('g2'))).toBe(false);
+    expect(await broadcast.chatAllowed(undefined,'graph-notify-g1')).toBe(false);
+    expect(await broadcast.chatAllowed(agent,'graph-notify-g1')).toBe(true);
+    expect(await broadcast.chatAllowed(agent,'graph-notify-g2')).toBe(false);
     await chat.delegations.remove(agent.sub,'g1');
     expect(await broadcast.chatAllowed(agent,graphChannel('g1'))).toBe(false);
+    expect(await broadcast.chatAllowed(agent,'graph-notify-g1')).toBe(false);
   });
   test('WSS attributes messages to the verified principal and sends explicit bounded errors', async () => {
     const {chat, replies} = setup();

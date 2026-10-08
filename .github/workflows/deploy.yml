@@ -49,6 +49,7 @@ jobs:
       AUTH0_CLIENT_ID: ${{ vars.AUTH0_CLIENT_ID }}
       OWNER_SUBS: ${{ vars.OWNER_SUBS }}
       IAC_REVIEW_ENABLED: ${{ vars.IAC_REVIEW_ENABLED || 'true' }}
+      IAC_STACK_ISOLATION: ${{ vars.IAC_STACK_ISOLATION || 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:

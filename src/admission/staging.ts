@@ -1,4 +1,6 @@
 import * as Y from "yjs";
+import {includeInfrastructure} from "./infrastructureDiff";
+import {assertCredentialFree} from '../security/credentials';
 import {
     toJSON, applyUpdate, semanticDiff, schemaVersionOf, SCHEMA_VERSION, encodeStateVector, DiffSummary,
 } from "@plastic-io/graph-crdt";
@@ -61,11 +63,12 @@ export function stage(head: Uint8Array | null, content: Uint8Array): StagingResu
             return { ok: false, code: "STALE_BASE", reason: "the update depends on changes the server has not received" };
         }
         const after = toJSON(doc);
+        try {assertCredentialFree(after);} catch {return {ok:false,code:'SCHEMA_INVALID',reason:'Credential content must not be stored in a graph. Use the authenticated session and supported backend helpers.'};}
         const versionAfter = schemaVersionOf(doc);
         if (versionAfter > SCHEMA_VERSION) {
             return { ok: false, code: "SCHEMA_INVALID", reason: `document schema version ${versionAfter} is newer than this server supports (${SCHEMA_VERSION})` };
         }
-        const diff = semanticDiff(before, after);
+        const diff = includeInfrastructure(semanticDiff(before, after), before, after);
         const metaAfter = metaOf(doc);
         const metaKeys = Array.from(new Set(Object.keys(metaBefore).concat(Object.keys(metaAfter))))
             .filter((k) => JSON.stringify(metaBefore[k]) !== JSON.stringify(metaAfter[k])).sort();

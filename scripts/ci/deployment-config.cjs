@@ -57,6 +57,8 @@ function authEnvironment(document, provider) {
     COGNITO_REDIRECT_SIGN_IN: `${editor.href}auth-callback`, COGNITO_REDIRECT_SIGN_OUT: editor.href};
   validate({AUTH_PROVIDER: provider, ...cognito});
   if (!cognito.COGNITO_ISSUER.endsWith(`/${cognito.COGNITO_USER_POOL_ID}`)) throw new Error('User pool does not match issuer');
+  const stackId=document.Stacks[0].StackId;
+  if(stackId){const match=/^arn:([^:]+):cloudformation:([^:]+):(\d{12}):stack\//.exec(stackId);if(!match)throw new Error('Invalid authentication stack ARN');cognito.COGNITO_USER_POOL_ARN=`arn:${match[1]}:cognito-idp:${match[2]}:${match[3]}:userpool/${cognito.COGNITO_USER_POOL_ID}`;}
   return {...common, ...cognito};
 }
 

@@ -49,6 +49,8 @@ export interface IsolateRunRequest {
         graph: any;
         cache: any;
         capabilities: any;
+        identity?:any;
+        now?:number;
     };
     /** Assign to an output edge (routes immediately, exactly as in-process assignment does). */
     setEdge: (field: string, value: any) => void;
@@ -133,6 +135,9 @@ const BOOTSTRAP = `
     json: async () => JSON.parse(r.body),
   });
   const host = {
+    identity: () => input.identity ? ({...input.identity}) : null,
+    now: () => input.now,
+    application: {invoke: (...args) => callHost("application.invoke")(...args)},
     fetch: (url, init) => callHost("fetch")(url, init).then(response),
     kv: {
       get: (key) => callHost("kv.get")(key),
@@ -217,6 +222,8 @@ export async function runInIsolate(req: IsolateRunRequest): Promise<IsolateOutco
             graph: req.inputs.graph,
             cache: req.inputs.cache || {},
             capabilities: req.inputs.capabilities,
+            identity: req.inputs.identity || null,
+            now: req.inputs.now === undefined ? Date.now() : req.inputs.now,
         }));
         await jail.set("__setEdge", new ivm.Reference((field: string, json: string) => {
             req.setEdge(field, JSON.parse(json));

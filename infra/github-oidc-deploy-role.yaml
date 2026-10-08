@@ -176,6 +176,8 @@ Resources:
                   - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacWorkerRole"
                   - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacExecutionRole"
                   - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacStateMachineRole"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacGuardrailRole"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-applicationBridgeRole"
               - Sid: PassOnlyThatRoleToLambda
                 Effect: Allow
                 Action: iam:PassRole
@@ -196,7 +198,9 @@ Resources:
               - Sid: PassIacWorkerRole
                 Effect: Allow
                 Action: iam:PassRole
-                Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacWorkerRole"
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-iacWorkerRole"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${ServiceName}-${Stage}-${AWS::Region}-applicationBridgeRole"
                 Condition:
                   StringEquals: {iam:PassedToService: lambda.amazonaws.com}
               - Sid: PassIacStateMachineRole

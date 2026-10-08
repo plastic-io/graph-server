@@ -16,7 +16,7 @@ const configuration = Object.fromEntries([
   'COGNITO_ISSUER', 'COGNITO_USER_POOL_ID', 'COGNITO_CLIENT_ID', 'COGNITO_LOGIN_DOMAIN',
   'COGNITO_SCOPES', 'COGNITO_REQUIRED_SCOPES', 'COGNITO_SCOPE_MAP',
   'AUTH0_DOMAIN', 'AUTH0_CLIENT_ID', 'AUTH0_AUDIENCE',
-  'IAC_REVIEW_ENABLED',
+  'IAC_REVIEW_ENABLED', 'IAC_STACK_ISOLATION',
 ].filter(key => env[key]).map(key => [key, env[key]]));
 console.log(JSON.stringify({serverRevision:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
   editorRevision:execFileSync('git',['-C','../graph-editor','rev-parse','HEAD'],{encoding:'utf8'}).trim(),

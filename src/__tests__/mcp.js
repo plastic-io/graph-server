@@ -69,8 +69,13 @@ async function setup(opts = {}) {
         consumers = new ConsumerIndex(s3, { readable: async (graphId, principal) => decide(await delegations.resolve(principal, graphId), ["graph:read"]).allow });
     }
     const chat = opts.chat ? new (require("../chat/service").ChatService)(s3, broadcast, id => store.exists(id)) : undefined;
+    const {IacReviewService}=require('../iac/review');
+    const {IacService}=require('../iac/service');
+    const reviews=opts.infrastructure?new IacReviewService(s3,{enabled:true,projection:g=>store.projectGraph(g),start:async()=>{},cloud:opts.infrastructure}):undefined;
+    const iac=reviews?new IacService(s3,{projection:async g=>({revisionId:'live',projection:await store.projectGraph(g)}),template:async()=>null,reviewStatus:(g,n,p)=>reviews.current(g,n,p)}):undefined;
+    const application=opts.applicationBackend?new (require('../application/service').ApplicationService)(s3,{invoke:opts.applicationBackend,publish:async(g,e)=>broadcast._sendToChannel('graph-notify-'+g,e,()=>{})}):undefined;
     const mcp = makeMcpHandler({
-        chat,
+        chat,reviews,iac,
         crdtStore: store, tocStore, admission: crdt.admission, revisions, components, proposals, summaries, delegations, journeys, tests, tasks, simulations, consumers,
         // the brake is tested in its own suite; here it would only stop the test
         rate: { reads: new RateLimiter({ maxMutations: 1000 }), writes: new RateLimiter({ maxMutations: opts.writeLimit ?? 1000 }), chat: new RateLimiter({ maxMutations: 1000 }) },
@@ -79,8 +84,8 @@ async function setup(opts = {}) {
             const graph = await store.projectGraph(graphId);
             const node = graph.nodes.find((n) => n.url === request.nodeUrl || n.id === request.nodeUrl);
             if (!node) return { error: `no node ${request.nodeUrl}`, code: "NOT_FOUND" };
-            const runner = new ExecutionRunner(s3);
-            const summary = await runner.run({ graph, nodeUrl: node.url, field: request.field || "in", value: request.value, principal: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant } : null });
+            const runner = new ExecutionRunner(s3,{application:application?r=>application.invoke(r):undefined});
+            const summary = await runner.run({ graph, nodeUrl: node.url, field: request.field || "in", value: request.value, principal,revisionId:await require('../runtime/source').executionRevision(graph,revisions) });
             return { summary };
         },
         cancel: async (graphId, principal, executionId, reason) => {
@@ -88,7 +93,7 @@ async function setup(opts = {}) {
             return { executionId, requested: true, reason };
         },
     });
-    return { s3, store, tocStore, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, simulations, consumers, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled, chat };
+    return { s3, store, tocStore, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, simulations, consumers, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled, chat, reviews, application };
 }
 
 /** a real MCP client whose fetch goes straight into the handler, as the Lambda would */
@@ -111,8 +116,8 @@ describe("MCP over the Lambda handler", () => {
         const tools = (await client.listTools()).tools.map((t) => t.name).sort();
         expect(tools).toEqual([
             "component.consumers", "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
-            "iac.plan", "iac.status", "journey.run", "observations.query", "proposal.commit", "proposal.create", "proposal.decide", "proposal.simulate", "proposal.validate",
-            "revision.activate", "revision.cut", "revision.rollback", "tasks.cancel", "tasks.get", "tasks.list", "tests.run",
+            "iac.plan", "iac.preflight", "iac.review", "iac.status", "journey.run", "observations.query", "observations.watch", "proposal.commit", "proposal.create", "proposal.decide", "proposal.retire", "proposal.simulate", "proposal.validate",
+            "revision.activate", "revision.cut", "revision.rollback", "server.discover", "tasks.cancel", "tasks.get", "tasks.list", "tests.run",
             "view.screenshot",
         ]);
         const r = parse(await client.callTool({ name: "graph.summary", arguments: { schemaVersion: 1, graphId: "g1" } }));
@@ -924,4 +929,111 @@ describe("MCP chat workflow", () => {
             expect(JSON.parse(resource.contents[0].text).messages).toHaveLength(3);
         } finally {await client.close();}
     });
+});
+
+// Chess conversation regression: all application mutations use the public MCP schemas.
+describe('MCP platform workflow contract',()=>{
+ test('connection-only revalidation preserves reviewed impact, digest and approval',async()=>{
+  const f=await setup();const client=await connect(f.mcp,owner);
+  try{
+   const call=async(name,args)=>parse(await client.callTool({name,arguments:{schemaVersion:1,graphId:'g1',...args}}));
+   const base=(await call('graph.summary',{})).envelope.resultRevision;
+   const created=(await call('proposal.create',{baseRevision:base,ops:[{op:'connect',from:{nodeId:'form',field:'out'},to:{nodeId:'validate',field:'in'}}],description:'Connect existing nodes',idempotencyKey:ULID})).result;
+   expect(created.validation.ok).toBe(true);
+   const approved=await f.proposals.decideProposal('g1',created.proposalId,{...owner,sub:'reviewer'},'approve',created.proposalDigest);
+   expect(approved.error).toBeUndefined();
+   const checked=(await call('proposal.validate',{proposalId:created.proposalId})).result;
+   expect(checked.proposalDigest).toBe(created.proposalDigest);
+   expect(checked.impact).toEqual(created.impact);
+   expect((await f.proposals.get('g1',created.proposalId)).decisions).toHaveLength(1);
+  }finally{await client.close();}
+ });
+ test('fresh client discovers schemas, renames graph, validates reproducibly and retires obsolete work',async()=>{
+  const f=await setup();const client=await connect(f.mcp,owner);
+  const discovery=parse(await client.callTool({name:'server.discover',arguments:{schemaVersion:1}})).result;
+  expect(discovery.contracts.operations.examples.rename).toEqual([{op:'set-graph-props',patch:{name:'Chess'}}]);
+  expect(discovery.contracts.workflow.boundary).toMatch(/never substitute AWS CLI/i);
+  const base=parse(await client.callTool({name:'graph.summary',arguments:{schemaVersion:1,graphId:'g1'}})).envelope.resultRevision;
+  const args={schemaVersion:1,graphId:'g1',baseRevision:base,ops:discovery.contracts.operations.examples.rename,description:'Rename to Chess',idempotencyKey:ULID};
+  const created=parse(await client.callTool({name:'proposal.create',arguments:args})).result;
+  const again=parse(await client.callTool({name:'proposal.validate',arguments:{schemaVersion:1,graphId:'g1',proposalId:created.proposalId}})).result;
+  expect(again.proposalDigest).toBe(created.proposalDigest);
+  const ready=parse(await client.callTool({name:'proposal.commit',arguments:{schemaVersion:1,graphId:'g1',proposalId:created.proposalId}})).result;
+  expect(ready.state).toBe('committed');expect((await f.store.projectGraph('g1')).properties.name).toBe('Chess');
+  const nextBase=parse(await client.callTool({name:'graph.summary',arguments:{schemaVersion:1,graphId:'g1'}})).envelope.resultRevision;
+  const replacementArgs={...args,baseRevision:nextBase};
+  const obsolete=parse(await client.callTool({name:'proposal.create',arguments:{...replacementArgs,idempotencyKey:require('ulid').ulid(),ops:[{op:'set-graph-props',patch:{name:'Obsolete'}}]}})).result;
+  const replacement=parse(await client.callTool({name:'proposal.create',arguments:{...replacementArgs,idempotencyKey:require('ulid').ulid(),ops:[{op:'set-graph-props',patch:{name:'Current'}}]}})).result;
+  const retired=parse(await client.callTool({name:'proposal.retire',arguments:{schemaVersion:1,graphId:'g1',proposalId:obsolete.proposalId,replacementProposalId:replacement.proposalId}}));
+  expect(retired.result.state).toBe('superseded');
+  expect((await f.proposals.decideProposal('g1',obsolete.proposalId,{...owner,sub:'different-reviewer'},'approve',obsolete.proposalDigest)).code).toBe('CONFLICT');
+  expect((await f.proposals.validate('g1',obsolete.proposalId,owner)).proposal.state).toBe('superseded');
+  await client.close();
+ });
+ test('schema failures identify fields and unknown runtime helper without guessing operation names',async()=>{
+  const f=await setup();const client=await connect(f.mcp,owner);
+  const base=parse(await client.callTool({name:'graph.summary',arguments:{schemaVersion:1,graphId:'g1'}})).envelope.resultRevision;
+  const args={schemaVersion:1,graphId:'g1',baseRevision:base,description:'Chess regression',idempotencyKey:ULID};
+  const invalid=parse(await client.callTool({name:'proposal.create',arguments:{...args,ops:[{op:'rename',name:'Chess'}]}}));
+  expect(invalid.error.details.schemaUri).toBe('plastic://schema/1/operations');
+  const helper=parse(await client.callTool({name:'proposal.create',arguments:{...args,ops:[{op:'set-node-code',nodeId:'validate',template:'set',text:'edges.out=identity();'}]}}));
+  expect(helper.error.details.errors[0].code).toBe('UNSUPPORTED_HELPER');
+  await client.close();
+ });
+});
+
+test('Chess acceptance: discover, preflight, propose, graph approval, isolated review, MCP invocation and correlated errors',async()=>{
+ const env={...process.env};
+ Object.assign(process.env,{IAC_STACK_ISOLATION:'true',IAC_GUARDRAIL_ROLE_ARN:'configured',IAC_REVIEW_STATE_MACHINE:'configured',IAC_ACCOUNTS:'230639770018',IAC_REGIONS:'us-west-1'});
+ let state={exists:false};
+ const cloud={prepare:async()=>true,stack:async()=>state,create:async()=>({changeSetId:'cs',stackId:'stack'}),describe:async()=>({status:'CREATE_COMPLETE',executionStatus:'AVAILABLE',changes:[{action:'Add',logicalId:'Backend',resourceType:'AWS::Lambda::Function'}]}),execute:async()=>{state={exists:true,status:'CREATE_COMPLETE'};},remove:async()=>{},resources:async op=>[{logicalId:'Backend',resourceType:'AWS::Lambda::Function',physicalId:op.input.isolation.namespace+'backend'}]};
+ let client,humanClient;
+ try{
+  const players=new Set();
+  const f=await setup({infrastructure:cloud,chat:true,applicationBackend:async(_arn,event)=>{
+   if(event.input.action==='fail')throw new Error('Application rejected an invalid move');
+   if(event.input.action==='register')players.add(event.context.caller.sub);return {result:{players:[...players]},updates:[{topic:'players',value:{players:[...players]}}]};
+  }});
+  await f.delegations.put({agentSub:agent.sub,graphId:'g1',delegatedBy:owner.sub,scopes:['graph:read','graph:propose','graph:observe','graph:inspect-payloads','graph:execute','iac:propose','iac:read-status'],expiresAt:null,createdAt:new Date().toISOString(),label:'MCP builder'});
+  client=await connect(f.mcp,agent);
+  const call=async(name,args={})=>parse(await client.callTool({name,arguments:{schemaVersion:1,graphId:'g1',...args}}));
+  const discover=await call('server.discover');expect(discover.result.contracts.operations.schema).toBeTruthy();
+  const first=await call('iac.preflight',{nodeId:'stack'});expect(first.result.deployableResourceTypes).toContain('AWS::Lambda::Function');expect(first.result.evidence.awsPermissionsVerified).toBe(false);
+  const example=(await call('server.discover',{topic:'example',nodeId:'stack'})).result.contracts.example;
+  const unsupported=JSON.parse(JSON.stringify(example.configuration));const badTemplate=JSON.parse(unsupported.template.text);badTemplate.Resources.Url={Type:'AWS::Lambda::Url',Properties:{AuthType:'NONE'}};unsupported.template.text=JSON.stringify(badTemplate);
+  expect((await call('iac.preflight',{nodeId:'stack',configuration:unsupported})).result.deployable).toBe(false);
+  expect((await call('iac.preflight',{nodeId:'stack',configuration:example.configuration})).result.deployable).toBe(true);
+  await call('chat.join',{agentSessionId:'builder',name:'MCP builder'});
+  await call('chat.post',{agentSessionId:'builder',messageId:'intent',phase:'thinking',text:'@here I will build the isolated application example.'});
+  await call('chat.post',{agentSessionId:'builder',messageId:'work',phase:'doing',text:'@here Creating the graph proposal.'});
+  const base=(await call('graph.summary')).envelope.resultRevision;
+  const created=await call('proposal.create',{agentSessionId:'builder',baseRevision:base,ops:example.ops,description:'Isolated authenticated application',idempotencyKey:ULID});
+  expect(created.error).toBeUndefined();
+  const proposal=created.result;
+  expect(proposal.requiredDecisions).toContain('iac-approve');expect(proposal.impact.infrastructure[0].resources.some(r=>r.type==='AWS::IAM::Role')).toBe(true);
+  const checked=await call('proposal.validate',{agentSessionId:'builder',proposalId:proposal.proposalId});expect(checked.result.proposalDigest).toBe(proposal.proposalDigest);
+  expect((await call('proposal.commit',{agentSessionId:'builder',proposalId:proposal.proposalId})).error).toBeTruthy();
+  // The graph editor's human decision, distinct from deployment approval.
+  const accepted=await f.proposals.commit('g1',proposal.proposalId,owner);expect(accepted.error).toBeUndefined();expect(accepted.proposal.state).toBe('committed');
+  const graph=await f.store.projectGraph('g1');expect(graph.properties.name).toBe('Chess workflow regression');
+  expect(graph.nodes.find(n=>n.id==='listener').properties).toMatchObject({appearsInPresentation:false,runInBackground:true});
+  const review=await call('iac.review',{agentSessionId:'builder',nodeId:'stack'});expect(review.error).toBeUndefined();
+  await f.reviews.step(review.result.operationId);await f.reviews.step(review.result.operationId);
+  const plan=await f.reviews.current('g1','stack',owner);expect(plan.state).toBe('awaiting-review');expect(state.exists).toBe(false);
+  await f.reviews.approve('g1','stack',owner,{operationId:plan.operationId,reviewDigest:plan.reviewDigest});
+  await f.reviews.step(plan.operationId);await f.reviews.step(plan.operationId);
+  expect((await call('iac.status',{nodeId:'stack'})).result.state).toBe('succeeded');
+  // Runtime through MCP, not a direct Lambda invocation. Local backend responses are simulated.
+  const invoked=await call('graph.invoke',{agentSessionId:'builder',nodeUrl:'backend',field:'request',value:{action:'refresh'}});
+  expect(invoked.error).toBeUndefined();expect(invoked.result.errors).toBe(0);
+  expect(f.broadcast.channel.some(([channel,e])=>channel==='graph-notify-g1'&&e.eventType==='application.update')).toBe(true);
+  const failed=await call('graph.invoke',{agentSessionId:'builder',nodeUrl:'backend',field:'request',value:{action:'fail'}});expect(failed.result.errors).toBeGreaterThan(0);
+  const watched=await call('observations.watch',{filter:{kind:'exec.error'}});
+  expect(watched.result.observations).toEqual(expect.arrayContaining([expect.objectContaining({nodeId:'backend',operationId:plan.operationId,provenance:'server'}),expect.objectContaining({proposalId:proposal.proposalId,executionId:failed.result.executionId})]));
+  // A browser report is visible over the same MCP poll, while retaining its untrusted provenance.
+  const ingest=new (require('../runtime/ingest').ExecutionIngest)(f.s3);
+  await ingest.ingest('g1',owner,{record:{executionId:require('ulid').ulid(),revisionId:'live',state:'error'},observations:[{kind:'exec.error',nodeId:'players',payload:{message:'Browser component error'}}]});
+  const more=await call('observations.watch',{cursor:watched.result.nextCursor,filter:{kind:'exec.error'}});
+  expect(more.result.observations).toEqual(expect.arrayContaining([expect.objectContaining({nodeId:'players',provenance:'browser-report'})]));
+ }finally{await client?.close();await humanClient?.close();process.env=env;}
 });

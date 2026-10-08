@@ -204,6 +204,7 @@ const mcp = makeMcpStreamHandler({
   simulations: (eventSourceService as any).simulations,
   consumers: (eventSourceService as any).consumers,
   iac: (eventSourceService as any).iac,
+  reviews:(eventSourceService as any).iacReviews,
   capture: (eventSourceService as any).capture,
 } as any, { store, pollMs: 500 });
 

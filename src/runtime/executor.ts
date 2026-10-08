@@ -1,3 +1,5 @@
+import {ObservationJournal} from './journal';
+import {assertCredentialFree,redactCredentials} from '../security/credentials';
 import Scheduler from "@plastic-io/plastic-io";
 import { ulid } from "ulid";
 import { ObservationRecorder, ExecutionRecord, Observation } from "./observe";
@@ -108,7 +110,7 @@ const LEGACY_EVENTS = ["begin", "end", "beginconnector", "endconnector", "set", 
 export class ExecutionRunner {
     private store: Store;
     private chain: AuditChain;
-    constructor(store: Store, private deps: { fetchImpl?: typeof fetch; secrets?: (ref: string) => Promise<string>; live?: (observation: Observation) => void; deploy?: (request: any) => Promise<any> } = {}) {
+    constructor(store: Store, private deps: { fetchImpl?: typeof fetch; secrets?: (ref: string) => Promise<string>; live?: (observation: Observation) => void; deploy?: (request: any) => Promise<any>; application?:(request:any)=>Promise<any> } = {}) {
         this.store = store;
         this.chain = new AuditChain(store as any);
     }
@@ -127,9 +129,10 @@ export class ExecutionRunner {
     static byGraphKey(graphId: string, executionId: string) { return `executions/by-graph/${graphId}/${executionId}.json`; }
 
     async run(req: RunRequest): Promise<ExecutionSummary> {
+        assertCredentialFree(req.value);
         const executionId = req.executionId || ulid();
         const revisionId = req.revisionId || "live";
-        const owner = req.principal || { sub: "anonymous", kind: "human", tenant: "none" };
+        const owner = req.principal ? {sub:req.principal.sub,kind:req.principal.kind,tenant:req.principal.tenant} : { sub: "anonymous", kind: "human", tenant: "none" };
         const startedAt = Date.now();
         /**
          * A node that carries another graph becomes that graph's nodes before
@@ -203,10 +206,12 @@ export class ExecutionRunner {
             },
             audit: (record) => this.chain.append(graph.id, record).then(() => undefined),
             deploy: this.deps.deploy,
+            application:this.deps.application,
             now: req.now,
         };
         const hooks = makeContractHooks();
         const onOutput = (info: any) => {
+            assertCredentialFree(info.value);
             if (req.onEdgeWrite) {
                 req.onEdgeWrite(info.field, info.value, info.node);
             }
@@ -310,7 +315,7 @@ export class ExecutionRunner {
             if (!runsHere(node, "server")) {
                 return deliverToBrowser(nodeInterface, execution);
             }
-            if (containmentOf(node) !== "isolate") {
+            if (process.env.REQUIRE_CONTAINMENT !== "true" && containmentOf(node) !== "isolate") {
                 return runInProcess();
             }
             if (!isolationAvailable()) {
@@ -344,6 +349,8 @@ export class ExecutionRunner {
                     graph: { id: graph.id, url: graph.url, version: graph.version, properties: graph.properties },
                     cache: {},
                     capabilities: host.capabilities,
+                    identity:host.identity(),
+                    now:host.now(),
                 },
                 setEdge: (field, value) => { nodeInterface.edges[field] = value; },
                 setState: (path, value) => setPath(nodeInterface.state, path, value),
@@ -359,6 +366,7 @@ export class ExecutionRunner {
                         }
                         return { ok: response.ok, status: response.status, statusText: response.statusText, url: response.url, headers, truncated, body: truncated ? body.slice(0, MAX_CONTAINED_BODY) : body };
                     }
+                    if (member === "application.invoke") return host.application.invoke(args[0],args[1],args[2]);
                     if (member === "kv.get") return host.kv.get(args[0]);
                     if (member === "kv.put") return host.kv.put(args[0], args[1]);
                     if (member === "kv.del") return host.kv.del(args[0]);
@@ -510,7 +518,7 @@ export class ExecutionRunner {
             executionId, graphId: graph.id, revisionId, owner, domain: "server",
             entry: { nodeUrl: req.nodeUrl, field: req.field },
             startedAt: new Date(startedAt).toISOString(), endedAt: new Date(endedAt).toISOString(),
-            state: result.state, reason: result.reason, duration: endedAt - startedAt, hops: result.hops || 0, errors: result.errors || 0,
+            state: result.state, reason: redactCredentials(result.reason), duration: endedAt - startedAt, hops: result.hops || 0, errors: result.errors || 0,
             observations, effects: summary.effects, budget: result.budget, correlationId: req.correlationId || executionId,
         };
         try {
@@ -522,7 +530,10 @@ export class ExecutionRunner {
         } catch (err) {
             console.error("Cannot write the execution's observations", err);
         }
-        return { executionId, revisionId, graphId: graph.id, state: result.state, reason: result.reason, duration: record.duration, hops: record.hops, errors: record.errors, observations, effects: summary.effects, budget: result.budget };
+        const rows=recorder.ndjson().split('\n').filter(Boolean).map(line=>JSON.parse(line));
+        const source=revisionId==='live'?null:await this.getJson(`proposals/by-revision/${graph.id}/${revisionId}.json`);
+        await new ObservationJournal(this.store).append(graph.id,rows,{revisionId,proposalId:source?.proposalId,executionId,correlationId:req.correlationId||executionId,provenance:'server'});
+        return { executionId, revisionId, graphId: graph.id, state: result.state, reason: record.reason, duration: record.duration, hops: record.hops, errors: record.errors, observations, effects: summary.effects, budget: result.budget };
     }
 }
 

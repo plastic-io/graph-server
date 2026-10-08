@@ -20,6 +20,7 @@ import { ulid } from "ulid";
 import { ExecutionRunner } from "./runtime/executor";
 import { ParkingService } from "./runtime/parking";
 import CrdtStore from "./crdtStore";
+import {applicationInvoker} from './application/runtime';
 
 /** Secret references node code may name through host.secret(ref): ref=SecretsManager name, comma separated. */
 const SECRET_REFS: Record<string, string> = (process.env.SECRET_REFS || "openai=OPENAI_API_KEY").split(",").reduce((acc: Record<string, string>, pair) => {
@@ -203,7 +204,9 @@ class GraphService {
                 // Extract graphUrl and nodeUrl from the segments
                 graphUrl = segments[1];  // Assumes that the path starts with '/'
                 nodeUrl = segments[2];
-                value = event;
+                // Caller identity is supplied through host.identity(). Transport credentials
+                // must never become graph values or observations in the legacy HTTP path.
+                value = {...event,principal:undefined,headers:Object.fromEntries(Object.entries(event.headers||{}).filter(([key])=>!['authorization','cookie','x-api-key'].includes(key.toLowerCase()))),multiValueHeaders:undefined};
                 field = event.path;
             }
             // Default to 'index' if nodeUrl is undefined
@@ -227,7 +230,7 @@ class GraphService {
                 // the execution's identity and the revision it runs (plan §4.5.3, §4.7.4)
                 const executionId = (event.headers && (event.headers["x-execution-id"] || event.headers["X-Execution-Id"])) || ulid();
                 const active: any = await new Promise((res) => this.store.get(CrdtStore.activeKey(graph.id), (e, d) => res(e ? null : d)));
-                const principal = event.principal ? { sub: event.principal.sub, kind: event.principal.kind, tenant: event.principal.tenant } : null;
+                const principal = event.principal ? { sub: event.principal.sub, kind: event.principal.kind, tenant: event.principal.tenant, scopes:event.principal.scopes } : null;
                 const params = JSON.stringify({
                     graph,
                     nodeUrl,
@@ -476,6 +479,7 @@ class GraphService {
                 },
             });
             const runner = new ExecutionRunner(this.store as any, {
+                application:applicationInvoker(this.store,(id,value)=>new Promise((resolve,reject)=>this.broadcastService._sendToChannel('graph-notify-'+id,value,err=>err?reject(err):resolve()))),
                 secrets: async (ref: string) => {
                     const name = SECRET_REFS[ref];
                     if (!name) throw new Error(`no secret is registered as ${ref}`);

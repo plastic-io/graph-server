@@ -1,12 +1,16 @@
-# Installation
+# Deployment and MCP application workflow
 
-1. [Install serverless and setup your AWS profile](https://www.serverless.com/framework/docs/getting-started/)
-2. `git clone git@github.com:plastic-io/graph-server.git`
-3. `cd graph-server`
-4. `npm install`
-5. `sls deploy`
+Deploy the shared platform through the configured GitHub Actions workflow with
+OIDC and a pinned graph-editor revision. See
+[environment configuration](AUTH_PROVIDER_DEPLOYMENT.md) for the existing paired
+deployment and [the current MCP workflow review](MCP_WORKFLOW_REVIEW.md) for the
+new discovery, runtime, isolated infrastructure, diagnostics and acceptance gates.
 
-Your service is ready to use. Take note of the endpoints beginning with `ANY - https://` and `wss://`.  You will need them when using the [Plastic-IO IDE](https://github.com/plastic-io/graph-editor) and running your server based graphs.  Is OK if you forget to write them down, you can see them again by running `sls info`.
+Application agents use MCP and graph-side review. A missing capability calls for
+a separately reviewed platform improvement; local AWS credentials and direct
+Lambda calls are not application deployment fallbacks. Platform deployment,
+graph acceptance, infrastructure approval and live runtime verification are
+separate steps.
 
 # Plastic-IO Graph Server
 

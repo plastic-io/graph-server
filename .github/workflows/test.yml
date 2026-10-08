@@ -46,6 +46,13 @@ jobs:
       - name: Verify Auth0 and Cognito Lambda bundles
         run: node scripts/check-auth-builds.cjs
         working-directory: graph-server
+      - name: Validate generated isolation and application templates offline
+        working-directory: graph-server
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cfn-check"
+          "$RUNNER_TEMP/cfn-check/bin/pip" install cfn-lint==1.57.1
+          node -r ts-node/register/transpile-only scripts/ci/isolation-fixtures.cjs "$RUNNER_TEMP/isolation-fixtures"
+          "$RUNNER_TEMP/cfn-check/bin/cfn-lint" -r us-west-1 -t "$RUNNER_TEMP/isolation-fixtures/guardrails.json" "$RUNNER_TEMP/isolation-fixtures/application.json"
 
   # The isolate addon is native and only matters where it will run, so the same
   # suite runs again inside the Lambda image (plan §8.1.4).

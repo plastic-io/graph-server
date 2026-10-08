@@ -1,4 +1,7 @@
 import * as Y from "yjs";
+import {validateOperations, SCHEMA_URI, CONTRACT_VERSION} from '../discovery/operations';
+import {validateRuntime} from '../discovery/validateRuntime';
+import {infrastructureImpact} from '../iac/capabilities';
 import { createHash } from "crypto";
 import { ulid } from "ulid";
 import { applyOps, toJSON, applyUpdate, reconcile, toBase64, fromBase64, UPDATE_EVENT, DiffSummary, PRIVILEGE_NAMESPACES } from "@plastic-io/graph-crdt";
@@ -21,9 +24,10 @@ import { Autonomy, AutonomyStore } from "../policy/autonomy";
  * it would be, for the editor's preview; `by-key/<idempotencyKey>.json` maps
  * a retried create to its proposal.
  */
-export type ProposalState = "validated" | "awaiting-review" | "committed" | "rejected" | "expired" | "stale";
+export type ProposalState = "validated" | "awaiting-review" | "committed" | "rejected" | "expired" | "stale" | "superseded";
 
 export interface Proposal {
+    touchedNodes?: string[];
     proposalId: string;
     graphId: string;
     state: ProposalState;
@@ -34,10 +38,13 @@ export interface Proposal {
     idempotencyKey: string;
     principal: { sub: string; kind: string; tenant: string; delegatedBy?: string } | null;
     update: string;                // base64 V2 update, exactly what was validated
-    proposalDigest: string;        // sha256:<hex> of the update bytes
+    updateDigest?: string;
+    digestVersion?: number;
+    supersededBy?: string;
+    proposalDigest: string;        // v2: canonical reviewed content; updateDigest separately binds exact CRDT bytes
     diffSummary: DiffSummaryCompact;
     validation: { ok: boolean; errors: { code: string; message: string; nodeId?: string; field?: string }[] };
-    impact: { consumers: any[]; downstream: string[]; privilegeDelta: any[]; testsToRun: string[]; oracleChanged: boolean };
+    impact: { consumers: any[]; downstream: string[]; privilegeDelta: any[]; testsToRun: string[]; oracleChanged: boolean; infrastructure?: any[] };
     requiredDecisions: ("approve" | "iac-approve" | "privileged-connect")[];
     createdAt: string;
     updatedAt: string;
@@ -125,6 +132,8 @@ export class ProposalService {
 
     /** Materialise ops on the graph as it is now and stage the result.  Shared by create and validate. */
     private async materialise(graphId: string, ops: any[], principal: Principal | undefined) {
+        const errors=validateOperations(ops);
+        if(errors.length)return {error:errors[0].path+': '+errors[0].message,code:'SCHEMA_INVALID',details:{errors,schemaUri:SCHEMA_URI}} as ProposalError;
         const live = await this.crdtStore.projectGraph(graphId);
         if (!live) {
             return { error: "no such graph", code: "NOT_FOUND" } as ProposalError;
@@ -132,8 +141,10 @@ export class ProposalService {
         const applied = applyOps(live, ops);
         if (!applied.ok) {
             const first = applied.errors[0];
-            return { error: `operation ${first.index} (${ops[first.index] && ops[first.index].op}): ${first.message}`, code: first.code, details: { errors: applied.errors } } as ProposalError;
+            return { error: `operation ${first.index} (${ops[first.index] && ops[first.index].op}): ${first.message}`, code: first.code, details: { errors: applied.errors, schemaUri:SCHEMA_URI } } as ProposalError;
         }
+        const runtimeErrors=validateRuntime(applied.projection,applied.touched);
+        if(runtimeErrors.length)return {error:runtimeErrors[0].message,code:'SCHEMA_INVALID',details:{errors:runtimeErrors,schemaUri:'plastic://schema/1/runtime'}} as ProposalError;
         const { update: head } = await this.crdtStore.loadMerged(graphId);
         const doc = new Y.Doc();
         let update: Uint8Array | null = null;
@@ -157,7 +168,7 @@ export class ProposalService {
         if (violation) {
             return { error: violation, code: "ADMISSION_DENIED" } as ProposalError;
         }
-        return { update: update as Uint8Array, diff: staged.diff, after: staged.after, touched: applied.touched, projection: applied.projection };
+        return { update: update as Uint8Array, diff: staged.diff, after: staged.after, touched: applied.touched, projection: applied.projection, before:staged.before };
     }
 
     /**
@@ -193,7 +204,7 @@ export class ProposalService {
         return resolved.autonomy;
     }
 
-    private impactOf(after: any, touched: string[], diff: DiffSummary) {
+    private impactOf(after: any, touched: string[], diff: DiffSummary, before?:any) {
         const downstream = new Set<string>();
         (after && after.nodes ? after.nodes : []).forEach((n: any) => {
             if (!touched.includes(n.id)) return;
@@ -203,7 +214,9 @@ export class ProposalService {
             ...diff.privilegeDelta.placementToServer.map((nodeId) => ({ kind: "graph:invoke", scope: [`placement:server:${nodeId}`] })),
             ...diff.privilegeDelta.capabilitiesAdded.flatMap((c) => c.capabilities.map((cap) => ({ kind: cap.split(":").slice(0, 2).join(":"), scope: [`${c.nodeId}:${cap}`] }))),
         ];
-        return { consumers: [], downstream: Array.from(downstream).sort(), privilegeDelta, testsToRun: [], oracleChanged: false };
+        const infrastructure=infrastructureImpact(before,after);
+        infrastructure.forEach(stack=>privilegeDelta.push({kind:'iac:approve',scope:[stack.nodeId,...(stack.resources||[]).map(r=>r.type)]}));
+        return { consumers: [], downstream: Array.from(downstream).sort(), privilegeDelta, testsToRun: [], oracleChanged: false, infrastructure };
     }
 
     async create(graphId: string, principal: Principal | undefined, input: { baseRevision: string; ops: any[]; description: string; rationale?: string; idempotencyKey: string }): Promise<{ proposal: Proposal; created: boolean } | ProposalError> {
@@ -235,6 +248,7 @@ export class ProposalService {
             state: requiredDecisions.length ? "awaiting-review" : "validated",
             baseRevision: revRef(head.revisionId),
             ops: input.ops,
+            touchedNodes:m.touched,
             description: input.description.slice(0, 200),
             rationale: String(input.rationale || "").slice(0, 4000),
             idempotencyKey: input.idempotencyKey,
@@ -243,13 +257,15 @@ export class ProposalService {
             proposalDigest: digestRef(sha256(m.update)),
             diffSummary: compactDiff(m.diff),
             validation: { ok: true, errors: [] },
-            impact: this.impactOf(m.after, m.touched, m.diff),
+            impact: this.impactOf(m.after, m.touched, m.diff, m.before),
             requiredDecisions,
             createdAt: now.toISOString(),
             updatedAt: now.toISOString(),
             expiresAt: new Date(now.getTime() + TTL_MS).toISOString(),
             decisions: [],
         };
+        proposal.updateDigest=digestRef(sha256(m.update));proposal.digestVersion=2;
+        proposal.proposalDigest=this.reviewDigest(proposal,m.after);
         await this.putJson(ProposalService.key(graphId, proposal.proposalId), proposal);
         await this.putJson(ProposalService.projectionKey(graphId, proposal.proposalId), m.after);
         await this.putJson(ProposalService.byKey(graphId, input.idempotencyKey), { proposalId: proposal.proposalId });
@@ -264,7 +280,7 @@ export class ProposalService {
         if (!proposal) {
             return { error: "no such proposal", code: "NOT_FOUND" };
         }
-        if (proposal.state === "committed" || proposal.state === "rejected") {
+        if (proposal.state === "committed" || proposal.state === "rejected" || proposal.state === "superseded" || proposal.state === "expired") {
             return { proposal };
         }
         const head = await this.summaries.headOrCut(graphId);
@@ -291,7 +307,15 @@ export class ProposalService {
                 }
             }
         }
-        const m = await this.materialise(graphId, proposal.ops, principal || (proposal.principal as any));
+        // Revalidation of an unchanged base stages the EXACT original bytes. Yjs client IDs
+        // and add-node timestamps must not create new review content merely by checking it.
+        let m:any;
+        if(revId(proposal.baseRevision)===head.revisionId){
+            const staged=await this.admission.stageOnly(graphId,fromBase64(proposal.update));
+            const touched=proposal.touchedNodes||[...new Set(proposal.ops.flatMap(o=>[o.nodeId,o.node?.id,o.from?.nodeId,o.to?.nodeId]).filter(Boolean))];
+            const errors=staged.ok ? validateRuntime(staged.after,touched) : [];
+            m=staged.ok===false?{error:staged.reason,code:staged.code}:errors.length?{error:errors[0].message,code:'SCHEMA_INVALID'}:{...staged,update:fromBase64(proposal.update),touched};
+        }else m=await this.materialise(graphId, proposal.ops, principal || (proposal.principal as any));
         if ("error" in m) {
             // Its operations no longer apply to the graph as it is, so it is
             // stale, not merely invalid: nothing here can be committed, and the
@@ -303,18 +327,40 @@ export class ProposalService {
             return { proposal };
         }
         const proposer = proposal.principal as any;
+        const oldDigest=proposal.proposalDigest, oldDecisions=proposal.requiredDecisions;
         proposal.baseRevision = revRef(head.revisionId);
+        proposal.touchedNodes=m.touched;
         proposal.update = toBase64(m.update);
         proposal.proposalDigest = digestRef(sha256(m.update));
         proposal.diffSummary = compactDiff(m.diff);
         proposal.validation = { ok: true, errors: [] };
-        proposal.impact = this.impactOf(m.after, m.touched, m.diff);
+        proposal.impact = this.impactOf(m.after, m.touched, m.diff,m.before);
+        proposal.updateDigest=digestRef(sha256(m.update));proposal.digestVersion=2;
+        proposal.proposalDigest=this.reviewDigest(proposal,m.after);
         proposal.requiredDecisions = this.decisionsFor(m.diff, proposer, await this.autonomyFor(graphId, proposer));
+        if(oldDigest===proposal.proposalDigest)proposal.requiredDecisions=oldDecisions;
+        else proposal.decisions=[];
         proposal.state = proposal.requiredDecisions.length ? "awaiting-review" : "validated";
         proposal.updatedAt = new Date().toISOString();
         await this.putJson(ProposalService.key(graphId, proposalId), proposal);
         await this.putJson(ProposalService.projectionKey(graphId, proposalId), m.after);
         return { proposal };
+    }
+
+    private reviewDigest(proposal:Proposal,projection:any):string {
+        const canonical=(v:any):string=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).filter(k=>v[k]!==undefined).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v);
+        return digestRef(sha256(canonical({version:2,contract:CONTRACT_VERSION,policy:POLICY_VERSION,graphId:proposal.graphId,baseRevision:proposal.baseRevision,ops:proposal.ops,projection,impact:proposal.impact,description:proposal.description,rationale:proposal.rationale})));
+    }
+    async retire(graphId:string,proposalId:string,principal:Principal|undefined,replacementProposalId:string){
+        const proposal=await this.get(graphId,proposalId),replacement=await this.get(graphId,replacementProposalId);
+        if(!proposal||!replacement)return {error:'Both proposals must exist in this graph.',code:'NOT_FOUND'};
+        if(proposalId===replacementProposalId||!['validated','awaiting-review'].includes(replacement.state))return {error:'The replacement must be a different current review.',code:'CONFLICT'};
+        if(proposal.principal?.sub!==principal?.sub&&!decide(principal,['graph:approve']).allow)return {error:'Only the proposer or reviewer may retire this work.',code:'ADMISSION_DENIED'};
+        if(proposal.state==='committed')return {error:'Committed changes require a new proposal, not retirement.',code:'CONFLICT'};
+        proposal.state='superseded';proposal.supersededBy=replacementProposalId;proposal.updatedAt=new Date().toISOString();
+        await this.putJson(ProposalService.key(graphId,proposalId),proposal);
+        await this.admission.chain.append(graphId,{kind:'proposal.superseded',at:proposal.updatedAt,graphId,proposalId,replacementProposalId});
+        return {proposal};
     }
 
     /** A human's decision: approve (recorded, bound to the digest) or reject. */
@@ -323,7 +369,7 @@ export class ProposalService {
         if (!allowed.allow) return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
         const proposal = await this.get(graphId, proposalId);
         if (!proposal) return { error: "no such proposal", code: "NOT_FOUND" };
-        if (proposal.state === "committed") return { error: "already committed", code: "CONFLICT" };
+        if (["committed","rejected","superseded","expired","stale"].includes(proposal.state)) return { error: `the proposal is ${proposal.state}`, code: "CONFLICT" };
         if (proposalDigest && proposalDigest !== proposal.proposalDigest) return { error: "the proposal changed since you read it", code: "CONFLICT" };
         if (proposal.principal && principal && proposal.principal.sub === principal.sub && decision === "approve") return { error: "a proposal cannot be approved by its proposer", code: "ADMISSION_DENIED" };
         proposal.decisions.push({ by: principal ? principal.sub : "?", decision, rationale: rationale.slice(0, 2000), at: new Date().toISOString(), proposalDigest: proposal.proposalDigest });
@@ -355,7 +401,7 @@ export class ProposalService {
         if (proposal.state === "committed") {
             return { proposal, result: { mutationId: proposal.mutationId || "", decision: "accepted", policyVersion: POLICY_VERSION, replayed: true } as AdmissionResult };
         }
-        if (proposal.state === "rejected" || proposal.state === "expired") return { error: `the proposal is ${proposal.state}`, code: "CONFLICT" };
+        if (proposal.state === "rejected" || proposal.state === "expired" || proposal.state === "superseded" || proposal.state === "stale") return { error: `the proposal is ${proposal.state}`, code: "CONFLICT" };
         const allowed = decide(principal, ["graph:commit"]);
         if (!allowed.allow) return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
         const head = await this.summaries.headOrCut(graphId);
@@ -371,6 +417,10 @@ export class ProposalService {
         });
         if (pending.length) return { error: `still needs ${pending.join(", ")}`, code: "APPROVAL_REQUIRED", details: { requiredDecisions: pending } };
         const content = fromBase64(proposal.update);
+        if(proposal.digestVersion===2){
+            const projection=await this.projection(graphId,proposalId);
+            if(proposal.updateDigest!==digestRef(sha256(content))||this.reviewDigest(proposal,projection)!==proposal.proposalDigest)return {error:'Reviewed content integrity check failed.',code:'CONFLICT'};
+        }
         const result = await this.admission.admit({
             graphId, mutationId: ulid(), content, description: proposal.description, intent: `proposal ${proposalId}: ${proposal.rationale}`.slice(0, 4000),
             clientInfo: { name: "proposal", version: "1" }, principal,
@@ -389,6 +439,7 @@ export class ProposalService {
         proposal.state = "committed";
         proposal.mutationId = result.mutationId;
         proposal.resultRevision = "error" in cut ? undefined : revRef(cut.revision.revisionId);
+        if(!("error" in cut))await this.putJson(`proposals/by-revision/${graphId}/${cut.revision.revisionId}.json`,{proposalId,revisionId:cut.revision.revisionId,proposalDigest:proposal.proposalDigest});
         proposal.warnings = result.warnings;
         proposal.decisions.push({ by: principal ? principal.sub : "?", decision: "commit", at: new Date().toISOString(), proposalDigest: proposal.proposalDigest });
         proposal.updatedAt = new Date().toISOString();

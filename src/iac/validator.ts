@@ -239,7 +239,8 @@ export function validateTemplate(text: string, format: "yaml" | "json" = "yaml",
             if (typeof name !== "string") {
                 return;   // absent, or a Ref/Sub the deployment resolves; the prefix is enforced by IAM either way
             }
-            if (!name.startsWith(policy.stackPrefix)) {
+            const lambdaLog=type==='AWS::Logs::LogGroup' && name.startsWith('/aws/lambda/'+policy.stackPrefix);
+            if (!name.startsWith(policy.stackPrefix) && !lambdaLog) {
                 push("NAME_OUTSIDE_PREFIX", `${property} "${name}" is outside this environment's prefix "${policy.stackPrefix}", so it names something this environment does not own`, `${at}.Properties.${property}`, logicalId);
             }
             if (policy.substrateStacks.some((stack) => name.startsWith(stack))) {

@@ -1,3 +1,5 @@
+import {graphDeploymentCapabilities,isolationEnabled} from './capabilities';
+import {stackScope} from './isolation';
 import { ulid } from "ulid";
 import { createHash } from "crypto";
 import { Principal } from "../auth/principal";
@@ -196,6 +198,9 @@ export class IacService {
         if (!allowed.allow) {
             return { error: allowed.reason || "denied", code: "ADMISSION_DENIED" };
         }
+        if (isolationEnabled()) {
+            return {error:'Isolated stacks use iac.preflight followed by iac.review. The reviewed worker creates the plan with the stack-specific role; this legacy preview cannot use that role.', code:'USE_REVIEWED_WORKFLOW', schemaUri:'plastic://schema/1/workflow', nextTool:'iac.review'};
+        }
         const found = await this.resolve(graphId, nodeId, options.revisionId);
         if (found.error) {
             return found;
@@ -354,17 +359,18 @@ export class IacService {
                 continue;
             }
             const status = await this.getJson(IacService.statusKey(carried.stack));
-            const text = carried.template && carried.template.text;
+            const preflight = graphDeploymentCapabilities(at.projection,node.id,policy);
             stacks.push({
                 nodeId: node.id,
                 name: (node.properties && node.properties.name) || node.id,
                 stack: carried.stack,
-                validation: typeof text === "string" ? validateTemplate(text, carried.template.format === "json" ? "json" : "yaml", policy) : null,
-                status: status || null,
+                validation: preflight.validation,
+                preflight,
+                status: (this.deps.reviewStatus ? await this.deps.reviewStatus(graphId,node.id,principal) : null) || status || null,
                 atRevision: at.revisionId,
             });
         }
-        return { graphId, revisionId: at.revisionId, stacks, canPlan: !!this.deps.cloudformation };
+        return { graphId, revisionId: at.revisionId, stacks, canPlan: isolationEnabled() ? !!process.env.IAC_REVIEW_STATE_MACHINE : !!this.deps.cloudformation };
     }
 
     /** Wait for the change set to be made, by asking; there is no callback to wait on. */
