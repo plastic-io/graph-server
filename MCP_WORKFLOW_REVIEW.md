@@ -2,13 +2,12 @@
 
 Updated: 2026-10-07. This is the current review artifact for the Chess regression
 work in **graph-server and its sibling graph-editor**. The user authorized
-committing, pushing and deploying these platform changes on 2026-10-07. Release
-is pending; its paired editor revision is
-`5e01d0a5bc6cb199326a32a25ac105f21185a2ec`. This authorization does not deploy
-Chess or approve application infrastructure. No live graph proposals,
-application resources, or credentials were changed during implementation.
-Earlier deployment documents do not establish that the capabilities below
-are deployed.
+committing, pushing and deploying these platform changes on 2026-10-07. The
+platform release completed on 2026-10-07 PDT (2026-10-08 UTC): server
+`c1ee6cea101e297b88e0bc6a77bca488727e1806`, paired editor
+`5e01d0a5bc6cb199326a32a25ac105f21185a2ec`. Both commits are pushed. This release
+does not deploy Chess or approve application infrastructure. No live graph
+proposals or application resources were changed by this release.
 
 The intended CI target remains account **230639770018**, region **us-west-1**.
 A separate application AWS account is deferred. Review and release these shared
@@ -251,6 +250,9 @@ Recorded local results:
   unresolved, and is not runtime/deployment verification.
 - Editor: 11 integration files, **104 tests passed**, including actual component
   renders for hidden execution and infrastructure review details.
+- Editor release checks: **125 CRDT tests and 2 Playwright tests passed** for
+  chat and infrastructure review. The browser tests use the local development
+  server; they do not establish two authenticated users in the deployed service.
 - Server TypeScript and editor `vue-tsc`: passed; editor baseline remains zero
   type errors. CI configuration: **5 tests passed**.
 - Native isolation suite: **9 tests passed**, including identity/clock and
@@ -270,14 +272,47 @@ Release both repositories together: the example depends on the new editor helper
 Forced server containment can reject legacy code using ambient Node/AWS access;
 migrate such code to declared host capabilities instead of disabling containment.
 
+### Deployed platform evidence
+
+The authorized account-specific release used the same pinned source, provider
+mapping, package checks and smoke script as the CI workflow. GitHub Actions
+deployment access remains unactivated; this was a direct platform release.
+
+- Account **230639770018**, region **us-west-1**, stack
+  `pio-auth-test-230639770018`: **UPDATE_COMPLETE**. The change preserved the
+  Cognito pool/client and stored-data resources, and added the private application
+  bridge and guardrail roles. No application stack was created or updated.
+- The deployed MCP route, MCP stream, edge delivery, infrastructure worker and
+  application bridge code hashes match the retained server package. The
+  functions are active with successful updates, forced containment and stack
+  isolation enabled. Execution entry points checked have the native isolate
+  layer. The application bridge has no public Function URL.
+- The [deployed editor](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/)
+  and its [release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json)
+  match the pinned revisions and paired account endpoints. Assets were published
+  before the entry point and CloudFront invalidation completed.
+- The deployed REST stage requires the JWT authorizer on every non-OPTIONS
+  method except public OAuth discovery. WebSocket connection authorization is
+  enabled. Graph, artifact, CRDT, stack, observation, execution-delivery, MCP and
+  catch-all requests rejected missing and invalid credentials with HTTP 401.
+  The standard release smoke checks also passed for WSS, the MCP Function URL,
+  provider selection, PKCE discovery and constrained public-client registration.
+- Through the authenticated MCP connection, all five version **1.0.0** schema
+  resources were listed and read. The operation catalogue exposes all 13
+  operations; runtime, identity, bus and workflow contracts are live. Existing
+  clients may need to refresh their tool catalogue to see the newly added tools.
+
+These checks establish platform rollout and authentication-boundary behavior,
+not live application readiness, effective cross-stack denial or multiplayer.
+
 | Milestone for the fresh-agent acceptance case | Current evidence |
 | --- | --- |
 | Proposal created and validated | Passed through local MCP regression; no new live proposal submitted. |
 | User accepted graph changes | Simulated human acceptance tested; live acceptance pending. |
 | Infrastructure plan generated | Simulated CloudFormation plan tested; live plan pending. |
 | User approved deployment | Separate human approval tested locally; no live approval requested/executed. |
-| Deployment completed | Local lifecycle/retry tests only; CI platform release and real application deployment pending. |
-| Runtime readiness verified | Native isolate, application example and diagnostic tests pass locally; deployed readiness pending. |
+| Deployment completed | Platform release completed in the target account; real application deployment remains pending graph-side approval. |
+| Runtime readiness verified | Native isolate, application example and diagnostic tests pass locally. Deployed platform discovery and authentication checks pass; live application execution remains pending. |
 | Live multiplayer verified | Pending two real authenticated users, reconnect/presentation checks and authoritative updates. |
 
 After platform release, the live acceptance gate must also demonstrate permitted
