@@ -12,6 +12,9 @@ provider:
   iamRoleStatements:
     - Effect: Allow
       Action: lambda:InvokeFunction
+      Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-iacDiagnostics'
+    - Effect: Allow
+      Action: lambda:InvokeFunction
       Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-applicationBridge'
     - Fn::If:
         - IacReviewEnabled
@@ -121,6 +124,7 @@ provider:
     APPLICATION_BRIDGE_FUNCTION: ${self:service}-${self:provider.stage}-applicationBridge
     REQUIRE_CONTAINMENT: 'true'
     IAC_STACK_ISOLATION: ${env:IAC_STACK_ISOLATION, 'true'}
+    IAC_DIAGNOSTICS_FUNCTION: ${self:service}-${self:provider.stage}-iacDiagnostics
     IAC_GUARDRAIL_ROLE_ARN: !If [IacReviewEnabled, !GetAtt IacGuardrailRole.Arn, '']
     IAC_WORKER_ROLE_ARN: !If [IacReviewEnabled, !GetAtt IacWorkerRole.Arn, '']
     COGNITO_USER_POOL_ARN: ${env:COGNITO_USER_POOL_ARN, ''}
@@ -1015,6 +1019,16 @@ functions:
     events:
       - http:
           method: GET
+          path: /crdt/{id}/iac/{nodeId}/events
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: GET
+          path: /crdt/{id}/iac/{nodeId}/operations
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: GET
           path: /crdt/{id}/iac/{nodeId}/template
           authorizer: ${self:custom.jwtAuthorizer}
           cors: {origin: '*'}
@@ -1038,6 +1052,11 @@ functions:
     handler: src/applicationWorker.handler
     timeout: 30
     role: !GetAtt ApplicationBridgeRole.Arn
+
+  iacDiagnostics:
+    handler: src/iacDiagnostics.handler
+    timeout: 30
+    role: !GetAtt IacDiagnosticsRole.Arn
 
   iacWorker:
     handler: src/iacWorker.handler
@@ -1310,6 +1329,76 @@ resources:
       - !Equals ['${env:AUTH_PROVIDER, "auth0"}', cognito]
       - !Equals ['${env:COGNITO_MCP_REGISTRATION, "false"}', 'true']
   Resources:
+    IacDiagnosticsRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: ${self:service}-${self:provider.stage}-${self:provider.region}-iacDiagnosticsRole
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: 'sts:AssumeRole'}]
+        Policies:
+          - PolicyName: read-operation-diagnostics
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: [cloudformation:DescribeStacks, cloudformation:DescribeStackEvents, cloudformation:DescribeChangeSet]
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/gapp-*/*'
+                    - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/graph-guardrails-*/*'
+                    - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${opt:iacStackPrefix, "pio-dev-"}*/*'
+                    - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/review-*/*'
+                - Effect: Allow
+                  Action: [states:DescribeExecution, states:GetExecutionHistory]
+                  Resource: !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${self:service}-${self:provider.stage}-iac-review:*'
+                - Effect: Allow
+                  Action: logs:FilterLogEvents
+                  Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${self:service}-${self:provider.stage}-iacWorker:*'
+                - Effect: Allow
+                  Action: s3:GetObject
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/iac/reviews/*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/connections/*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/policy/agents/*'
+                - Effect: Allow
+                  Action: [s3:GetObject, s3:PutObject]
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/iac/progress/*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/observations/watch/*'
+                - Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}'
+                  Condition:
+                    StringLike: {s3:prefix: ['subscriptions/graph-notify-*']}
+                - Effect: Allow
+                  Action: execute-api:ManageConnections
+                  Resource: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebsocketsApi}/${self:provider.stage}/POST/@connections/*'
+                - Effect: Allow
+                  Action: [logs:CreateLogStream, logs:PutLogEvents]
+                  Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${self:service}-${self:provider.stage}-iacDiagnostics:*'
+    IacDiagnosticWorkflowEvents:
+      Type: AWS::Events::Rule
+      Condition: IacReviewEnabled
+      Properties:
+        Name: ${self:service}-${self:provider.stage}-iac-diagnostics
+        EventPattern:
+          source: [aws.states]
+          detail-type: [Step Functions Execution Status Change]
+          detail:
+            stateMachineArn: [!Ref IacReviewStateMachine]
+            status: [FAILED, TIMED_OUT, ABORTED, SUCCEEDED]
+        Targets:
+          - Id: DeploymentDiagnostics
+            Arn: !GetAtt IacDiagnosticsLambdaFunction.Arn
+            RetryPolicy: {MaximumEventAgeInSeconds: 3600, MaximumRetryAttempts: 10}
+    IacDiagnosticWorkflowPermission:
+      Type: AWS::Lambda::Permission
+      Condition: IacReviewEnabled
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName: !Ref IacDiagnosticsLambdaFunction
+        Principal: events.amazonaws.com
+        SourceArn: !GetAtt IacDiagnosticWorkflowEvents.Arn
     ApplicationBridgeRole:
       Type: AWS::IAM::Role
       Properties:
@@ -1350,6 +1439,11 @@ resources:
             PolicyDocument:
               Version: '2012-10-17'
               Statement:
+                # IAM existence probes address absent roles without their path.
+                # Read only: creation, mutation and role passing remain path constrained.
+                - Effect: Allow
+                  Action: [iam:GetRole, iam:GetRolePolicy]
+                  Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/gapp-*'
                 - Effect: Allow
                   Action: [iam:CreateRole, iam:GetRole, iam:DeleteRole, iam:PutRolePolicy, iam:GetRolePolicy, iam:DeleteRolePolicy, iam:ListRolePolicies, iam:TagRole, iam:UntagRole, iam:UpdateAssumeRolePolicy]
                   Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/graph-deploy/gapp-*'
@@ -1411,6 +1505,22 @@ resources:
             PolicyDocument:
               Version: '2012-10-17'
               Statement:
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-iacDiagnostics'
+                - Effect: Allow
+                  Action: s3:GetObject
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/connections/*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/policy/agents/*'
+                - Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}'
+                  Condition:
+                    StringLike: {s3:prefix: ['subscriptions/graph-notify-*']}
+                - Effect: Allow
+                  Action: execute-api:ManageConnections
+                  Resource: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebsocketsApi}/${self:provider.stage}/POST/@connections/*'
                 - Effect: Allow
                   Action: [s3:GetObject, s3:PutObject]
                   Resource:

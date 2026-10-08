@@ -5,7 +5,7 @@ import {DelegationStore} from './policy/delegation';
 import {decide} from './policy/decide';
 import {personalChannel} from './chat/service';
 import { principalFromAuthorizerContext, connectionKey, forgetConnection, connectionIsCurrent } from './auth/principal';
-import {newId} from './eventSourceService';
+import {ulid as newId} from 'ulid';
 const STAGE = process.env.STAGE;
 const BACKOFF_TIMER_ADD = 35;
 const CHUNK_SIZE = 35000;
@@ -44,6 +44,13 @@ export default class BroadcastService {
             }
             this.chatAllowed(record.principal, message.channelId).then(allowed => {
                 if (!allowed) return callback(null, this.okResponse);
+                if(message.response?.eventType==='deployment.progress'){
+                    const graphId=String(message.channelId).replace(/^graph-notify-/,'');
+                    return new DelegationStore(this.store).resolve(record.principal,graphId).then(principal=>{
+                        if(!decide(principal,['graph:read','iac:read-status']).allow)return callback(null,this.okResponse);
+                        this.postAuthenticatedClient(domainName,connectionId,message,record.principal.expiresAt,callback);
+                    });
+                }
                 this.postAuthenticatedClient(domainName, connectionId, message, record.principal.expiresAt, callback);
             }).catch(err => callback(err, null));
         });
@@ -137,6 +144,7 @@ export default class BroadcastService {
             }
         });
         this._listSubscriptions(connectionId, (err, channels) => {
+            if(err||!channels)return;
             channels.forEach((channel) => {
                 const path = channel.Key.split("/");
                 const connectionId = path[1];

@@ -84,11 +84,11 @@ test('rollback failures retain the lock and identify manual recovery',async()=>{
     f.cloud.stack.mockResolvedValue({exists:true,status:'UPDATE_ROLLBACK_FAILED',reason:'Resource could not roll back.'});
     await f.service.step(op.operationId);
     expect(await f.service.current('g','stack',human)).toMatchObject({state:'rollback-failed',manualRecoveryRequired:true});
-    await expect(f.begin()).rejects.toMatchObject({code:'CONFLICT'});
+    await expect(f.begin()).rejects.toMatchObject({code:'RECOVERY_REQUIRED'});
 });
 test('a workflow failure after approval never releases a possibly-running AWS operation',async()=>{
     const f=fixture(),op=await f.planned();await f.approve(op);await f.service.fail(op.operationId,'Worker unavailable');
-    await expect(f.begin()).rejects.toMatchObject({code:'CONFLICT'});
+    await expect(f.begin()).rejects.toMatchObject({code:'RECOVERY_REQUIRED'});
     expect(await f.service.current('g','stack',human)).toMatchObject({state:'failed',manualRecoveryRequired:true});
 });
 test('no-change and failed previews show an explanation, without offering apply',async()=>{
@@ -106,4 +106,29 @@ test('a reviewed deployment cannot create public bucket access',async()=>{
     const f=fixture(),t=JSON.parse(template);t.Resources.Records.Properties.PublicAccessBlockConfiguration.BlockPublicPolicy=false;
     f.graph.nodes[0].properties.iac.template.text=JSON.stringify(t);
     await expect(f.begin()).rejects.toThrow(/public-access blocks/);expect(f.start).not.toHaveBeenCalled();
+});
+
+test('successful deployment publishes planning, approval and completion as separate durable milestones',async()=>{
+ const f=fixture(),op=await f.planned();
+ const before=await f.service.events('g','stack',human,{operationId:op.operationId});
+ expect(before.events.some(e=>e.phase==='planning')).toBe(true);
+ expect(before.events.some(e=>e.phase==='awaiting-approval'&&e.reviewDigest===op.reviewDigest)).toBe(true);
+ expect(before.events.some(e=>e.phase==='deploying')).toBe(false);
+ await f.approve(op);await f.service.step(op.operationId);
+ f.cloud.stack.mockResolvedValue({exists:true,status:'CREATE_COMPLETE'});await f.service.step(op.operationId);
+ const after=await f.service.events('g','stack',human,{operationId:op.operationId,cursor:before.nextCursor});
+ expect(after.events.some(e=>e.state==='apply-requested'&&e.reviewDigest===op.reviewDigest)).toBe(true);
+ expect(after.events.some(e=>e.state==='succeeded'&&e.phase==='terminal')).toBe(true);
+ expect((await f.service.current('g','stack',human)).progress.phase).toBe('terminal');
+ const later=await f.begin();expect(later.operationId).not.toBe(op.operationId);
+ expect((await f.service.operations('g','stack',human)).operations.map(o=>o.operationId)).toEqual([later.operationId,op.operationId]);
+});
+
+test('failed cleanup preserves the original outcome, reports recovery and retains the operation lock',async()=>{
+ const f=fixture(),op=await f.planned();await f.service.cancel('g','stack',human,{operationId:op.operationId});
+ f.cloud.remove.mockRejectedValue(Object.assign(new Error('Cannot delete unexecuted change set: AccessDenied'),{code:'AccessDenied'}));
+ await f.service.step(op.operationId);
+ const current=await f.service.current('g','stack',human);
+ expect(current.state).toBe('cancelled');expect(current.progress.cleanup.status).toBe('DELETE_FAILED');expect(current.manualRecoveryRequired).toBe(true);
+ await expect(f.begin()).rejects.toMatchObject({code:'RECOVERY_REQUIRED'});
 });

@@ -33,6 +33,7 @@ import { DelegationStore } from "./policy/delegation";
 import { TemplateStore } from "./iac/templates";
 import { IacService } from "./iac/service";
 import {IacReviewService} from './iac/review';
+import {diagnosticRefresh} from './iac/progressRuntime';
 import {StepFunctions} from 'aws-sdk';
 import { cloudFormationClient } from "./iac/cloudformation";
 import { CaptureService } from "./view/capture";
@@ -195,7 +196,7 @@ export default class EventSourceService {
          */
         const iacPolicy = policyFromEnv();
         this.iac = new IacService((this.crdtStore as any).store, {
-            reviewStatus: (graphId,nodeId,principal) => this.iacReviews.current(graphId,nodeId,principal),
+            reviewStatus: (graphId,nodeId,principal,refresh) => this.iacReviews.current(graphId,nodeId,principal,undefined,refresh),
             policy: () => policyFromEnv(),
             projection: async (graphId: string, revisionId?: string) => {
                 if (revisionId === 'live') {
@@ -219,6 +220,9 @@ export default class EventSourceService {
         });
         this.iacReviews = new IacReviewService(this.crdtStore.store, {
             projection: (graphId: string) => this.crdtStore.projectGraph(graphId),
+            revision: async(graphId:string)=>executionRevision(await this.crdtStore.projectGraph(graphId),this.revisions),
+            notify: (graphId,event)=>new Promise((resolve,reject)=>this.broadcastService._sendToChannel('graph-notify-'+graphId,event,err=>err?reject(err):resolve())),
+            refreshDiagnostics:diagnosticRefresh(this.crdtStore.store),
             enabled: !!process.env.IAC_REVIEW_STATE_MACHINE,
             start: async (operationId: string) => {
                 await new StepFunctions().startExecution({stateMachineArn:process.env.IAC_REVIEW_STATE_MACHINE,

@@ -71,7 +71,7 @@ async function setup(opts = {}) {
     const chat = opts.chat ? new (require("../chat/service").ChatService)(s3, broadcast, id => store.exists(id)) : undefined;
     const {IacReviewService}=require('../iac/review');
     const {IacService}=require('../iac/service');
-    const reviews=opts.infrastructure?new IacReviewService(s3,{enabled:true,projection:g=>store.projectGraph(g),start:async()=>{},cloud:opts.infrastructure}):undefined;
+    const reviews=opts.infrastructure?new IacReviewService(s3,{enabled:true,projection:g=>store.projectGraph(g),start:async()=>{},cloud:opts.infrastructure,notify:async(g,e)=>notified.push(e)}):undefined;
     const iac=reviews?new IacService(s3,{projection:async g=>({revisionId:'live',projection:await store.projectGraph(g)}),template:async()=>null,reviewStatus:(g,n,p)=>reviews.current(g,n,p)}):undefined;
     const application=opts.applicationBackend?new (require('../application/service').ApplicationService)(s3,{invoke:opts.applicationBackend,publish:async(g,e)=>broadcast._sendToChannel('graph-notify-'+g,e,()=>{})}):undefined;
     const mcp = makeMcpHandler({
@@ -109,6 +109,37 @@ const parse = (r) => r.structuredContent || JSON.parse(r.content[0].text);
 /** the proposal service behind a handler, for checking what was recorded */
 const proposalsOf = (mcp) => (mcp.deps ? mcp.deps.proposals : mcp.proposals);
 
+test('MCP-only deployment diagnosis uses the same durable events as the graph socket, including reconnect and history',async()=>{
+ const f=await setup({infrastructure:{}}),client=await connect(f.mcp,owner);
+ const {IacReviewService}=require('../iac/review'),{DeploymentProgress}=require('../iac/progress');
+ const operationId='01M4CSD7D7H7YM2HKY2Z5AJRHZ';
+ const op={operationId,graphId:'g1',nodeId:'form',revisionId:'rev_accepted',state:'failed',createdAt:1,updatedAt:2,inputDigest:'a'.repeat(64),history:[],reason:'Original failure',input:{text:'{"Resources":{}}',format:'json',stack:{name:'gapp-example-stack'}}};
+ const put=(key,v)=>new Promise((resolve,reject)=>f.s3.set(key,v,{},e=>e?reject(e):resolve()));
+ await put(IacReviewService.key(operationId),op);await put(IacReviewService.index('g1','form'),{operationId});
+ const progress=new DeploymentProgress(f.s3,async(g,e)=>f.notified.push(e));
+ await progress.append(op,[{id:'guardrail-role-failure',source:'cloudformation',phase:'guardrails',kind:'resource',stackName:'graph-guardrails-example',logicalId:'WorkerRole',resourceType:'AWS::IAM::Role',status:'CREATE_FAILED',reason:'Not authorized to perform iam:GetRole on the assigned worker role.'}]);
+ const call=async(name,args={})=>parse(await client.callTool({name,arguments:{schemaVersion:1,graphId:'g1',...args}}));
+ const discovered=parse(await client.callTool({name:'server.discover',arguments:{schemaVersion:1,topic:'progress'}}));
+ expect(JSON.stringify(discovered)).toContain('plastic://schema/1/progress');
+ const status=(await call('iac.status',{nodeId:'form',operationId})).result;
+ expect(status.reason).toContain('iam:GetRole');expect(status.recovery.category).toBe('platform-intervention');
+ const history=(await call('iac.history',{nodeId:'form'})).result;expect(history.operations[0].operationId).toBe(operationId);
+ const watched=(await call('observations.watch',{filter:{operationId}})).result;
+ expect(watched.observations).toEqual(f.notified);
+ const events=(await call('iac.events',{nodeId:'form',operationId})).result;
+ expect(events.events.map(e=>e.id)).toEqual(f.notified.map(e=>e.id));
+ await progress.append(op,[{id:'late-cleanup-failure',source:'cloudformation',phase:'cleanup',kind:'resource',status:'DELETE_FAILED',logicalId:'WorkerRole',reason:'iam:DeleteRolePolicy denied',at:1000}]);
+ const late=(await call('observations.watch',{filter:{operationId},cursor:watched.nextCursor})).result;
+ expect(late.observations).toHaveLength(1);expect(late.observations[0].reason).toContain('iam:DeleteRolePolicy');
+ expect((await call('iac.events',{nodeId:'other',operationId,cursor:events.nextCursor})).error.code).toBe('NOT_FOUND');
+ await client.close();
+ const restricted=await connect(f.mcp,agent);
+ await f.delegations.put({agentSub:agent.sub,graphId:'g1',delegatedBy:owner.sub,scopes:['graph:read','graph:observe'],expiresAt:null});
+ expect(parse(await restricted.callTool({name:'iac.events',arguments:{schemaVersion:1,graphId:'g1',nodeId:'form',operationId}})).error.code).toBe('ADMISSION_DENIED');
+ expect(parse(await restricted.callTool({name:'observations.watch',arguments:{schemaVersion:1,graphId:'g1'}})).result.observations).toHaveLength(0);
+ await restricted.close();
+});
+
 describe("MCP over the Lambda handler", () => {
     test("tools and resources are listed; graph.summary returns the envelope, a named revision and a bounded summary", async () => {
         const { mcp } = await setup();
@@ -116,7 +147,7 @@ describe("MCP over the Lambda handler", () => {
         const tools = (await client.listTools()).tools.map((t) => t.name).sort();
         expect(tools).toEqual([
             "component.consumers", "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
-            "iac.plan", "iac.preflight", "iac.review", "iac.status", "journey.run", "observations.query", "observations.watch", "proposal.commit", "proposal.create", "proposal.decide", "proposal.retire", "proposal.simulate", "proposal.validate",
+            "iac.events", "iac.history", "iac.plan", "iac.preflight", "iac.review", "iac.status", "journey.run", "observations.query", "observations.watch", "proposal.commit", "proposal.create", "proposal.decide", "proposal.retire", "proposal.simulate", "proposal.validate",
             "revision.activate", "revision.cut", "revision.rollback", "server.discover", "tasks.cancel", "tasks.get", "tasks.list", "tests.run",
             "view.screenshot",
         ]);

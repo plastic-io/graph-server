@@ -98,4 +98,22 @@ describe('private deployment access boundaries', () => {
     expect(machine.StateMachineType).toBe('STANDARD');
     expect(machine.Definition.States.Wait.Type).toBe('Wait');
   });
+  test('diagnostics have private read-only AWS access and cannot change application or deployment permissions',()=>{
+    const resources=service.resources.Resources,role=resources.IacDiagnosticsRole.Properties;
+    expect(service.functions.iacDiagnostics.events).toBeUndefined();
+    const statements=role.Policies.flatMap(p=>p.PolicyDocument.Statement),actions=statements.flatMap(s=>[].concat(s.Action));
+    expect(actions.filter(a=>/^(iam|sts|lambda):/.test(a))).toEqual([]);
+    expect(actions.filter(a=>a.startsWith('cloudformation:')).sort()).toEqual(['cloudformation:DescribeChangeSet','cloudformation:DescribeStackEvents','cloudformation:DescribeStacks']);
+    const logs=statements.find(s=>s.Action==='logs:FilterLogEvents');
+    expect(JSON.stringify(logs.Resource)).toContain('-iacWorker:*');expect(JSON.stringify(logs.Resource)).not.toContain('gapp-');expect(actions).not.toContain('logs:Unmask');
+    const writes=statements.filter(s=>[].concat(s.Action).includes('s3:PutObject'));
+    expect(writes.flatMap(s=>s.Resource).every(r=>/iac\/progress|observations\/watch/.test(JSON.stringify(r)))).toBe(true);
+    const rule=resources.IacDiagnosticWorkflowEvents.Properties;
+    expect(rule.EventPattern.detail.status).toEqual(['FAILED','TIMED_OUT','ABORTED','SUCCEEDED']);
+    expect(rule.EventPattern.detail.stateMachineArn).toEqual(['IacReviewStateMachine']);
+    const guard=resources.IacGuardrailRole.Properties.Policies.flatMap(p=>p.PolicyDocument.Statement);
+    const absentRoleProbe=guard.find(s=>[].concat(s.Resource).some(r=>String(r).endsWith(':role/gapp-*')));
+    expect(absentRoleProbe.Action).toEqual(['iam:GetRole','iam:GetRolePolicy']);
+    expect(guard.filter(s=>[].concat(s.Action).some(a=>/^iam:(CreateRole|DeleteRole|DeleteRolePolicy|PutRolePolicy)$/.test(a))).every(s=>JSON.stringify(s.Resource).includes('role/graph-deploy/gapp-'))).toBe(true);
+  });
 });

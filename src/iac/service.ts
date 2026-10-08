@@ -54,7 +54,7 @@ interface Store {
 }
 
 export interface IacServiceDeps {
-    reviewStatus?: (graphId: string, nodeId: string, principal: Principal | undefined) => Promise<any>;
+    reviewStatus?: (graphId: string, nodeId: string, principal: Principal | undefined, refresh?:boolean) => Promise<any>;
     /** The graph as a named revision projects it. */
     projection: (graphId: string, revisionId?: string) => Promise<{ revisionId: string; projection: any } | null>;
     /** The template as it was committed, by digest. */
@@ -330,7 +330,7 @@ export class IacService {
             : this.status(graphId, nodeId, principal);
         answer
             .then((body: any) => {
-                const code = body && body.error
+                const code = body && body.error && !body.operationId
                     ? (body.code === "ADMISSION_DENIED" ? 403 : body.code === "NOT_FOUND" ? 404 : 400)
                     : 200;
                 callback(null, { statusCode: code, headers: corsHeaders, body: JSON.stringify(body) });
@@ -366,7 +366,7 @@ export class IacService {
                 stack: carried.stack,
                 validation: preflight.validation,
                 preflight,
-                status: (this.deps.reviewStatus ? await this.deps.reviewStatus(graphId,node.id,principal) : null) || status || null,
+                status: (this.deps.reviewStatus ? await this.deps.reviewStatus(graphId,node.id,principal,false) : null) || status || null,
                 atRevision: at.revisionId,
             });
         }

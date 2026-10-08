@@ -1,7 +1,9 @@
 # MCP application workflow — current platform review
 
-Updated: 2026-10-07. This is the current review artifact for the Chess regression
-work in **graph-server and its sibling graph-editor**. The user authorized
+Updated: 2026-10-08 UTC. This is the current review artifact for the Chess regression
+work in **graph-server and its sibling graph-editor**. The deployment-observability
+extension below is the current change; its release evidence is tracked separately
+from the preceding release. The user authorized
 committing, pushing and deploying these platform changes on 2026-10-07. The
 platform release completed on 2026-10-07 PDT (2026-10-08 UTC): server
 `c1ee6cea101e297b88e0bc6a77bca488727e1806`, paired editor
@@ -13,6 +15,151 @@ The intended CI target remains account **230639770018**, region **us-west-1**.
 A separate application AWS account is deferred. Review and release these shared
 platform changes separately from any application proposal. Application work
 then stays within MCP and the graph's human review interface.
+
+## Deployment observability extension
+
+Implementation complete; release verification in progress. No Chess application
+deployment, retry, deletion or guardrail recovery is part of this platform change.
+
+### Confirmed failure and narrow correction
+
+Operation `01M4CSD7D7H7YM2HKY2Z5AJRHZ`, graph
+`f1963a3b-7e9a-43b3-87ee-068d56431374`, node `node-chess-storage-stack`, failed
+before application stack `gapp-15688bf738201d31d8fb7d29-stack` existed. The user
+identified accepted revision `rev_01M4CS9QTFQWS4GVV07CYN4Y0H`. The legacy operation
+did not record a revision; diagnostic events use `unknown` for that historical
+field and retain its actual input digest instead of guessing an association.
+
+Read-only platform investigation in account **230639770018**, **us-west-1**, found:
+
+- At approximately **2026-10-08 03:37:49–50 UTC**, the guardrail stack
+  `graph-guardrails-15688bf738201d31d8fb7d29` failed to create WorkerRole and
+  ExecutionRole because its platform CloudFormation role lacked effective
+  `iam:GetRole`. CloudFormation also reported missing `iam:GetRolePolicy`.
+- At approximately **03:37:52–54**, rollback failed on `iam:DeleteRolePolicy`.
+  The guardrail stack ended **ROLLBACK_FAILED**; its boundary was retained
+  (`DELETE_SKIPPED`). No application change set was recorded.
+- The worker retried `Platform guardrail provisioning failed: ROLLBACK_FAILED`.
+  Failure recording replaced that reason with a generic instruction to check
+  AWS, then unnecessarily attempted change-set cleanup without a change set.
+  Cleanup assumed an absent worker role and generated a secondary
+  `sts:AssumeRole` AccessDenied. Step Functions ultimately failed at about
+  **03:39:08**, obscuring the earlier guardrail failure.
+
+The guardrail template specifies `/graph-deploy/`; its deployed IAM policy
+already allowed lifecycle actions only on `role/graph-deploy/gapp-*`. A privileged
+read confirmed the worker role did not exist. The likely mismatch is IAM's
+pathless existence/read probe for an absent role. This is an inference from
+events and policies, not a completed live lifecycle test. The platform policy
+adds only `GetRole` and `GetRolePolicy` on `role/gapp-*` for those probes. Role and
+policy mutations remain constrained to `/graph-deploy/gapp-*`; application roles
+and stack isolation are unchanged. The failed stack still needs explicitly
+reviewed platform recovery; this release does not broaden root-path delete
+permissions to work around that failure.
+
+### One diagnostic stream for the node and MCP
+
+- Review/worker state, guardrail setup, change sets, resource events, rollback,
+  cleanup, exceptions and orchestration outcomes become `deployment.progress`
+  records in a per-operation immutable journal with a conditional-write head.
+  Each includes graph/node/operation IDs, input and available review digests,
+  recorded revision, occurrence/receipt timestamps, source, phase and sequence.
+- A durable publication outbox appends those records to `observations.watch`
+  and sends the **same published records** to `graph-notify-<graphId>` on the
+  existing WSS bus. Delivery is at least once/best effort; deduplicate by `id`.
+  Arrival cursors preserve late AWS events independently of occurrence time.
+- A private collector uses a separate read-only AWS role. It reads only the
+  stored operation's derived application/guardrail stacks, exact Step Functions
+  execution and operation-correlated platform worker log lines. A broken or
+  absent per-stack worker role therefore cannot hide its own diagnostics.
+  Worker/status refreshes collect progress; terminal workflow events also
+  trigger collection through a narrowly filtered EventBridge rule.
+- The CloudFormation node and infrastructure review dialog display phases,
+  resource rows, failure/recovery reasons, timestamps, history and expandable
+  logs. Reopening, polling and socket reconnect recover from the durable cursor.
+  Selecting history does not change the current review or approve anything.
+- `iac.status` returns the current meaningful phase, resource summary, terminal
+  cause, original exception, collection warnings, recovery guidance, and
+  `progress.history` / `progress.watch` references. `iac.events` pages the journal;
+  `iac.history` follows prior operations. `iac.status({operationId})` opens a
+  known historical operation. Pre-upgrade operations remain readable by ID;
+  earlier records without previous-operation links are not invented by history.
+
+Read `plastic://schema/1/progress` or
+`server.discover({schemaVersion:1,topic:"progress"})` for the actual event/page
+schemas and examples. Existing MCP clients may need to refresh their tool list.
+
+```json
+{"schemaVersion":1,"graphId":"f1963a3b-7e9a-43b3-87ee-068d56431374","nodeId":"node-chess-storage-stack"}
+```
+
+Use that request with `iac.status`. Then call `observations.watch` with the
+same graph and `filter:{"operationId":"01M4CSD7D7H7YM2HKY2Z5AJRHZ"}`, preserving
+`nextCursor` across polls. Use the arguments returned in `progress.history` with
+`iac.events` for longer output or recovery after watch's replay window expires.
+Call status while `progress.collectionPending` is true to collect older AWS pages.
+Monitoring never approves, retries, applies or repairs application infrastructure.
+
+### Safety, bounds and recovery
+
+All UI/MCP diagnostic reads require the graph's resolved `graph:read` and
+`iac:read-status` authority; watch additionally requires `graph:observe`.
+Subscriptions are reauthorized on outbound delivery. Node/graph/operation-bound
+cursors do not grant access. The reference deployment's existing policy allows
+authenticated human instance owners to read its graphs; agent delegation is
+resolved per graph. No new public data route or Function URL is introduced.
+
+The collector has no IAM writes, role assumption, deployment operations,
+application invocation, application log access or `logs:Unmask`. Its storage
+writes are confined to deployment progress and observation journals. Worker and
+collector socket grants use the existing API/stage and connection path. The
+GitHub OIDC role template includes the new platform role and exact EventBridge
+rule; CI activation remains a separate prerequisite.
+
+Per refresh: up to four CloudFormation pages per stack, 300 orchestration
+events, and an 18-second AWS collection budget. Newest pages are always checked;
+older-page continuations resume on later refreshes. Logs expose at most 20
+correlated structured entries from at most 100 matches in a five-minute operation
+window. Legacy uncorrelated logs are excluded. Collection failures, continuation
+backlogs and truncation are explicit warnings and never replace the original
+deployment error. Event pages and status resource summaries are bounded to
+120 KB; individual diagnostic text/trace fields are truncated. Full operation
+pages remain available through cursors. ResourceProperties, workflow input/output,
+application request bodies and raw log records are not copied. Known parameter,
+NoEcho default and environment values plus common credential forms are redacted.
+As elsewhere in the platform, this does not claim universal detection of arbitrary
+encoded secrets in free-form AWS error text.
+
+Recovery distinguishes template correction, transient planning retry, and
+platform intervention. Permission failures, uncertain outcomes and failed
+rollback/cleanup block an unsafe new review. The original cause, secondary
+failures and retained/skipped cleanup resources remain visible together.
+Exact-digest human deployment approval is unchanged. Graph acceptance, approval
+and completed deployment remain separate milestones.
+
+### Validation for this extension
+
+Server regression coverage uses a real MCP protocol client and simulated AWS
+responses: successful reviewed deployment, change-set planning failure, resource
+creation/update/delete failure, permission denial, rollback, workflow timeout,
+diagnostic-store failure, collection denial, redaction, pagination, late events,
+outbox retry/deduplication, history and cross-graph/agent access denial. The Chess
+regression reproduces the observed pre-application guardrail IAM failure and
+secondary AssumeRole error. It asserts that status keeps the root cause and that
+socket records equal the MCP observation journal. A missing change set never
+triggers cleanup/role assumption.
+
+Editor render tests consume the same published event shape and exercise live
+failure display, logs, phase milestones, duplicate frames, reconnect, reload,
+resource timestamp ordering, old-operation selection and navigation races.
+Both Auth0 and Cognito builds pass. These are local/simulated deployment tests,
+not a claim of live successful application provisioning or recovered guardrails.
+Current local results: **668 server tests in 41 suites**, **109 editor integration
+tests in 12 files**, and **2 Playwright browser tests** passed. Both TypeScript
+checks pass with the editor's zero-error baseline. All **5 CI configuration
+tests** pass. Both provider builds pass; the CI-role CloudFormation source passes
+offline lint. The existing Jest harness still uses its established `--forceExit`
+setting. Live release checks are recorded here after rollout.
 
 ## What changed
 

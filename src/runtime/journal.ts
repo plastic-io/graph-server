@@ -18,7 +18,7 @@ export class ObservationJournal {
    const key=`observations/watch/${graphId}/${ulid()}.json`;
    await this.set(key,{prev:head?.value.key||null,first:seq+1,last:seq+entries.length,entries});
    const success=await new Promise<boolean>((resolve,reject)=>this.store.compareAndSet(`observations/watch/${graphId}/HEAD.json`,{seq:seq+entries.length,key},head?.etag||null,err=>err&&(err.statusCode===412||err.code==='PreconditionFailed')?resolve(false):err?reject(err):resolve(true)));
-   if(success)return;
+   if(success)return entries;
   }throw new Error('Observation journal contention; retry ingestion');
  }
  async read(graphId:string,options:{cursor?:string;from?:'beginning'|'latest';limit?:number;filter?:any}={}){
@@ -28,16 +28,17 @@ export class ObservationJournal {
   const head=await this.head(graphId);if(options.from==='latest'&&!options.cursor)after=head?.value.seq||0;
   let key=head?.value.key;const batches:any[]=[];
   for(let i=0;key;i++){
-   if(i>=2000)throw Object.assign(new Error('Watch history exceeds the replay window. Use observations.query for archived executions, then start from latest.'),{code:'CURSOR_EXPIRED'});
+   if(i>=2000)throw Object.assign(new Error('Watch history exceeds the replay window. Use iac.events for deployment history or observations.query for archived executions, then start from latest.'),{code:'CURSOR_EXPIRED'});
    const batch=await this.get(key);if(!batch)throw new Error('Observation journal is incomplete');
    if(batch.last<=after)break;batches.push(batch);key=batch.prev;
   }
-  const page:any[]=[];let scanned=after,more=false;const limit=options.limit||100;
+  const page:any[]=[];let scanned=after,more=false,bytes=0;const limit=options.limit||100;
   outer:for(const batch of batches.reverse())for(const o of batch.entries){
    if(o.arrival<=after)continue;
    const matches=Object.entries(filter).every(([k,v])=>k==='kind'?String(o.kind).startsWith(String(v)):o[k]===v);
-   if(matches&&page.length>=limit){more=true;break outer;}
-   scanned=o.arrival;if(matches)page.push(o);
+   const size=matches?Buffer.byteLength(JSON.stringify(o)):0;
+   if(matches&&(page.length>=limit||(page.length&&bytes+size>120000))){more=true;break outer;}
+   scanned=o.arrival;if(matches){page.push(o);bytes+=size;}
   }
   return {observations:page,nextCursor:Buffer.from(JSON.stringify({version:1,binding,after:scanned})).toString('base64url'),hasMore:more,receivedThrough:scanned,source:'durable-arrival-journal',legacyHistory:'observations.query',pollAfterMs:more?0:2000};
  }
