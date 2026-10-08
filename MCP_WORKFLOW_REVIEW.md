@@ -2,9 +2,10 @@
 
 Updated: 2026-10-08 UTC. This remains the single current review artifact for
 **graph-server and its sibling graph-editor**. The lifecycle extension described
-first is implemented and locally validated, **not deployed**. The subsequent
-release record is historical evidence; its manual-recovery instructions are
-superseded by this graph-native workflow once the platform release is installed.
+first is **deployed to 230639770018 / us-west-1**. Older release records below
+remain historical evidence; their manual-recovery instructions are superseded
+by the graph-native workflow. Live application recovery and deployment still
+require their separate graph-side approvals.
 
 ## Current lifecycle extension
 
@@ -137,14 +138,16 @@ platform records execution/revision references and verifies completed execution
 with no errors or denied effects. Deployment completion, declared readiness and
 real multiplayer verification remain separate evidence.
 
-### Platform-admin bootstrap review — still required
+### Platform-admin review — released; CI and admin configuration remain
 
 Paired editor release pin: `f9ce6c1b8083659959d9a0acbcdbd775c1a08e40`.
-The server revision for this review is the commit containing this document.
+Server release pin: `ac72acd806f8686c29983145e6be1dbfc7f2cb73`.
 
 This change is a shared platform release. Application agents cannot bootstrap it
-or edit these roles. Review the concrete changes in `serverless.yaml` and
-`infra/github-oidc-deploy-role.yaml` for **230639770018 / us-west-1**:
+or edit these roles. The user authorized deployment of these reviewed changes
+on October 8, 2026. The server-stack changes in `serverless.yaml` are installed
+in **230639770018 / us-west-1**; activation of the GitHub OIDC role described in
+`infra/github-oidc-deploy-role.yaml` remains a separate administration task:
 
 | Platform component | Requested permission/change |
 | --- | --- |
@@ -155,7 +158,7 @@ or edit these roles. Review the concrete changes in `serverless.yaml` and
 | Application runtime/execution roles | No broader application IAM authority. Existing boundary and isolation enforcement remain in force. |
 | GitHub OIDC deployment role | Add the exact private repair role name to managed-role/pass-to-Lambda allowlists. A platform administrator must activate/update the approved CI role; it cannot bootstrap its own missing authority. |
 
-Release prerequisites:
+Remaining configuration and application steps:
 
 1. An administrator reviews the above policy/function changes and updates the
    CI bootstrap role through the existing approved platform administration path.
@@ -165,9 +168,12 @@ Release prerequisites:
    authorized, verified **human subject IDs**. Those humans also need the
    existing `policy:admin` authority. Empty is deny-by-default; ordinary graph
    ownership or agent delegation alone cannot grant this maintenance role.
-3. Release the reviewed server and a pinned full editor commit via the existing
-   Deploy workflow. No local preparation commands, personal AWS credentials,
-   browser tokens or application-specific server code are needed by the agent.
+3. The reviewed server and pinned editor are now released using the user's
+   explicitly authorized account-specific platform release exception, with the
+   same templates, packaging and configuration mapping as the Deploy workflow.
+   Future CI releases require steps 1–2 above. Application agents continue to
+   use MCP and graph approvals; this platform release grants no application
+   permission to use local credentials or bypass MCP.
 4. Refresh MCP discovery, run `iac.inspect`, and request platform maintenance if
    it finds remaining shared prerequisites. Maintenance states are `requested`,
    `approved-awaiting-platform-release`, `verification-blocked` or `verified`.
@@ -200,12 +206,67 @@ The recovery browser test and existing deployment-review browser test pass.
 The server test run uses the repository's established `--forceExit` workaround
 for its lingering test-harness handle; this is separate from runtime evidence.
 
-**Pending:** administrator bootstrap/release, live current-AWS inspection,
-graph-side recovery/deployment approvals, live create/failure/recovery/redeploy
-and rollback, live cross-stack denial, runtime readiness and two authenticated
-browser users receiving authoritative updates. None of those live outcomes is
-claimed by the local tests. No new live proposal or AWS mutation was made in
-this task.
+**Pending:** GitHub CI bootstrap/activation, an explicitly configured human
+platform-maintenance administrator, live current-AWS inspection through the new
+tool, graph-side recovery/deployment approvals, live create/failure/recovery/
+redeploy and rollback, live cross-stack denial, runtime readiness and two
+authenticated browser users receiving authoritative updates. None of those
+application outcomes is claimed by the local tests or platform release. No
+application proposal, recovery approval or application AWS mutation was made
+as part of this release.
+
+### Lifecycle release verification — October 8, 2026
+
+Both source revisions above were pushed before deployment. The platform stack
+`pio-auth-test-230639770018` reached `UPDATE_COMPLETE` at **18:50:26 UTC**. The
+editor was published to
+<https://d2fqgid0yzbc85.cloudfront.net/graph-editor/> and CloudFront invalidation
+`IAJITLPWIPWFK0FI77NKA9OAHG` completed. The public
+[release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json)
+identifies the exact server/editor pair and retained artifact hashes.
+
+Release checks passed:
+
+- Generated CloudFormation lint and infrastructure diff review: no persistent
+  resource removal, unchanged public endpoints and unchanged Cognito identity
+  configuration. The CI production-dependency audit reported zero advisories;
+  this does not assess every development dependency included by bundling.
+- Eight relevant deployed Lambda functions matched the retained package hash
+  `KOj8UbYEq/zi6/Yy1ovoiI/FdQx4F+kRRUc/qAHwjvs=` and reported successful updates.
+  The worker, diagnostic collector, repair function and application bridge have
+  no Function URLs. Current worker/guardrail/repair policies were inspected;
+  application log reads remain limited to `/aws/lambda/gapp-*`, and repair has
+  no role creation/deletion/passing or S3 write authority.
+- All **72** REST data/execution methods, including the six new lifecycle
+  routes, use the custom authorizer. OAuth protected-resource metadata is the
+  sole unauthenticated non-OPTIONS REST method. All **28** focused missing/invalid
+  credential probes returned **401**. WebSocket connection authorization and
+  streaming credential rejection also passed.
+- OAuth discovery, PKCE metadata, constrained automatic client registration,
+  and selected-provider smoke checks passed. The first smoke run encountered
+  a workstation TCP connection timeout; an unchanged test rerun with a longer
+  local address-selection timeout passed.
+- Public editor manifest/configuration and entry-point SHA-256 matched the
+  retained release. The paired editor includes recovery/readiness controls and
+  the bounded, internally scrolling CloudFormation node.
+- A live call through the connected MCP `iac.status` tool preserved the Chess
+  operation's original error and diagnostic history and returned the new
+  `nextActions`: inspection and recovery planning are allowed; deployment is
+  blocked until the appropriate recovery and fresh approval cycle. This was a
+  status read, not a fresh resource inspection or successful recovery test.
+
+`PLATFORM_ADMIN_SUBS` remains empty (deny by default); MCP confirmed
+`canReviewMaintenance: false`. Configuring a maintenance administrator requires
+an explicitly authorized verified human subject with `policy:admin`. Existing
+graph recovery/deployment approval requirements are unchanged. This session's
+MCP connector has a cached older tool list; refresh discovery/reconnect it to
+expose the newly deployed lifecycle tools. No HTTP, CLI or credential workaround
+was used for application operations.
+
+Retained local release evidence is in
+`/private/tmp/graph-lifecycle-release-ac72acd/`, including the exact package,
+editor distribution, template diff, smoke results, `verification.json` and a
+bounded MCP status evidence record.
 
 ## Previous release record — historical
 
