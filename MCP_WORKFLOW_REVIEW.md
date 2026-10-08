@@ -18,7 +18,11 @@ then stays within MCP and the graph's human review interface.
 
 ## Deployment observability extension
 
-Implementation complete; final release verification in progress. No Chess application
+Implemented, committed, pushed and deployed to **230639770018 / us-west-1**:
+server `71bb9e3ac1e5601acf0054e1a5d4f3e5df72d020`, editor
+`d4c03cbbca591ff4600f4dacbc0769e7aceb0bdc`. The server stack is
+**UPDATE_COMPLETE** and the editor's CloudFront invalidation completed.
+No Chess application
 deployment, retry, deletion or guardrail recovery is part of this platform change.
 
 ### Confirmed failure and narrow correction
@@ -160,7 +164,7 @@ checks pass with the editor's zero-error baseline. All **5 CI configuration
 tests** pass. Both provider builds pass; the CI-role CloudFormation source passes
 offline lint; the packaged platform template also passes lint without errors.
 The production dependency audit reports zero vulnerabilities. The existing Jest harness still uses its established `--forceExit`
-setting. Live release checks are recorded here after rollout.
+setting.
 
 The first live MCP read exposed an absent-journal edge case: the collector's
 restricted S3 role received AccessDenied instead of NoSuchKey for a missing head.
@@ -180,6 +184,38 @@ secondary AssumeRole failure. The response classifies recovery as platform
 intervention. Legacy worker logs without an operation ID remain intentionally
 unavailable; CloudFormation and orchestration history supply the actionable
 evidence. The operation was inspected, not retried or approved.
+
+Final release verification:
+
+- The deployed collector, worker, review endpoint, MCP route and MCP stream are
+  active; all five code hashes match the retained final package.
+- The collector's deployed S3 listing permission is limited to graph-notification
+  subscriptions and the two journal prefixes. Its workflow event rule is enabled
+  and filters the exact platform state machine.
+- Both new API routes have the deployed JWT authorizer. Events, operation history
+  and review endpoints return **401** for missing and invalid credentials.
+  The standard release checks also passed for OAuth/PKCE discovery, constrained
+  public-client registration, WSS and the MCP Function URL.
+- Repeated authenticated MCP reads return the original IAM failure and the same
+  **36** diagnostic event sequence, demonstrating collection deduplication. The
+  application stack is explicitly `NOT_CREATED`; the guardrail resources show
+  rollback failure and the retained boundary. The new versioned progress schema
+  is listed and readable through MCP.
+- The public editor release manifest and entry point match the retained pinned
+  artifacts. UI rendering/reconnect evidence comes from local integration and
+  browser tests; an authenticated live-browser session was not independently
+  exercised during this release. The current connector session cached the old
+  tool list, so live diagnosis used `iac.status`; the real MCP client regression
+  exercises `observations.watch`, `iac.events` and `iac.history` as well.
+
+Remaining application prerequisites: separately authorized recovery of the
+failed guardrail stack and reconciliation of the failed review/lock, followed
+by a fresh graph-side plan and exact-digest human approval. Successful live AWS
+application create/update/delete, rollback and multiplayer remain separate
+acceptance gates. Local success/failure scenarios use simulated AWS responses.
+GitHub OIDC deployment access remains unactivated; this release used the existing
+authorized account-specific platform-release exception. Both repositories are
+pushed. Reload the editor; reconnect clients that cache the MCP tool catalogue.
 
 ## What changed
 
@@ -408,7 +444,8 @@ application services. Policy tests evaluate the generated policy subset locally;
 they are **not AWS IAM simulator or live AWS evidence**. Editor tests simulate two
 bus consumers; they are **not two authenticated browser accounts**.
 
-Recorded local results:
+Recorded results for the preceding `c1ee6ce` release (the extension's current
+results and rollout evidence are above):
 
 - Server: 40 suites, **652 tests passed** using the release workflow's existing
   `jest --ci --runInBand --forceExit` command. A run without `--forceExit` completes
@@ -475,10 +512,10 @@ not live application readiness, effective cross-stack denial or multiplayer.
 | Milestone for the fresh-agent acceptance case | Current evidence |
 | --- | --- |
 | Proposal created and validated | Passed through local MCP regression; no new live proposal submitted. |
-| User accepted graph changes | Simulated human acceptance tested; live acceptance pending. |
-| Infrastructure plan generated | Simulated CloudFormation plan tested; live plan pending. |
-| User approved deployment | Separate human approval tested locally; no live approval requested/executed. |
-| Deployment completed | Platform release completed in the target account; real application deployment remains pending graph-side approval. |
+| User accepted graph changes | Simulated human acceptance tested. The user reports accepted Chess revision `rev_01M4CS9QTFQWS4GVV07CYN4Y0H`; its legacy deployment record carries the input digest but no revision field. |
+| Infrastructure plan generated | Simulated successful plan tested. The reported live Chess plan failed during guardrail provisioning, before application stack creation; its cause is now retrievable through MCP. |
+| User approved deployment | Separate human approval tested locally; the failed Chess operation has no deployment approval. |
+| Deployment completed | Current platform release completed in the target account; Chess still requires guardrail recovery, a new plan and graph-side approval. |
 | Runtime readiness verified | Native isolate, application example and diagnostic tests pass locally. Deployed platform discovery and authentication checks pass; live application execution remains pending. |
 | Live multiplayer verified | Pending two real authenticated users, reconnect/presentation checks and authoritative updates. |
 
