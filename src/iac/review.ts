@@ -3,6 +3,10 @@ import {scopedPolicy,stackScope, ISOLATED_TYPES} from './isolation';
 import {DeploymentProgress,phaseFor} from './progress';
 import {diagnosticError,diagnosticText,recoveryFor} from './diagnosticSafety';
 import {DelegationStore} from '../policy/delegation';
+import {IacLifecycleService,publicRecoveryPlan,isPlatformAdmin} from './lifecycle';
+import {nextActions,terminalStates} from './lifecycleModel';
+import {readinessProblems} from './readiness';
+import {progressAllowed} from './progressAccess';
 import {createHash} from 'crypto';
 import {ulid} from 'ulid';
 import {decide} from '../policy/decide';
@@ -13,7 +17,7 @@ import {parseTemplate, policyFromEnv, validateDesired, validateTemplate} from '.
 // These types match the dedicated execution role, which cannot create IAM roles,
 // execute code, or alter the graph service. Expanding this set also requires IAM.
 export const APPLY_TYPES = LEGACY_APPLY_TYPES;
-const terminal = new Set(['succeeded', 'failed', 'rolled-back', 'rollback-failed', 'cancelled', 'expired', 'stale', 'no-changes','destroyed']);
+const terminal = terminalStates;
 const hash = (value: any): string => createHash('sha256').update(canonical(value)).digest('hex');
 const accessChange = (type:string,before:any,after:any) => /^AWS::IAM::/.test(type)||/::(?:BucketPolicy|QueuePolicy|TopicPolicy|Permission|Authorizer)$/.test(type)
     ? {before:before?.Properties||null,after:after?.Properties||null} : undefined;
@@ -40,12 +44,12 @@ export function prepareReview(projection: any, nodeId: string, policy = policyFr
     const format = fromGraph ? 'json' : carried.template.format === 'json' ? 'json' : 'yaml';
     const validation = validateTemplate(text || '', format, policy);
     const desired = IacService.desiredFor(projection.id, nodeId, 'live', carried, validation.templateSha256, '00000000000000000000000000');
-    const problems = [...(fromGraph ? assembled.problems : []), ...validation.problems, ...validateDesired(desired, policy).problems];
+    const problems = [...(fromGraph ? assembled.problems : []), ...validation.problems, ...validateDesired(desired, policy).problems,...readinessProblems(carried.readiness)];
     if (Buffer.byteLength(text || '') > 51200) problems.push({code:'SCHEMA_INVALID',message:'The template exceeds the 51,200-byte CloudFormation template limit.'});
     const preflight=deploymentCapabilities(projection.id,nodeId,{...carried,template:{text,format}},basePolicy);
     if(isolationEnabled())problems.push(...preflight.problems.filter(p=>!['DEPLOYMENT_UNAVAILABLE'].includes(p.code)));
     const input = {graphId:projection.id, nodeId, stack:carried.stack, text, format,
-        parameters:carried.parameters || {}, capabilities:carried.capabilities || [], ...(isolationEnabled()?{isolation:scope}:{})};
+        parameters:carried.parameters || {}, capabilities:carried.capabilities || [], ...(carried.readiness?{readiness:carried.readiness}:{}), ...(isolationEnabled()?{isolation:scope}:{})};
     return {...input, preflight, source:fromGraph ? 'graph' : 'inline', inputDigest:hash(input),
         policyDigest:hash(policy), validation:{...validation, ok:problems.length===0, problems}};
 }
@@ -61,6 +65,7 @@ export interface ReviewCloud {
     remove(record: any): Promise<void>;
 }
 export interface ReviewDeps {
+    lifecycle?: {inspect?:(op:any,options?:{ownRecovery?:boolean})=>Promise<any>;advance?:(op:any,action:any,index:number)=>Promise<any>;logs?:(op:any,options:any)=>Promise<any>};
     notify?: (graphId:string,event:any)=>Promise<void>;
     refreshDiagnostics?: (operationId:string)=>Promise<void>;
     revision?: (graphId:string)=>Promise<string>;
@@ -74,7 +79,11 @@ export interface ReviewDeps {
 
 /** Durable reviewed operations; only step() runs in the privileged worker. */
 export class IacReviewService {
-    constructor(private store: any, private deps: ReviewDeps) {}
+    runtimeInvoker?: (graphId:string,principal:any,request:any)=>Promise<any>;
+    readonly lifecycle:IacLifecycleService;
+    constructor(private store: any, private deps: ReviewDeps) {
+        this.lifecycle=new IacLifecycleService(store,{...deps.lifecycle,notify:deps.notify,start:deps.start,policy:deps.policy,now:deps.now,input:(g,n,p)=>this.template(g,n,p),invoke:(g,p,r)=>this.runtimeInvoker?this.runtimeInvoker(g,p,r):Promise.reject(Object.assign(new Error('Graph invocation is not configured'),{code:'CAPABILITY_UNAVAILABLE'}))});
+    }
     get enabled() { return !!this.deps.enabled; }
     route(event: any, _context: any, callback: any) {
         const {id:graphId,nodeId}=event.pathParameters || {};
@@ -89,7 +98,13 @@ export class IacReviewService {
             if (event.httpMethod==='GET' && action==='review') return {status:await this.current(graphId,nodeId,event.principal,event.queryStringParameters?.operationId)};
             if (event.httpMethod==='GET' && action==='events') return this.events(graphId,nodeId,event.principal,event.queryStringParameters||{});
             if (event.httpMethod==='GET' && action==='operations') return this.operations(graphId,nodeId,event.principal,event.queryStringParameters||{});
-            if (event.httpMethod==='POST' && action==='plan') return {status:await this.begin(graphId,nodeId,event.principal,body.replace===true,body.action||'apply')};
+            if (event.httpMethod==='GET' && action==='inspect') return this.lifecycle.inspect(graphId,nodeId,event.principal,event.queryStringParameters||{});
+            if (event.httpMethod==='GET' && action==='runtime-logs') return this.lifecycle.runtimeLogs(graphId,nodeId,event.principal,event.queryStringParameters||{});
+            if (event.httpMethod==='POST' && action==='recovery-plan') return {status:await this.lifecycle.plan(graphId,nodeId,event.principal,body)};
+            if (event.httpMethod==='POST' && action==='recovery-approve') return {status:await this.lifecycle.approve(graphId,nodeId,event.principal,body)};
+            if (event.httpMethod==='POST' && action==='maintenance') return this.lifecycle.maintenance(graphId,nodeId,event.principal,body,body.action||'request');
+            if (event.httpMethod==='POST' && action==='readiness') return this.lifecycle.readiness(graphId,nodeId,event.principal,body);
+            if (event.httpMethod==='POST' && action==='plan') return {status:await this.begin(graphId,nodeId,event.principal,body.replace===true,body.action||'apply',body.retryOf)};
             if (event.httpMethod==='POST' && action==='apply') return {status:await this.approve(graphId,nodeId,event.principal,body)};
             if (event.httpMethod==='POST' && action==='discard') return {status:await this.cancel(graphId,nodeId,event.principal,body)};
             problem('Unknown infrastructure action.','NOT_FOUND',404);
@@ -147,12 +162,12 @@ export class IacReviewService {
     }
     private publicRecord(record: any) {
         if (!record) return null;
-        const {input, policyDigest, ...visible} = record;
-        return {...visible,...(record.reason?{reason:diagnosticText(record.reason,record)}:{}),...(record.originalError?{originalError:diagnosticError(record.originalError,record)}:{}),template:{text:input.text, format:input.format, source:input.source}, stack:input.stack,preflight:input.preflight};
+        const {input, policyDigest,recoveryLease, ...visible} = record;
+        return {...visible,...(record.recoveryPlan?{recoveryPlan:publicRecoveryPlan(record.recoveryPlan)}:{}),...(record.reason?{reason:diagnosticText(record.reason,record)}:{}),...(record.originalError?{originalError:diagnosticError(record.originalError,record)}:{}),template:{text:input.text, format:input.format, source:input.source}, stack:input.stack,preflight:input.preflight,readinessChecks:input.readiness||[]};
     }
     private progress(){return new DeploymentProgress(this.store,this.deps.notify);}
     async current(graphId: string, nodeId: string, principal: any, operationId?:string, refresh=true) {
-        await this.authorize(graphId,principal);
+        principal=await this.authorize(graphId,principal);
         const index = await this.read(IacReviewService.index(graphId,nodeId));
         if (!index&&!operationId) return null;
         const record=(await this.operation(graphId,nodeId,operationId||index.value.operationId)).value;
@@ -162,18 +177,20 @@ export class IacReviewService {
         await this.progress().flush(record);
         let progress:any;
         try{progress=await this.progress().view(record);}catch(e){progress={version:1,collectionWarning:{reason:'Stored diagnostics are temporarily unavailable. The original deployment outcome is preserved.',error:diagnosticError(e,record)}};}
+        for(const key of ['latest','lastEvent','lifecycle'])if(progress[key]&&!progressAllowed(principal,progress[key]))delete progress[key];
         const workflowFailed=progress.orchestrationFailure&&!terminal.has(record.state);
         const failure=['failed','rolled-back','rollback-failed'].includes(record.state)||workflowFailed||progress.cleanup?.status==='DELETE_FAILED';
-        return {...this.publicRecord(record),...(workflowFailed?{state:'failed',workflowState:record.state}:{}),progress,
+        return {...this.publicRecord(record),...(workflowFailed?{state:'failed',workflowState:record.state}:{}),progress,nextActions:nextActions(record),canReviewMaintenance:isPlatformAdmin(principal),
             ...(failure?{error:progress.failure?.error||(progress.failure?.reason?diagnosticError({code:progress.failure.status||'DEPLOYMENT_ERROR',message:progress.failure.reason},record):record.originalError),reason:progress.failure?.reason||record.reason,
                 recovery:progress.recovery||recoveryFor(record,{status:record.state,reason:record.reason}),
                 manualRecoveryRequired:record.manualRecoveryRequired||!!workflowFailed||progress.recovery?.category==='platform-intervention'}:{})};
     }
     async events(graphId:string,nodeId:string,principal:any,options:any={}){
-        await this.authorize(graphId,principal);
+        principal=await this.authorize(graphId,principal);
         const index=options.operationId?null:await this.read(IacReviewService.index(graphId,nodeId));
         const op=(await this.operation(graphId,nodeId,options.operationId||index?.value.operationId)).value;
-        return this.progress().page(op,{cursor:options.cursor,limit:Number(options.limit)||50});
+        const page=await this.progress().page(op,{cursor:options.cursor,limit:Number(options.limit)||50});
+        return {...page,events:page.events.filter(e=>progressAllowed(principal,e))};
     }
     async operations(graphId:string,nodeId:string,principal:any,options:any={}){
         await this.authorize(graphId,principal);
@@ -192,7 +209,7 @@ export class IacReviewService {
         if (!row || row.value.graphId!==graphId || row.value.nodeId!==nodeId) problem('Review not found.','NOT_FOUND',404);
         return row;
     }
-    async begin(graphId: string, nodeId: string, principal: any, replace = false, action='apply') {
+    async begin(graphId: string, nodeId: string, principal: any, replace = false, action='apply',retryOf?:string) {
         principal=await this.authorize(graphId,principal);
         if(!['apply','destroy'].includes(action))problem('Unknown deployment action.');
         if(action==='destroy'&&!isolationEnabled())problem('Reviewed destroy requires stack isolation.');
@@ -206,22 +223,32 @@ export class IacReviewService {
         const lockKey = this.lockKey(input.stack);
         const lock = await this.read(lockKey);
         const existingIndex=await this.read(IacReviewService.index(graphId,nodeId));
+        if(retryOf){const prior=(await this.operation(graphId,nodeId,retryOf)).value;if(!terminal.has(prior.state)||existingIndex?.value.operationId!==retryOf)problem('Retry must reference the current terminal operation; inspect or recover it first.','STALE_REVIEW',409);}
         if(existingIndex?.value.operationId){const priorProgress=await this.progress().head(existingIndex.value.operationId),prior=await this.read(IacReviewService.key(existingIndex.value.operationId));
-            if(prior&&terminal.has(prior.value.state)&&!['succeeded','destroyed'].includes(prior.value.state)&&priorProgress?.snapshot?.recovery?.category==='platform-intervention')problem('The previous operation requires platform intervention. Read its resource failures and recovery guidance in this graph before retrying.','RECOVERY_REQUIRED',409);}
+            if(this.deps.lifecycle?.inspect&&prior&&terminal.has(prior.value.state)&&!['succeeded','destroyed','no-changes'].includes(prior.value.state)){
+                const inspection=await this.lifecycle.inspect(graphId,nodeId,principal,{operationId:prior.value.operationId});
+                if(!inspection.canReview)problem('Current readiness blocks a fresh review. Use iac.inspect, iac.recovery.plan or iac.maintenance.request for its precise prerequisites.','RECOVERY_REQUIRED',409);
+            }
+            if(!this.deps.lifecycle?.inspect&&prior&&terminal.has(prior.value.state)&&!['succeeded','destroyed','recovered'].includes(prior.value.state)&&priorProgress?.snapshot?.recovery?.category==='platform-intervention')problem('The previous operation requires platform intervention. Read its resource failures and recovery guidance in this graph before retrying.','RECOVERY_REQUIRED',409);}
         if (lock?.value.operationId) {
             const old = await this.read(IacReviewService.key(lock.value.operationId));
             if(old?.value.input.isolation && ['succeeded','destroyed'].includes(old.value.state) && !old.value.finalizedAt) return this.publicRecord(old.value);
             if (old && (!terminal.has(old.value.state) || old.value.manualRecoveryRequired)) {
+                if(old.value.action==='recover')problem('Recovery owns this stack. Wait for its outcome before creating a fresh deployment review.','CONFLICT',409);
                 if (old.value.graphId!==graphId || old.value.nodeId!==nodeId || old.value.manualRecoveryRequired) problem('Another operation holds this stack. Finish its review or recovery before starting another.','CONFLICT',409);
                 if (!replace || !['awaiting-review'].includes(old.value.state)) return this.publicRecord(old.value);
                 if (!await this.cas(IacReviewService.key(old.value.operationId), {...old.value,state:'cancelled',reason:'Replaced by a new review.'},old.etag)) problem('The review changed. Refresh and try again.','CONFLICT',409);
             }
         }
+        if(this.deps.lifecycle?.inspect&&isolationEnabled()){
+            const inspected=await this.lifecycle.inspect(graphId,nodeId,principal);
+            if(!inspected.canReview)problem('Current AWS readiness blocks deployment planning. Use iac.inspect for the current prerequisites.','RECOVERY_REQUIRED',409);
+        }
         const id=ulid(), now=this.now();
         const record:any={operationId:id,graphId,nodeId,input,policyDigest:input.policyDigest,inputDigest:input.inputDigest,
             revisionId:await this.deps.revision?.(graphId)||'live',previousOperationId:existingIndex?.value.operationId||null,
             state:'planning',createdAt:now,updatedAt:now,expiresAt:now+3600000,by:{sub:principal.sub,kind:principal.kind},
-            action,changeSetName:'review-'+id,history:[{state:'planning',at:now}]};
+            action,...(retryOf?{retryOf}:{}),changeSetName:'review-'+(input.isolation?.namespace||'')+id,history:[{state:'planning',at:now}]};
         await this.cas(IacReviewService.key(id),record,null);
         if (!await this.cas(lockKey,{operationId:id},lock?.etag || null)) problem('Another review started for this stack. Refresh and try again.','CONFLICT',409);
         const indexKey=IacReviewService.index(graphId,nodeId), index=await this.read(indexKey);
@@ -237,6 +264,7 @@ export class IacReviewService {
     async approve(graphId: string, nodeId: string, principal: any, body: any) {
         await this.authorize(graphId,principal,true);
         const row=await this.operation(graphId,nodeId,body.operationId), op=row.value;
+        if(op.action==='recover'||op.supersededBy||(await this.read(IacReviewService.index(graphId,nodeId)))?.value.operationId!==op.operationId)problem('This is not the current application deployment review. Recovery and replacement reviews require their own exact approval.','STALE_REVIEW',409);
         if((await this.progress().head(op.operationId))?.snapshot?.orchestrationFailure)problem('The deployment workflow stopped. Create a new review after resolving its reported failure.','STALE_REVIEW',409);
         if (!body.reviewDigest || body.reviewDigest!==op.reviewDigest) problem('Approve the exact review displayed in the editor. Refresh the review.','STALE_REVIEW',409);
         if (op.approval && ['apply-requested','applying','succeeded','destroyed','rolled-back','rollback-failed'].includes(op.state)) return this.publicRecord(op);
@@ -312,6 +340,18 @@ export class IacReviewService {
     }
     /** A short step, retried/polled by Step Functions rather than an HTTP request. */
     async step(id: string): Promise<any> {
+        if(!this.deps.lifecycle?.inspect)return this.stepOwned(id);
+        const row=await this.read(IacReviewService.key(id));if(!row)return {operationId:id,done:true};
+        const key=this.lockKey(row.value.input.stack),lock=await this.read(key);
+        if(row.value.supersededBy||lock?.value.operationId!==id)return {operationId:id,done:true};
+        if(lock.value.leaseUntil>this.now())return {operationId:id,done:false,waitSeconds:5};
+        const lease=ulid();
+        if(!await this.cas(key,{...lock.value,lease,leaseUntil:this.now()+120000},lock.etag))return {operationId:id,done:false,waitSeconds:5};
+        let completed=false;
+        try{const result=await this.stepOwned(id);completed=true;return result;}
+        finally{if(completed){const current=await this.read(key);if(current?.value.operationId===id&&current.value.lease===lease)await this.cas(key,{operationId:id},current.etag);}}
+    }
+    private async stepOwned(id: string): Promise<any> {
         let row=await this.read(IacReviewService.key(id));
         if (!row) return {operationId:id,done:true};
         await this.observe(row.value);
@@ -343,7 +383,7 @@ export class IacReviewService {
         if (op.state==='planning') {
             // The privileged worker independently validates the stored input.
             const checked=prepareReview({id:op.graphId,nodes:[{id:op.nodeId,properties:{iac:{stack:op.input.stack,
-                template:{text:op.input.text,format:op.input.format},parameters:op.input.parameters,capabilities:op.input.capabilities}}}]},op.nodeId,this.policy());
+                template:{text:op.input.text,format:op.input.format},parameters:op.input.parameters,capabilities:op.input.capabilities,readiness:op.input.readiness}}}]},op.nodeId,this.policy());
             if (!checked.validation.ok || checked.inputDigest!==op.inputDigest || checked.policyDigest!==op.policyDigest
                 || checked.validation.resourceTypes.some(t=>!(isolationEnabled()?ISOLATED_TYPES:APPLY_TYPES).includes(t))) {
                 await this.fail(id,'The stored template no longer passes deployment validation.');return result();
@@ -372,7 +412,17 @@ export class IacReviewService {
             const described=await cloud.describe(op);
             if (['CREATE_IN_PROGRESS','CREATE_PENDING'].includes(described.status)) return result();
             const noChanges=described.status==='FAILED' && /didn.t contain changes|no updates|no changes/i.test(described.reason || '');
-            if (noChanges) {await cloud.remove(op);await save({state:'no-changes',reason:'The deployed stack already matches this template.'});await this.release(op);return result(true);}
+            if (noChanges) {
+                await cloud.remove(op);
+                const bound=await this.read(`iac/deployed/${op.graphId}/${op.nodeId}.json`),previous=bound?.value.operationId&&await this.read(IacReviewService.key(bound.value.operationId));
+                if(op.input.isolation&&previous?.value.inputDigest!==op.inputDigest){
+                    const resources=cloud.resources?await cloud.resources(op):[];
+                    const plan={changes:[],destructive:false,changeSetRetained:false,stackExists:true,metadataOnly:true,resources,
+                        reason:'CloudFormation reports no resource changes. Approval binds the current template and declared readiness checks to this existing owned stack.'};
+                    await save({state:'awaiting-review',plan,reviewDigest:hash({inputDigest:op.inputDigest,policyDigest:op.policyDigest,plan}),expiresAt:this.now()+3600000});return result();
+                }
+                await save({state:'no-changes',reason:'The deployed stack already matches this template.'});await this.release(op);return result(true);
+            }
             if (described.status!=='CREATE_COMPLETE') {await this.fail(id,described.reason || 'CloudFormation could not prepare the review.');return result();}
             const definitions=parseTemplate(op.input.text,op.input.format).doc?.Resources||{};
             const binding=await this.read(`iac/deployed/${op.graphId}/${op.nodeId}.json`);
@@ -388,6 +438,11 @@ export class IacReviewService {
         }
         if (op.state==='apply-requested') {
             if (!op.approval || op.approval.reviewDigest!==op.reviewDigest || hash(isolationEnabled()?scopedPolicy(stackScope(op.graphId,op.nodeId,this.policy()),this.policy()):this.policy())!==op.policyDigest) {await this.fail(id,'The approval or deployment policy is no longer valid.');return result(true);}
+            if(op.plan?.metadataOnly){
+                const resources=cloud.resources?await cloud.resources(op):[];
+                if(hash(resources)!==hash(op.plan.resources)){await this.fail(id,'Owned resources changed after the metadata review. Create a new review.');return result(true);}
+                await save({state:'applying',startedAt:this.now()});return result();
+            }
             if(op.action==='destroy'){
                 const stack=await cloud.stack(op.input.stack.name,op);
                 // AWS may have accepted a previous DeleteStack before the durable state write failed.

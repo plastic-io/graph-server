@@ -34,6 +34,7 @@ import { TemplateStore } from "./iac/templates";
 import { IacService } from "./iac/service";
 import {IacReviewService} from './iac/review';
 import {diagnosticRefresh} from './iac/progressRuntime';
+import {lifecycleRemote} from './iac/lifecycleRuntime';
 import {StepFunctions} from 'aws-sdk';
 import { cloudFormationClient } from "./iac/cloudformation";
 import { CaptureService } from "./view/capture";
@@ -219,6 +220,7 @@ export default class EventSourceService {
             },
         });
         this.iacReviews = new IacReviewService(this.crdtStore.store, {
+            lifecycle:lifecycleRemote(),
             projection: (graphId: string) => this.crdtStore.projectGraph(graphId),
             revision: async(graphId:string)=>executionRevision(await this.crdtStore.projectGraph(graphId),this.revisions),
             notify: (graphId,event)=>new Promise((resolve,reject)=>this.broadcastService._sendToChannel('graph-notify-'+graphId,event,err=>err?reject(err):resolve())),

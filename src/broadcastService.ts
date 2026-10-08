@@ -3,6 +3,7 @@ import {ApiGatewayManagementApi} from "aws-sdk";
 import S3Service from './s3Service';
 import {DelegationStore} from './policy/delegation';
 import {decide} from './policy/decide';
+import {progressAllowed} from './iac/progressAccess';
 import {personalChannel} from './chat/service';
 import { principalFromAuthorizerContext, connectionKey, forgetConnection, connectionIsCurrent } from './auth/principal';
 import {ulid as newId} from 'ulid';
@@ -47,7 +48,7 @@ export default class BroadcastService {
                 if(message.response?.eventType==='deployment.progress'){
                     const graphId=String(message.channelId).replace(/^graph-notify-/,'');
                     return new DelegationStore(this.store).resolve(record.principal,graphId).then(principal=>{
-                        if(!decide(principal,['graph:read','iac:read-status']).allow)return callback(null,this.okResponse);
+                        if(!progressAllowed(principal,message.response))return callback(null,this.okResponse);
                         this.postAuthenticatedClient(domainName,connectionId,message,record.principal.expiresAt,callback);
                     });
                 }

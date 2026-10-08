@@ -2,10 +2,11 @@ import {createHash} from 'crypto';
 import {ulid} from 'ulid';
 import {ObservationJournal} from '../runtime/journal';
 import {readJournalObject} from '../runtime/journalStorage';
-import {diagnosticText,diagnosticError,recoveryFor} from './diagnosticSafety';
+import {diagnosticText,diagnosticError,diagnosticValue,recoveryFor} from './diagnosticSafety';
 
 const hash=(x:any)=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
-export const phaseFor=(state:string)=>({planning:'planning','awaiting-review':'awaiting-approval','apply-requested':'deploying',applying:'deploying'}[state]||'terminal');
+const fragmented=Symbol('redacted-lifecycle-fragment');
+export const phaseFor=(state:string)=>({planning:'planning','awaiting-review':'awaiting-approval','apply-requested':'deploying',applying:'deploying','recovery-ready':'awaiting-recovery-approval','recovery-requested':'recovering',recovering:'recovering'}[state]||'terminal');
 
 /** Immutable operation pages plus a CAS head/outbox. The bus and MCP receive the same stored event. */
 export class DeploymentProgress {
@@ -24,21 +25,45 @@ export class DeploymentProgress {
  }
  private event(op:any,input:any){
   const clean:any={};
-  clean.source=['worker','cloudformation','changeset','orchestration','cloudwatch','diagnostics'].includes(input.source)?input.source:'diagnostics';
-  clean.phase=['planning','guardrails','awaiting-approval','deploying','rolling-back','cleanup','terminal'].includes(input.phase)?input.phase:phaseFor(op.state);
+  clean.source=['worker','cloudformation','changeset','orchestration','cloudwatch','diagnostics','lifecycle','application'].includes(input.source)?input.source:'diagnostics';
+  clean.phase=['planning','guardrails','awaiting-approval','deploying','rolling-back','cleanup','terminal','recovering','awaiting-recovery-approval','maintenance','readiness','runtime'].includes(input.phase)?input.phase:phaseFor(op.state);
   for(const key of ['state','status','reason','code','stackName','logicalId','physicalId','resourceType','requestId','executionArn','logGroup','logStream','message'])if(input[key]!==undefined)clean[key]=diagnosticText(input[key],op,key==='reason'||key==='message'?2000:512);
   if(input.error)clean.error=diagnosticError(input.error,op);
+  if(input.lifecycle)clean.lifecycle=input[fragmented]?input.lifecycle:diagnosticValue(input.lifecycle,op);
+  if(input.executionId)clean.executionId=diagnosticText(input.executionId,op,160);
   if(input.recovery)clean.recovery={category:diagnosticText(input.recovery.category,op,80),retryable:input.recovery.retryable===true,message:diagnosticText(input.recovery.message,op)};
   if(input.truncated)clean.truncated=true;
   const id='deployment:'+op.operationId+':'+hash(input.id||clean).slice(0,32);
   return {...clean,id,eventType:'deployment.progress',kind:'deployment.'+(input.kind||input.state||'progress'),schemaVersion:1,provenance:'server',
-   graphId:op.graphId,nodeId:op.nodeId,operationId:op.operationId,correlationId:op.operationId,revisionId:op.revisionId||op.input.revisionId||'unknown',inputDigest:op.inputDigest,reviewDigest:op.reviewDigest||null,
+   graphId:op.graphId,nodeId:op.nodeId,operationId:op.operationId,correlationId:input.correlationId?diagnosticText(input.correlationId,op,160):op.operationId,revisionId:op.revisionId||op.input.revisionId||'unknown',inputDigest:op.inputDigest,reviewDigest:op.reviewDigest||null,
    at:new Date(input.at||Date.now()).toISOString(),receivedAt:new Date().toISOString()};
  }
  async append(op:any,inputs:any[]){
+  // API Gateway WebSocket frames are limited to 32 KB. Large structured reports
+  // are losslessly split after redaction; every transport uses these same pages.
+  inputs=inputs.flatMap(input=>{
+   if(!input.lifecycle)return [input];
+   const lifecycle=diagnosticValue(input.lifecycle,op),bytes=Buffer.from(JSON.stringify(lifecycle));
+   if(bytes.length<=14000)return [{...input,lifecycle}];
+   const reportId=createHash('sha256').update(bytes).digest('hex'),count=Math.ceil(bytes.length/10000);
+   if(count>100)throw Object.assign(new Error('Lifecycle report exceeds the supported diagnostic bound.'),{code:'DIAGNOSTICS_TOO_LARGE'});
+   return Array.from({length:count},(_,index)=>({...input,[fragmented]:true,id:(input.id||reportId)+':part:'+index,lifecycle:{fragment:{reportId,index,count,encoding:'base64-json-utf8',data:bytes.subarray(index*10000,(index+1)*10000).toString('base64')}}}));
+  });
   // Bound each stored batch; never discard the rest of a collected AWS page.
   for(let offset=0;offset<inputs.length;offset+=200)await this.persist(op,inputs.slice(offset,offset+200));
   await this.flush(op);
+ }
+ /** Retrieve the exact stored envelopes after publishing a bounded diagnostic response. */
+ async matching(op:any,inputs:any[]) {
+  const wanted=new Set(inputs.map(input=>this.event(op,input).id)),found:any[]=[];
+  let key=(await this.head(op.operationId))?.key;
+  for(let n=0;key&&wanted.size&&n<10000;n++){
+   const batch=await this.get(key);if(!batch)throw new Error('Deployment diagnostic page missing');
+   for(const event of [...batch.entries].reverse())if(wanted.delete(event.id))found.push(event);
+   key=batch.prev;
+  }
+  if(wanted.size)throw new Error('Published diagnostic envelopes could not be recovered');
+  return found.sort((a,b)=>a.sequence-b.sequence);
  }
  private async persist(op:any,inputs:any[]){
   if(!inputs.length)return;
@@ -52,6 +77,7 @@ export class DeploymentProgress {
    const snapshot={...head.snapshot,resources:{...head.snapshot?.resources},failures:[...(head.snapshot?.failures||[])]};
    for(const e of entries){
     snapshot.lastEvent=e;
+    if(e.source==='lifecycle'||e.source==='application'){snapshot.lifecycle=e;continue;}
     if(e.source==='diagnostics'){snapshot.collectionWarning=e;continue;}
     if(e.source!=='cloudwatch'&&e.source!=='diagnostics'&&(!snapshot.latest||e.at>=snapshot.latest.at))snapshot.latest=e;
     if(e.source==='worker'&&e.kind==='deployment.phase')snapshot.workerPhase=e.phase;
@@ -99,7 +125,7 @@ export class DeploymentProgress {
   try{for(let n=0;n<20;n++){
    const key=DeploymentProgress.prefix(op.operationId)+'HEAD.json',row=await this.get(key,true);if(!row||row.value.published>=row.value.seq)return;
    const page=await this.page(op,{after:row.value.published,limit:100});
-   const published=await new ObservationJournal(this.store).append(op.graphId,page.events,{provenance:'server'});
+   const published=await new ObservationJournal(this.store).append(op.graphId,page.events,{provenance:'server'},{redactedDeployment:true});
    if(this.notify)for(const event of published||page.events)await this.notify(op.graphId,event);
    if(!await this.cas(key,{...row.value,published:page.receivedThrough},row.etag))continue;
   }}catch(e){console.warn('Deployment progress publication pending',op.operationId,String(e?.code||e?.name||'unavailable'));}

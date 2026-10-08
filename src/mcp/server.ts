@@ -7,6 +7,9 @@ import {deploymentCapabilities,graphDeploymentCapabilities} from '../iac/capabil
 import {ObservationJournal} from '../runtime/journal';
 import {isolationAvailable} from '../runtime/isolate';
 import {deploymentProgressContract} from '../discovery/deploymentProgress';
+import {lifecycleContract,lifecycleTools} from '../discovery/lifecycle';
+import type {IacLifecycleService} from '../iac/lifecycle';
+import {progressAllowed} from '../iac/progressAccess';
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { createHash } from "crypto";
@@ -35,7 +38,7 @@ import {ChatError} from "../chat/store";
  * instance is built per request, bound to the caller's principal.
  */
 export interface McpDeps {
-    reviews?: {begin(graphId:string,nodeId:string,principal:any,replace?:boolean,action?:string):Promise<any>;current?(graphId:string,nodeId:string,principal:any,operationId?:string):Promise<any>;events?(graphId:string,nodeId:string,principal:any,options:any):Promise<any>;operations?(graphId:string,nodeId:string,principal:any,options:any):Promise<any>;preflight?(graphId:string,nodeId:string,principal:any):Promise<any>};
+    reviews?: {lifecycle?:IacLifecycleService;begin(graphId:string,nodeId:string,principal:any,replace?:boolean,action?:string,retryOf?:string):Promise<any>;current?(graphId:string,nodeId:string,principal:any,operationId?:string):Promise<any>;events?(graphId:string,nodeId:string,principal:any,options:any):Promise<any>;operations?(graphId:string,nodeId:string,principal:any,options:any):Promise<any>;preflight?(graphId:string,nodeId:string,principal:any):Promise<any>};
     chat?: ChatService;
     crdtStore: CrdtStore;
     tocStore: TocStore;
@@ -69,7 +72,7 @@ export interface McpDeps {
     rate?: { reads: RateLimiter; writes: RateLimiter; chat?: RateLimiter };
 }
 
-export const SERVER_INFO = { name: "plastic-io-graph-server", version: "2.3.0" };
+export const SERVER_INFO = { name: "plastic-io-graph-server", version: "2.4.0" };
 const ID = z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/);
 const ULID = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/);
 const REV = z.string().regex(/^rev_[0-9A-HJKMNP-TV-Z]{26}$/);
@@ -216,10 +219,10 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
 
     /* ------------------------------------------------------------ tools */
 
-    const contracts:any={operations:operationCatalogue,runtime:runtimeContract,identity:identityContract,bus:busContract,workflow:workflowContract,progress:deploymentProgressContract};
+    const contracts:any={operations:operationCatalogue,runtime:runtimeContract,identity:identityContract,bus:busContract,workflow:workflowContract,progress:deploymentProgressContract,lifecycle:lifecycleContract};
     server.registerTool('server.discover',{
         title:'Discover the deployed graph platform contract',description:'Start here. Versioned semantic operations with full argument schemas and examples, real runtime helpers, identity, bus, deployment preflight, and precise workflow states. Missing capabilities must not be bypassed outside MCP.',
-        inputSchema:z.object({schemaVersion:z.literal(1),topic:z.enum(['all','operations','runtime','identity','bus','workflow','deployment','example','progress']).optional(),graphId:ID.optional(),nodeId:ID.optional()}).strict(),annotations:{readOnlyHint:true},
+        inputSchema:z.object({schemaVersion:z.literal(1),topic:z.enum(['all','operations','runtime','identity','bus','workflow','deployment','example','progress','lifecycle']).optional(),graphId:ID.optional(),nodeId:ID.optional()}).strict(),annotations:{readOnlyHint:true},
     },guarded('server.discover','read',a=>a.graphId,['graph:read'],async(args,p)=>ok(p,{server:SERVER_INFO,contractVersion:'1.0.0',runtimeConfiguration:{requireContainment:process.env.REQUIRE_CONTAINMENT==='true',containmentAvailable:isolationAvailable(),applicationBridgeConfigured:!!process.env.APPLICATION_BRIDGE_FUNCTION},exampleTool:{name:'server.discover',arguments:{schemaVersion:1,topic:'example',graphId:args.graphId||'<graphId>',nodeId:args.nodeId||'stack'}},contracts:args.topic&&args.topic!=='all'?{[args.topic]:args.topic==='deployment'?deploymentCapabilities(args.graphId||'discovery',args.nodeId||'stack'):args.topic==='example'?authenticatedApplicationExample(stackScope(args.graphId||'discovery',args.nodeId||'stack',policyFromEnv())):contracts[args.topic]}:{...contracts,deployment:deploymentCapabilities(args.graphId||'discovery',args.nodeId||'stack')},streamUrl:options.streamUrl||null})));
     server.registerTool('iac.preflight',{
         title:'Check actual deployment capabilities before implementation',description:'Returns accepted versus deployable resource types, assigned per-stack namespace, target account/region, role, boundary, isolation requirements and exact missing prerequisites. Read-only; does not provision anything.',
@@ -230,11 +233,19 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
     }));
     server.registerTool('iac.review',{
         title:'Submit infrastructure for graph-side deployment review',description:'Prepares a durable review of this graph stack. Does not approve or apply it. The user approves its exact digest in the graph. Destroy is a separate destructive review.',
-        inputSchema:z.object({schemaVersion:z.literal(1),graphId:ID,nodeId:ID,agentSessionId:ID.optional(),replace:z.boolean().optional(),action:z.enum(['apply','destroy']).optional()}).strict(),annotations:{readOnlyHint:false},
+        inputSchema:z.object({schemaVersion:z.literal(1),graphId:ID,nodeId:ID,agentSessionId:ID.optional(),replace:z.boolean().optional(),action:z.enum(['apply','destroy']).optional(),retryOf:ULID.optional()}).strict(),annotations:{readOnlyHint:false},
     },guarded('iac.review','write',a=>a.graphId,['iac:propose'],async(args,p)=>{
         if(!deps.reviews)return fail('CAPABILITY_UNAVAILABLE','This server has no durable reviewed-deployment service. Request a platform improvement; do not deploy outside MCP.');
-        return ok(p,await deps.reviews.begin(args.graphId,args.nodeId,p,!!args.replace,args.action||'apply'));
+        return ok(p,await deps.reviews.begin(args.graphId,args.nodeId,p,!!args.replace,args.action||'apply',args.retryOf));
     }));
+    for(const [name,tool]of Object.entries(lifecycleTools)) {
+        const required:Authority[]=name==='iac.readiness'?['graph:read','iac:read-status','graph:execute','graph:observe']:['graph:read',tool.write?'iac:propose':'iac:read-status'];
+        server.registerTool(name,{title:tool.description.split('.')[0],description:tool.description,inputSchema:tool.schema,annotations:{readOnlyHint:!tool.write}},guarded(name,tool.write?'write':'read',a=>a.graphId,required,async(a,p)=>{
+            const lifecycle=deps.reviews?.lifecycle;
+            if(!lifecycle)return fail('CAPABILITY_UNAVAILABLE','Graph-native lifecycle operations are not configured. Request a separately reviewed platform deployment; do not bypass MCP.');
+            return ok(p,await (lifecycle as any)[tool.method](a.graphId,a.nodeId,p,a,...(name==='iac.readiness'?[deps.invoke]:[])),{graphId:a.graphId});
+        }));
+    }
     server.registerTool('proposal.retire',{
         title:'Retire a superseded proposal',description:'Explicitly marks obsolete work superseded by a current proposal in the same graph. Does not undo committed changes.',
         inputSchema:z.object({schemaVersion:z.literal(1),graphId:ID,agentSessionId:ID.optional(),proposalId:ULID,replacementProposalId:ULID}).strict(),annotations:{readOnlyHint:false},
@@ -247,7 +258,7 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
     },guarded('observations.watch','read',a=>a.graphId,['graph:observe'],async(args,p)=>{
         const result=await new ObservationJournal(deps.crdtStore.store).read(args.graphId,args);
         const allowed=decide(p,['graph:inspect-payloads']).allow;
-        return ok(p,{...result,observations:result.observations.filter(o=>o.eventType!=='deployment.progress'||decide(p,['graph:read','iac:read-status']).allow).map(o=>allowed||o.payload?.value===undefined?o:{...o,payload:{redacted:'payload'}})});
+        return ok(p,{...result,observations:result.observations.filter(o=>o.eventType!=='deployment.progress'||progressAllowed(p,o)).map(o=>allowed||o.payload?.value===undefined?o:{...o,payload:{redacted:'payload'}})});
     }));
 
     server.registerTool("graph.summary", {

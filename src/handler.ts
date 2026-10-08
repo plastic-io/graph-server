@@ -94,6 +94,7 @@ async function cancelExecution(graphId: string, principal: any, executionId: str
 const chatService = new ChatService(broadcastService.store, broadcastService, id => eventSourceService.crdtStore.exists(id));
 const chat = withPrincipal(broadcastService.store, (event, context, callback) => chatService.route(event, context, callback));
 
+eventSourceService.iacReviews.runtimeInvoker=invokeForAgent;
 const mcpDeps = {
     chat: chatService,
     crdtStore: eventSourceService.crdtStore,

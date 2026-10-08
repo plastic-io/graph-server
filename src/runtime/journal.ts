@@ -9,13 +9,19 @@ export class ObservationJournal {
  private get(key:string):Promise<any>{return new Promise((resolve,reject)=>this.store.get(key,(err,value)=>err&& !/NoSuchKey|NotFound|not found/i.test(String(err.code||err.message))?reject(err):resolve(err?null:value)));}
  private head(graphId:string):Promise<any>{return readJournalObject(this.store,`observations/watch/${graphId}/HEAD.json`,true);}
  private set(key:string,value:any):Promise<void>{return new Promise((resolve,reject)=>this.store.set(key,value,{},err=>err?reject(err):resolve()));}
- async append(graphId:string,observations:any[],context:any={}){
+ async append(graphId:string,observations:any[],context:any={},options:{redactedDeployment?:boolean}={}){
   if(!observations.length)return;
   if(!this.store.getVersioned||!this.store.compareAndSet)throw new Error('Observation watch requires conditional storage writes');
   const receivedAt=new Date().toISOString();
   for(let attempt=0;attempt<20;attempt++){
    const head=await this.head(graphId),seq=head?.value.seq||0;
-   const entries=observations.map((o,i)=>redactCredentials({...o,...context,graphId,receivedAt,arrival:seq+i+1}));
+   // DeploymentProgress already sanitizes and persists its immutable envelope.
+   // Preserve those bytes/timestamps (including opaque fragments) across both
+   // journals. This option is internal, never supplied by browser ingestion.
+   const entries=observations.map((o,i)=>{
+    const event={...o,...context,graphId,receivedAt:options.redactedDeployment?o.receivedAt:receivedAt,arrival:seq+i+1};
+    return options.redactedDeployment?event:redactCredentials(event);
+   });
    const key=`observations/watch/${graphId}/${ulid()}.json`;
    await this.set(key,{prev:head?.value.key||null,first:seq+1,last:seq+entries.length,entries});
    const success=await new Promise<boolean>((resolve,reject)=>this.store.compareAndSet(`observations/watch/${graphId}/HEAD.json`,{seq:seq+entries.length,key},head?.etag||null,err=>err&&(err.statusCode===412||err.code==='PreconditionFailed')?resolve(false):err?reject(err):resolve(true)));

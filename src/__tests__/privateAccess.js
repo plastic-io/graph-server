@@ -115,7 +115,17 @@ describe('private deployment access boundaries', () => {
     expect(rule.EventPattern.detail.stateMachineArn).toEqual(['IacReviewStateMachine']);
     const guard=resources.IacGuardrailRole.Properties.Policies.flatMap(p=>p.PolicyDocument.Statement);
     const absentRoleProbe=guard.find(s=>[].concat(s.Resource).some(r=>String(r).endsWith(':role/gapp-*')));
-    expect(absentRoleProbe.Action).toEqual(['iam:GetRole','iam:GetRolePolicy']);
-    expect(guard.filter(s=>[].concat(s.Action).some(a=>/^iam:(CreateRole|DeleteRole|DeleteRolePolicy|PutRolePolicy)$/.test(a))).every(s=>JSON.stringify(s.Resource).includes('role/graph-deploy/gapp-'))).toBe(true);
+    expect(absentRoleProbe.Action).toEqual(['iam:GetRole','iam:GetRolePolicy','iam:DeleteRolePolicy']);
+    expect(guard.filter(s=>s!==absentRoleProbe&&[].concat(s.Action).some(a=>/^iam:(CreateRole|DeleteRole|DeleteRolePolicy|PutRolePolicy)$/.test(a))).every(s=>JSON.stringify(s.Resource).includes('role/graph-deploy/gapp-'))).toBe(true);
+    expect(absentRoleProbe.Action).not.toContain('iam:CreateRole');expect(absentRoleProbe.Action).not.toContain('iam:PutRolePolicy');
+  });
+  test('guardrail reconciliation is private, cannot forge approvals or change shared IAM, and adds no workflow dependency cycle',()=>{
+    expect(service.functions.iacGuardrailRepair.events).toBeUndefined();expect(service.functions.iacGuardrailRepair.url).toBeUndefined();
+    const statements=service.resources.Resources.IacGuardrailRepairRole.Properties.Policies.flatMap(p=>p.PolicyDocument.Statement),actions=statements.flatMap(s=>[].concat(s.Action));
+    for(const action of ['s3:PutObject','iam:PassRole','iam:CreateRole','iam:DeleteRole','iam:DeleteRolePermissionsBoundary','lambda:InvokeFunction','logs:Unmask'])expect(actions).not.toContain(action);
+    const writes=statements.filter(s=>[].concat(s.Action).some(a=>/^iam:(Put|Update|Create|Delete)/.test(a)));
+    expect(writes).toHaveLength(2);expect(writes.every(s=>/role\/graph-deploy\/gapp-|policy\/graph-guardrails\/gapp-/.test(JSON.stringify(s.Resource)))).toBe(true);
+    const workflow=JSON.stringify(service.functions.iacWorker.environment.IAC_REVIEW_STATE_MACHINE);
+    expect(workflow).toContain(':stateMachine:');expect(workflow).not.toContain('IacReviewStateMachine');
   });
 });

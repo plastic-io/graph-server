@@ -16,6 +16,7 @@ export const iacConfiguration=z.object({
  template:z.object({text:z.string(),format:z.enum(['yaml','json'])}).strict().optional(),
  parameters:z.record(z.string(),z.string()).optional(),capabilities:z.array(z.enum(['CAPABILITY_IAM','CAPABILITY_NAMED_IAM'])).optional(),
  outputs:json.optional(),templateParameters:json.optional(),
+ readiness:z.array(z.object({id,nodeUrl:z.string().min(1).max(200),field:z.string().optional(),value:z.any().optional(),description:z.string().max(1000).optional()}).strict()).max(8).optional(),
  resource:z.object({logicalId:z.string().regex(/^[A-Za-z0-9]{1,255}$/).optional(),type:z.string(),properties:json,dependsOn:z.array(z.string()).optional(),deletionPolicy:z.enum(['Delete','Retain','RetainExceptOnCreate','Snapshot']).optional(),updateReplacePolicy:z.enum(['Delete','Retain','Snapshot']).optional(),condition:z.string().optional(),metadata:json.optional()}).strict().optional(),
 }).strict();
 const shapes:any={

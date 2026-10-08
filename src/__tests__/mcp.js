@@ -71,7 +71,8 @@ async function setup(opts = {}) {
     const chat = opts.chat ? new (require("../chat/service").ChatService)(s3, broadcast, id => store.exists(id)) : undefined;
     const {IacReviewService}=require('../iac/review');
     const {IacService}=require('../iac/service');
-    const reviews=opts.infrastructure?new IacReviewService(s3,{enabled:true,projection:g=>store.projectGraph(g),start:async()=>{},cloud:opts.infrastructure,notify:async(g,e)=>notified.push(e)}):undefined;
+    const lifecycleFixture=opts.lifecycle?await require('../__testHelpers__/lifecycleCloud').fixture('g1','stack',{store:s3,projection:g=>store.projectGraph(g)}):undefined;
+    const reviews=lifecycleFixture?.reviews||(opts.infrastructure?new IacReviewService(s3,{enabled:true,projection:g=>store.projectGraph(g),start:async()=>{},cloud:opts.infrastructure,notify:async(g,e)=>notified.push(e)}):undefined);
     const iac=reviews?new IacService(s3,{projection:async g=>({revisionId:'live',projection:await store.projectGraph(g)}),template:async()=>null,reviewStatus:(g,n,p)=>reviews.current(g,n,p)}):undefined;
     const application=opts.applicationBackend?new (require('../application/service').ApplicationService)(s3,{invoke:opts.applicationBackend,publish:async(g,e)=>broadcast._sendToChannel('graph-notify-'+g,e,()=>{})}):undefined;
     const mcp = makeMcpHandler({
@@ -93,7 +94,7 @@ async function setup(opts = {}) {
             return { executionId, requested: true, reason };
         },
     });
-    return { s3, store, tocStore, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, simulations, consumers, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled, chat, reviews, application };
+    return { s3, store, tocStore, crdt, revisions, components, summaries, proposals, delegations, journeys, tests, tasks, simulations, consumers, dispatched, autonomy, doc, mcp, notified, broadcast, invoked, cancelled, chat, reviews, application, lifecycleFixture };
 }
 
 /** a real MCP client whose fetch goes straight into the handler, as the Lambda would */
@@ -147,7 +148,7 @@ describe("MCP over the Lambda handler", () => {
         const tools = (await client.listTools()).tools.map((t) => t.name).sort();
         expect(tools).toEqual([
             "component.consumers", "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
-            "iac.events", "iac.history", "iac.plan", "iac.preflight", "iac.review", "iac.status", "journey.run", "observations.query", "observations.watch", "proposal.commit", "proposal.create", "proposal.decide", "proposal.retire", "proposal.simulate", "proposal.validate",
+            "iac.events", "iac.history", "iac.inspect", "iac.maintenance.request", "iac.plan", "iac.preflight", "iac.readiness", "iac.recovery.plan", "iac.review", "iac.runtime.logs", "iac.status", "journey.run", "observations.query", "observations.watch", "proposal.commit", "proposal.create", "proposal.decide", "proposal.retire", "proposal.simulate", "proposal.validate",
             "revision.activate", "revision.cut", "revision.rollback", "server.discover", "tasks.cancel", "tasks.get", "tasks.list", "tests.run",
             "view.screenshot",
         ]);
@@ -1067,4 +1068,60 @@ test('Chess acceptance: discover, preflight, propose, graph approval, isolated r
   const more=await call('observations.watch',{cursor:watched.result.nextCursor,filter:{kind:'exec.error'}});
   expect(more.result.observations).toEqual(expect.arrayContaining([expect.objectContaining({nodeId:'players',provenance:'browser-report'})]));
  }finally{await client?.close();await humanClient?.close();process.env=env;}
+});
+
+test('MCP lifecycle acceptance: recover an induced guardrail failure, get fresh graph approval, invoke and diagnose without an agent AWS path',async()=>{
+ const env={...process.env};require('../__testHelpers__/lifecycleCloud').environment();
+ Object.assign(process.env,{IAC_ACCOUNTS:'230639770018',IAC_REGIONS:'us-west-1'});
+ let client;
+ try{
+  const f=await setup({lifecycle:true,applicationBackend:async(_arn,event)=>{
+   if(event.input.action==='fail')throw Object.assign(new Error('Application invariant failed'),{requestId:'abcdef00-0000-0000-0000-000000000000',bridgeRequestId:'bridge-test'});
+   return {result:{ready:true},updates:[{topic:'players',value:{ready:true}}]};
+  }}),fixture=f.lifecycleFixture;
+  await f.delegations.put({agentSub:agent.sub,graphId:'g1',delegatedBy:owner.sub,scopes:['graph:read','graph:propose','graph:observe','graph:inspect-payloads','graph:execute','iac:propose','iac:read-status'],expiresAt:null});
+  client=await connect(f.mcp,agent);
+  const call=async(name,args={})=>parse(await client.callTool({name,arguments:{schemaVersion:1,graphId:'g1',...args}}));
+  const discovery=(await call('server.discover',{topic:'lifecycle'})).result.contracts.lifecycle;
+  expect(discovery.tools['iac.recovery.plan'].inputSchema.required).toContain('idempotencyKey');
+  expect((await client.listTools()).tools.some(t=>/approve|deploy$/.test(t.name))).toBe(false);
+  const example=(await call('server.discover',{topic:'example',nodeId:'stack'})).result.contracts.example;
+  expect((await call('iac.preflight',{nodeId:'stack',configuration:example.configuration})).result.deployable).toBe(true);
+  const base=(await call('graph.summary')).envelope.resultRevision;
+  const proposal=(await call('proposal.create',{baseRevision:base,ops:example.ops,description:'Generic isolated lifecycle acceptance',idempotencyKey:ULID})).result;
+  expect((await call('proposal.validate',{proposalId:proposal.proposalId})).result.proposalDigest).toBe(proposal.proposalDigest);
+  expect((await f.proposals.commit('g1',proposal.proposalId,owner)).proposal.state).toBe('committed');
+  const inspection=(await call('iac.inspect',{nodeId:'stack'})).result;
+  expect(inspection.application.status).toBe('NOT_CREATED');expect(inspection.guardrail.status).toBe('ROLLBACK_FAILED');
+  const plan=(await call('iac.recovery.plan',{nodeId:'stack',operationId:fixture.source.operationId,idempotencyKey:'recover'})).result;
+  expect(plan.state).toBe('recovery-ready');expect(plan.recoveryPlan.preservesData).toBe(true);
+  const fromUi=(action,body,principal=owner)=>new Promise((resolve,reject)=>f.reviews.route({principal,httpMethod:'POST',pathParameters:{id:'g1',nodeId:'stack'},path:'/iac/stack/'+action,body:JSON.stringify(body)},null,(error,result)=>error?reject(error):resolve({...result,json:JSON.parse(result.body)})));
+  expect((await fromUi('recovery-approve',{operationId:plan.operationId,recoveryDigest:plan.recoveryPlan.digest},agent)).statusCode).toBe(403);
+  expect((await fromUi('recovery-approve',{operationId:plan.operationId,recoveryDigest:plan.recoveryPlan.digest})).statusCode).toBe(200);
+  for(let i=0;i<20;i++)if((await f.reviews.lifecycle.step(plan.operationId)).done)break;
+  await client.close();client=await connect(f.mcp,agent); // reconnect using only durable graph state
+  const recovered=(await call('iac.status',{nodeId:'stack'})).result;
+  expect(recovered.state).toBe('recovered');expect(recovered.approval).toBeUndefined();
+  const review=(await call('iac.review',{nodeId:'stack',retryOf:recovered.operationId})).result;
+  await f.reviews.step(review.operationId);await f.reviews.step(review.operationId);
+  const pending=(await call('iac.status',{nodeId:'stack'})).result;
+  expect(pending.state).toBe('awaiting-review');expect(fixture.deployCloud.execute).not.toHaveBeenCalled();
+  expect((await fromUi('apply',{operationId:pending.operationId,reviewDigest:plan.recoveryPlan.digest})).statusCode).not.toBe(200);
+  expect((await fromUi('apply',{operationId:pending.operationId,reviewDigest:pending.reviewDigest})).statusCode).toBe(200);
+  await f.reviews.step(pending.operationId);await f.reviews.step(pending.operationId);
+  expect((await call('iac.status',{nodeId:'stack'})).result.state).toBe('succeeded');
+  expect((await call('graph.invoke',{nodeUrl:'backend',field:'request',value:{action:'refresh'}})).result.errors).toBe(0);
+  expect((await call('graph.invoke',{nodeUrl:'backend',field:'request',value:{action:'fail'}})).result.errors).toBeGreaterThan(0);
+  const failed=(await call('observations.watch',{filter:{operationId:pending.operationId,kind:'deployment.runtime-invocation'}})).result.observations.find(e=>e.status==='FAILED');
+  expect(failed.error.message).toContain('invariant');expect(failed.requestId).toBe('abcdef00-0000-0000-0000-000000000000');
+  const logs=jest.fn(async()=>({events:[{eventId:'failure',timestamp:Date.now(),message:JSON.stringify({errorType:'Error',errorMessage:'Application invariant failed',requestId:failed.requestId})}]}));
+  const reader=new(require('../application/diagnostics').ApplicationDiagnostics)(f.s3,{cloud:fixture.clients.cloud,logs,policy:()=>require('../__testHelpers__/lifecycleCloud').policy});
+  f.reviews.lifecycle.deps.logs=(op,args)=>reader.read(op,args);
+  const diagnostic=(await call('iac.runtime.logs',{nodeId:'stack',logicalId:'Backend',correlationId:failed.correlationId})).result;
+  expect(diagnostic.events[0].error.message).toBe('Application invariant failed');
+  const watched=(await call('observations.watch',{filter:{kind:'deployment.runtime-log'}})).result.observations;
+  expect(watched.map(({arrival,...e})=>e)).toEqual(diagnostic.events);
+  expect((await call('iac.history',{nodeId:'stack'})).result.operations.map(o=>o.operationId)).toEqual([pending.operationId,plan.operationId,fixture.source.operationId]);
+  expect((await call('iac.inspect',{graphId:'other',nodeId:'stack',operationId:pending.operationId})).error.code).toBe('ADMISSION_DENIED');
+ }finally{await client?.close();process.env=env;}
 });

@@ -90,7 +90,7 @@ describe('isolated stack boundaries',()=>{
   expect(allow.find(s=>[].concat(s.Action).includes('apigateway:DELETE')).Condition.StringEquals['aws:ResourceTag/GraphStack']).toBe(scope.namespace);
   const guardrail=guardrailTemplate(scope,'arn:aws:iam::230639770018:role/platform-worker');
   const worker=guardrail.Resources.WorkerRole.Properties.Policies[0].PolicyDocument;
-  expect(worker.Statement[0].Action).toContain('cloudformation:DeleteStack');expect(worker.Statement[0].Resource).toContain('/'+scope.namespace);
+  expect(worker.Statement[0].Action).toContain('cloudformation:DeleteStack');expect(worker.Statement[0].Resource).toEqual([`arn:aws:cloudformation:${scope.region}:${scope.account}:stack/${scope.namespace}stack/*`,`arn:aws:cloudformation:${scope.region}:${scope.account}:changeSet/review-${scope.namespace}*/*`,`arn:aws:cloudformation:${scope.region}:${scope.account}:changeSet/recovery-${scope.namespace}*/*`]);
   expect(JSON.stringify(doc).length).toBeLessThan(10240);
  });
 });

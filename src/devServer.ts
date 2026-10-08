@@ -459,7 +459,7 @@ const server = http.createServer(async (request, response) => {
     }
     if (parts[0] === "crdt" && parts[2] === "iac") {
       const body = await readBody(request);
-      if (['template','review','apply','discard','events','operations'].includes(parts[4]) || (parts[4]==='plan' && eventSourceService.iacReviews.enabled)) {
+      if (['template','review','apply','discard','events','operations','inspect','runtime-logs','recovery-plan','recovery-approve','maintenance','readiness'].includes(parts[4]) || (parts[4]==='plan' && eventSourceService.iacReviews.enabled)) {
         return eventSourceService.iacReviews.route({pathParameters:{id:parts[1],nodeId:parts[3]},path:url.pathname,
           httpMethod:request.method,body,queryStringParameters:Object.fromEntries(url.searchParams),principal:DEV_PRINCIPAL},{},send);
       }

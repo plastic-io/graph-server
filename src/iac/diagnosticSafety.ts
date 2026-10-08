@@ -2,6 +2,15 @@ import {redactCredentials} from '../security/credentials';
 import {parseTemplate} from './validator';
 const literalCache=new WeakMap<object,string[]>();
 
+/** Structured platform records only. Application payloads are never passed to this sanitizer. */
+export function diagnosticValue(value:any,op:any,depth=0):any {
+ if(depth>14)return '[depth limit]';
+ if(typeof value==='string')return diagnosticText(value,op,2000);
+ if(Array.isArray(value))return value.slice(0,1000).map(v=>diagnosticValue(v,op,depth+1));
+ if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).slice(0,100).map(([key,v])=>[key,/^(credentials|input|payload|environment|parameters|secret|password|authorization|accessToken|refreshToken|sessionToken)$/i.test(key)?'[redacted]':diagnosticValue(v,op,depth+1)]));
+ return value;
+}
+
 /** Diagnostic text is untrusted AWS/application output. Never persist request bodies or raw log records. */
 export function diagnosticText(value:any,op:any,limit=2000):string {
  let text=String(value??'');
@@ -38,8 +47,8 @@ export function diagnosticError(error:any,op:any){
 export function recoveryFor(op:any,event:any){
  const status=String(event.status||''),message=String(event.reason||event.error?.message||'');
  if(/Check the operation in AWS|without an error message/i.test(message))return {category:'platform-intervention',retryable:false,message:'The original legacy failure has not been recovered yet. Inspect the diagnostic collection warning and refresh status. A platform maintainer must restore diagnostics before a safe retry can be determined.'};
- if(/ROLLBACK_FAILED|DELETE_FAILED/.test(status))return {category:'platform-intervention',retryable:false,message:'Rollback or cleanup did not finish. A platform maintainer must recover the listed resources before a new review. Monitoring never authorizes cleanup or deployment.'};
- if(/AccessDenied|Unauthorized|not authorized|cannot be assumed|permission|guardrail/i.test(message+' '+event.error?.code))return {category:'platform-intervention',retryable:false,message:'A platform permission or guardrail failed. Correct the named action/resource and finish any cleanup, then create a new review. Existing approval is not reused.'};
+ if(/ROLLBACK_FAILED|DELETE_FAILED/.test(status))return {category:'platform-intervention',retryable:false,message:'Rollback or cleanup did not finish. Use iac.inspect and iac.recovery.plan for current ownership, prerequisites and a graph-side recovery review. Monitoring never authorizes cleanup or deployment.'};
+ if(/AccessDenied|Unauthorized|not authorized|cannot be assumed|permission|guardrail/i.test(message+' '+event.error?.code))return {category:'platform-intervention',retryable:false,message:'A platform permission or guardrail failed. Use iac.inspect to distinguish historical errors from current prerequisites, then iac.maintenance.request or iac.recovery.plan. Existing deployment approval is not reused.'};
  if(/throttl|timeout|timed.out|unavailable|network|rate.exceed/i.test(message+' '+status))return {category:op.approval?'platform-intervention':'retry-review',retryable:!op.approval,message:op.approval?'Deployment outcome may be uncertain. Inspect resource and rollback events here; a maintainer must reconcile it before retrying.':'A transient failure prevented planning. After it clears, create a new review; deployment still needs exact-digest human approval.'};
  return {category:'template-correction',retryable:false,message:'Correct the reported resource or template problem, then create and approve a new review. Graph acceptance alone does not deploy infrastructure.'};
 }

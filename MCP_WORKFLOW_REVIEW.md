@@ -1,9 +1,215 @@
 # MCP application workflow — current platform review
 
-Updated: 2026-10-08 UTC. This is the current review artifact for the Chess regression
-work in **graph-server and its sibling graph-editor**. The deployment-observability
-extension below is the current change; its release evidence is tracked separately
-from the preceding release. The user authorized
+Updated: 2026-10-08 UTC. This remains the single current review artifact for
+**graph-server and its sibling graph-editor**. The lifecycle extension described
+first is implemented and locally validated, **not deployed**. The subsequent
+release record is historical evidence; its manual-recovery instructions are
+superseded by this graph-native workflow once the platform release is installed.
+
+## Current lifecycle extension
+
+The workflow is proposal → graph acceptance → infrastructure review → human
+deployment approval → deployment → diagnosis → recovery review → human recovery
+approval → recovery → fresh infrastructure review. Each approval binds its own
+immutable digest. Neither inspection, recovery, maintenance approval, nor a
+successful readiness check authorizes application deployment.
+
+Server discovery version **2.4.0** exposes `plastic://schema/1/lifecycle` and
+the following tools alongside the existing proposal and IaC tools:
+
+| Tool | Result and authority |
+| --- | --- |
+| `iac.inspect` | Current stack/resource ownership, retention, current role/trust/boundary checks, actual read/STS results, active workflow and blockers. Requires graph read and IaC status access. |
+| `iac.recovery.plan` | A concrete, immutable recovery review using the current operation and a stable request key. Requires IaC proposal authority. It executes nothing. |
+| `iac.maintenance.request` | A graph-visible request for named platform actions/resources, with a separate configured human platform-admin review and verification. It cannot edit shared IAM. |
+| `iac.runtime.logs` | Bounded, redacted diagnostics for a logical Lambda belonging to the approved application stack. Also requires observation and payload-inspection authority. |
+| `iac.readiness` | Runs one check declared in the approved deployment through graph invocation. Requires execution and observation authority and an idempotency key. |
+
+Full input schemas and examples are available through
+`server.discover({"schemaVersion":1,"topic":"lifecycle"})`. `iac.preflight`
+reports whether the lifecycle worker is configured and distinguishes retained-only
+recovery imports from arbitrary import. `iac.status` exposes `nextActions`,
+`inspection`, `recoveryPlan`, `recoveryApproval`, `recoveryOutcomes`, `maintenance`
+and `runtimeReadiness`. Capability absence, AWS permission prerequisites, active
+work, and pending human approval have distinct codes/states.
+
+### Current conditions versus historical evidence
+
+This task rechecked the Chess operation through live MCP `iac.status`. The
+returned historical events show the original `iam:GetRole`/`iam:GetRolePolicy`
+guardrail creation failure, `iam:DeleteRolePolicy` cleanup denial, retained
+boundary, and secondary `sts:AssumeRole` failure. They do **not** establish the
+permissions or physical resource state now. No live recovery or application
+mutation was performed.
+
+The new inspector reads the application and guardrail stacks, ownership tags,
+assigned roles, resource inventories and original templates. If an owned stack
+has been deleted, its recorded stack ARN recovers retained-resource evidence.
+The inspector separately reports:
+
+- Static validation of the current graph template, including missing or invalid
+  node configuration without losing diagnostics for the stored operation.
+- Structural analysis of the current platform policy and expected guardrail
+  policies, trust and boundary. **This is not IAM simulation or deployment proof.**
+- Actual AWS read results and, where the worker definition matches, an STS
+  assumption probe whose credentials are discarded. SCPs, session policies,
+  service behavior and eventual consistency can still deny subsequent deployment.
+
+Inspection has an 18-second collection budget. Incomplete inventories, unknown
+ownership, extra role policies, foreign boundary consumers and failed verification
+are explicit blockers. It never adopts a resource merely because its name has a
+matching prefix.
+
+### Bounded recovery and repeatability
+
+| Observed state | Reviewed recovery behavior |
+| --- | --- |
+| Failed creation, `ROLLBACK_FAILED`, `ROLLBACK_COMPLETE`, `DELETE_FAILED`, or abandoned review stack | Delete only the owned failed stack, then import proven retained resources into the same namespace. Preserve data by default. |
+| `DELETE_FAILED` with data lacking retention | Use the reviewed `RetainResources` list before import. This argument is not used in other states. |
+| `UPDATE_ROLLBACK_FAILED` | Continue rollback without skipping resources. |
+| `UPDATE_FAILED` | Roll back with explicit review of retention and possible data loss. |
+| Partial or drifted platform guardrails | Restore only the platform's approved guardrail definition for this namespace, including actual IAM drift when CloudFormation reports no template changes. |
+| Unproven orphan, unsupported import, unresolved import dependency, import rollback, or unsafe data deletion | Return precise prerequisites; preserve resources and request the appropriate template/preservation/platform review. |
+
+Import identifiers for the supported retained IAM policies/roles, buckets,
+tables, queues, topics and log groups match the pinned CloudFormation resource
+schemas used by offline lint. Import templates contain only reviewed survivors.
+No general import or arbitrary AWS-command endpoint is exposed. A failed create
+with unretained data remains blocked unless the human separately accepts the
+listed loss; arranging a backup outside the supported subset remains explicit
+platform maintenance.
+
+The recovery digest binds the source operation, graph/node namespace, input,
+resource IDs and states, retention, approved guardrail definition, prerequisites,
+actions and data-loss choice. Observation timestamps do not affect freshness.
+Plans expire after 15 minutes; a fresh plan may replace an unapproved plan and
+invalidates it. Approved execution rechecks state/ownership and the digest before
+the first mutation, rechecks inventory before deletion/rollback, and verifies
+import results. Deployment and recovery share a conditional-write stack lock and
+120-second worker leases, covering the 60-second worker and private repair call.
+A stopped workflow does not allow overlap with a worker still holding its lease.
+Deterministic AWS tokens and durable action outcomes handle duplicate delivery.
+
+Recovery states are `recovery-blocked` → `recovery-ready` →
+`recovery-requested` → `recovering` → `recovered`/`failed`. The original operation
+and error remain linked in history. Recovery completion retires the failed
+operation; it does not execute a new application template. Use `iac.review` with
+`retryOf` equal to the current recovered operation, then obtain the new exact
+human deployment approval. New readiness declarations require this approval even
+when CloudFormation reports no resource changes.
+
+### UI, socket and MCP parity
+
+The CF node shows inspection evidence, affected resources, retention/data loss,
+the recovery digest, execution outcomes, maintenance requests and readiness.
+It restores current status/history after reload and reconnect. The existing
+640 × 480 px maximum node content area and internal scrolling remain intact.
+Human recovery approval and platform-admin maintenance review use authenticated
+graph routes; MCP has no approval or arbitrary deployment-execution tool.
+
+Structured `deployment.progress` lifecycle events use the existing durable
+journal, outbox, graph socket, `iac.events` and `observations.watch`. All carry
+the same sanitized envelope, including the original receipt timestamp. Large
+reports use documented, hash-verified JSON fragments below WebSocket frame
+limits; cursors retrieve missing parts after reconnect. UI status access has no
+diagnostic information unavailable to an authorized MCP observer.
+
+Application invocation events connect graph execution, invocation, correlation,
+approved deployment, bridge request and Lambda request IDs. The private bridge
+extracts the request ID from Lambda's returned log tail and discards that raw
+tail. The separate log reader derives the log group from the approved binding
+and rechecks current stack ownership/inventory. Callers cannot supply log-group
+names, AWS tokens, ARNs or account selectors.
+
+Log queries allow one logical function, at most one request/invocation/correlation
+filter, a one-hour window within seven days, 100 raw records and 80 KB per page,
+100 pages and a 24-hour cursor lifetime. Only Lambda system/runtime errors and
+declared `graph.application.diagnostic` records are included. Arbitrary console
+payloads are omitted; credential forms and known parameter/environment values
+are redacted. Omission, truncation, unavailable logs and permission errors are
+explicit. This cannot detect every encoded secret in arbitrary error prose.
+Application logs require additional payload-inspection permission across status,
+event pages, watch and outbound socket delivery; `logs:Unmask` is never granted.
+
+Readiness checks invoke declared graph nodes, with stable request keys preventing
+duplicate execution. A check must assert its own application invariants. The
+platform records execution/revision references and verifies completed execution
+with no errors or denied effects. Deployment completion, declared readiness and
+real multiplayer verification remain separate evidence.
+
+### Platform-admin bootstrap review — still required
+
+Paired editor release pin: `f9ce6c1b8083659959d9a0acbcdbd775c1a08e40`.
+The server revision for this review is the commit containing this document.
+
+This change is a shared platform release. Application agents cannot bootstrap it
+or edit these roles. Review the concrete changes in `serverless.yaml` and
+`infra/github-oidc-deploy-role.yaml` for **230639770018 / us-west-1**:
+
+| Platform component | Requested permission/change |
+| --- | --- |
+| `IacGuardrailRole` | Add `iam:DeleteRolePolicy` on **root-path `role/gapp-*`** for missing-role cleanup, in addition to existing read probes. This is a real cleanup permission requiring separate review. Creation/trust/policy grants remain under `/graph-deploy/gapp-*`; no root-role creation or policy grants are added. Add version management only for `/graph-guardrails/gapp-*` policies. |
+| `IacWorkerRole` | Current stack/IAM reads, its workflow's execution status, Lambda log reads only under `/aws/lambda/gapp-*`, namespace recovery change sets, fixed guardrail-stack recovery actions and invocation of the exact private repair function. Application mutations continue through the assigned per-stack worker/execution role. |
+| New `IacGuardrailRepairRole` / private function | Read only operation/index/lock records and owned guardrail inventory; restore only approved inline policies/trust under `/graph-deploy/gapp-*` and boundary versions under `/graph-guardrails/gapp-*`. No approval-store writes, role creation/deletion, role passing, shared-policy edits or public endpoint. The function independently verifies the human recovery digest, live lease, namespace, stack tags and physical resources. |
+| Per-stack WorkerRole | Restrict change-set ARNs to this namespace and add only this stack's rollback/recovery operations. Existing stacks use reviewed guardrail reconciliation to acquire the approved definition. |
+| Application runtime/execution roles | No broader application IAM authority. Existing boundary and isolation enforcement remain in force. |
+| GitHub OIDC deployment role | Add the exact private repair role name to managed-role/pass-to-Lambda allowlists. A platform administrator must activate/update the approved CI role; it cannot bootstrap its own missing authority. |
+
+Release prerequisites:
+
+1. An administrator reviews the above policy/function changes and updates the
+   CI bootstrap role through the existing approved platform administration path.
+   GitHub OIDC deployment was not activated in the earlier release; it remains
+   an explicit external bootstrap prerequisite, not an MCP fallback.
+2. Set the GitHub deployment environment's `PLATFORM_ADMIN_SUBS` to explicitly
+   authorized, verified **human subject IDs**. Those humans also need the
+   existing `policy:admin` authority. Empty is deny-by-default; ordinary graph
+   ownership or agent delegation alone cannot grant this maintenance role.
+3. Release the reviewed server and a pinned full editor commit via the existing
+   Deploy workflow. No local preparation commands, personal AWS credentials,
+   browser tokens or application-specific server code are needed by the agent.
+4. Refresh MCP discovery, run `iac.inspect`, and request platform maintenance if
+   it finds remaining shared prerequisites. Maintenance states are `requested`,
+   `approved-awaiting-platform-release`, `verification-blocked` or `verified`.
+   Admin approval does not edit IAM; verification performs fresh AWS checks.
+5. Prepare the Chess recovery from the **then-current** operation. Review its
+   actual resources/digest in the CF node, approve recovery, and subsequently
+   prepare and approve a separate fresh deployment review.
+
+### Validation and remaining live gates
+
+The real MCP-client regression discovers schemas, proposes connected nodes and
+presentation, accepts the graph through the human service, inspects an induced
+pre-application guardrail failure, prepares recovery, obtains graph-route human
+approval, reconnects, prepares a fresh deployment review, obtains its distinct
+approval, invokes through MCP and retrieves a correlated runtime failure/log.
+AWS responses and application backend behavior in this test are **simulated**.
+
+Other regressions cover retained data in `ROLLBACK_FAILED`/`DELETE_FAILED`,
+state-specific rollback, namespace/ownership rejection, permission maintenance,
+stale/expired/tampered approvals, duplicate requests, worker leases and concurrent
+operations, changed inventories, large report fragmentation, log pagination and
+redaction, readiness and separate approval of metadata-only changes. Browser
+tests use the local test server and mocked infrastructure routes, including real
+reload and scrolling; they do not authenticate to the deployed AWS application.
+
+Current results: **698 server tests in 43 suites**, **114 editor integration
+tests in 13 files**, both TypeScript checks, **5 CI configuration tests**, both
+Auth0/Cognito server and editor bundles, and offline CloudFormation lint pass.
+The recovery browser test and existing deployment-review browser test pass.
+The server test run uses the repository's established `--forceExit` workaround
+for its lingering test-harness handle; this is separate from runtime evidence.
+
+**Pending:** administrator bootstrap/release, live current-AWS inspection,
+graph-side recovery/deployment approvals, live create/failure/recovery/redeploy
+and rollback, live cross-stack denial, runtime readiness and two authenticated
+browser users receiving authoritative updates. None of those live outcomes is
+claimed by the local tests. No new live proposal or AWS mutation was made in
+this task.
+
+## Previous release record — historical
+
+The user authorized
 committing, pushing and deploying these platform changes on 2026-10-07. The
 platform release completed on 2026-10-07 PDT (2026-10-08 UTC): server
 `c1ee6cea101e297b88e0bc6a77bca488727e1806`, paired editor

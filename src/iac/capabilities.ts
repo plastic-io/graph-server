@@ -2,6 +2,7 @@ import {policyFromEnv,validateTemplate,validateStack,parseTemplate} from './vali
 import {assemble} from './assemble';
 import {IacPolicy,DEFAULT_POLICY} from './types';
 import {ISOLATED_TYPES,ISOLATION_VERSION,scopedPolicy,stackScope,validateIsolation} from './isolation';
+import {readinessProblems} from './readiness';
 export const LEGACY_APPLY_TYPES=['AWS::S3::Bucket','AWS::S3::BucketPolicy','AWS::DynamoDB::Table','AWS::SQS::Queue','AWS::SQS::QueuePolicy','AWS::SNS::Topic','AWS::SNS::TopicPolicy','AWS::Logs::LogGroup'];
 export function isolationEnabled(){return process.env.IAC_STACK_ISOLATION==='true';}
 /** Inline templates and graph-assembled templates must go through the same preflight. */
@@ -19,10 +20,12 @@ export function deploymentCapabilities(graphId:string,nodeId:string,configuratio
  const isolated=isolationEnabled(),scope=stackScope(graphId,nodeId,policy);
  const supported=isolated?ISOLATED_TYPES:LEGACY_APPLY_TYPES;
  const configured=enabled&&!!scope.account&&!!scope.region;
+ const lifecycleConfigured=configured&&isolated&&!!process.env.IAC_LIFECYCLE_FUNCTION&&!!process.env.IAC_GUARDRAIL_REPAIR_FUNCTION;
  const effectivePolicy=isolated?scopedPolicy(scope,policy):policy;
  const problems:any[]=[];
  let validation:any=null;
  if(configuration){
+  problems.push(...readinessProblems(configuration.readiness));
   if(configuration.template?.text){
    validation=validateTemplate(configuration.template.text,configuration.template.format||'yaml',effectivePolicy);
    problems.push(...validation.problems,...validateStack(configuration.stack,effectivePolicy));
@@ -39,7 +42,8 @@ export function deploymentCapabilities(graphId:string,nodeId:string,configuratio
   isolation:isolated?{...scope,required:true}:{required:false,mode:'legacy-shared-prefix',namespace:policy.stackPrefix},
   deploymentRole:isolated?scope.roleArn:process.env.IAC_EXECUTION_ROLE_ARN||null,permissionsBoundary:isolated?scope.boundaryArn:policy.permissionsBoundaryArn||null,
   authenticatedApiAuthorizer:{supported:!!process.env.COGNITO_USER_POOL_ARN,userPoolArn:process.env.COGNITO_USER_POOL_ARN||null,alternative:'AWS_IAM'},
-  operations:{plan:configured,apply:configured,destroy:configured&&isolated,automaticApply:false,import:false,continueRollback:false,deleteRetainedResources:false},
+  operations:{plan:configured,apply:configured,destroy:configured&&isolated,automaticApply:false,import:lifecycleConfigured,continueRollback:lifecycleConfigured,deleteRetainedResources:false,
+   recovery:{configured:lifecycleConfigured,tool:'iac.recovery.plan',scope:'Human-reviewed, state-selected recovery of this owned stack only; import is limited to proven retained resources. No arbitrary import, skipped rollback resources, or unreviewed data deletion.',inspection:'iac.inspect',platformPrerequisites:'iac.maintenance.request',requiresApproval:'human-exact-recovery-digest',deploymentApprovalIsSeparate:true}},
   requirements:['Run this preflight before implementation. Template validity is distinct from deployment capability.','Only an authenticated human may approve the exact reviewed digest in the graph.','Names, IAM policy resources and role passing are restricted to the assigned stack namespace.','REST API creation uses a required GraphStack tag; child resources inherit ownership. API Gateway V2 is not in this deployment subset.','Runtime roles cannot alter IAM, invoke deployment APIs, pass roles, or read resources outside their stack.','Application roles receive no unscoped AWS actions. The CloudFormation execution role may list log-group metadata with logs:DescribeLogGroups on * because AWS does not support a resource ARN for that read; writes remain namespace-scoped.'],
   evidence:{level:'configuration-and-template-validation',awsPermissionsVerified:false,missingPermissions:'AWS permission failures are reported by the reviewed worker; preflight does not simulate effective AWS policies.',runtimeVerified:false,liveMultiplayerVerified:false},
   roleLifecycle:'Platform-managed roles and the boundary are provisioned during the first reviewed plan; graph templates cannot edit them.',validation,deployable:configuration?configured&&problems.length===0:null,problems};

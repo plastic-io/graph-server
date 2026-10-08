@@ -15,6 +15,9 @@ provider:
       Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-iacDiagnostics'
     - Effect: Allow
       Action: lambda:InvokeFunction
+      Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-iacWorker'
+    - Effect: Allow
+      Action: lambda:InvokeFunction
       Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-applicationBridge'
     - Fn::If:
         - IacReviewEnabled
@@ -125,6 +128,9 @@ provider:
     REQUIRE_CONTAINMENT: 'true'
     IAC_STACK_ISOLATION: ${env:IAC_STACK_ISOLATION, 'true'}
     IAC_DIAGNOSTICS_FUNCTION: ${self:service}-${self:provider.stage}-iacDiagnostics
+    IAC_LIFECYCLE_FUNCTION: ${self:service}-${self:provider.stage}-iacWorker
+    IAC_GUARDRAIL_REPAIR_FUNCTION: ${self:service}-${self:provider.stage}-iacGuardrailRepair
+    PLATFORM_ADMIN_SUBS: ${env:PLATFORM_ADMIN_SUBS, ''}
     IAC_GUARDRAIL_ROLE_ARN: !If [IacReviewEnabled, !GetAtt IacGuardrailRole.Arn, '']
     IAC_WORKER_ROLE_ARN: !If [IacReviewEnabled, !GetAtt IacWorkerRole.Arn, '']
     COGNITO_USER_POOL_ARN: ${env:COGNITO_USER_POOL_ARN, ''}
@@ -1019,6 +1025,36 @@ functions:
     events:
       - http:
           method: GET
+          path: /crdt/{id}/iac/{nodeId}/inspect
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: GET
+          path: /crdt/{id}/iac/{nodeId}/runtime-logs
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: POST
+          path: /crdt/{id}/iac/{nodeId}/recovery-plan
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: POST
+          path: /crdt/{id}/iac/{nodeId}/recovery-approve
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: POST
+          path: /crdt/{id}/iac/{nodeId}/maintenance
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: POST
+          path: /crdt/{id}/iac/{nodeId}/readiness
+          authorizer: ${self:custom.jwtAuthorizer}
+          cors: {origin: '*'}
+      - http:
+          method: GET
           path: /crdt/{id}/iac/{nodeId}/events
           authorizer: ${self:custom.jwtAuthorizer}
           cors: {origin: '*'}
@@ -1063,8 +1099,15 @@ functions:
     timeout: 60
     role: !If [IacReviewEnabled, !GetAtt IacWorkerRole.Arn, !GetAtt IamRoleLambdaExecution.Arn]
     environment:
-      IAC_REVIEW_STATE_MACHINE: ''
+      # The state machine targets this function. Construct its known ARN to
+      # inspect executions without introducing a Lambda/StateMachine cycle.
+      IAC_REVIEW_STATE_MACHINE: !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${self:service}-${self:provider.stage}-iac-review'
       IAC_EXECUTION_ROLE_ARN: !If [IacReviewEnabled, !GetAtt IacExecutionRole.Arn, '']
+
+  iacGuardrailRepair:
+    handler: src/iacGuardrailRepair.handler
+    timeout: 30
+    role: !GetAtt IacGuardrailRepairRole.Arn
 
   # A picture of what a graph serves (PB-149).  Nothing routes to it: the
   # protocol handler invokes it when somebody asks to look.
@@ -1329,6 +1372,39 @@ resources:
       - !Equals ['${env:AUTH_PROVIDER, "auth0"}', cognito]
       - !Equals ['${env:COGNITO_MCP_REGISTRATION, "false"}', 'true']
   Resources:
+    IacGuardrailRepairRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: ${self:service}-${self:provider.stage}-${self:provider.region}-iacGuardrailRepairRole
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: 'sts:AssumeRole'}]
+        Policies:
+          - PolicyName: restore-only-approved-namespaced-guardrails
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: [cloudformation:DescribeStacks, cloudformation:ListStackResources]
+                  Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/graph-guardrails-*/*'
+                - Effect: Allow
+                  Action: s3:GetObject
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/iac/reviews/*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/iac/review-index/*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/iac/stacks/*'
+                - Effect: Allow
+                  Action: [iam:GetRole, iam:GetRolePolicy, iam:ListRolePolicies, iam:ListAttachedRolePolicies, iam:PutRolePolicy, iam:UpdateAssumeRolePolicy]
+                  Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/graph-deploy/gapp-*'
+                - Effect: Allow
+                  Action: iam:GetRole
+                  Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/graph-app/gapp-*'
+                - Effect: Allow
+                  Action: [iam:GetPolicy, iam:GetPolicyVersion, iam:ListPolicyVersions, iam:ListEntitiesForPolicy, iam:CreatePolicyVersion, iam:DeletePolicyVersion]
+                  Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/graph-guardrails/gapp-*'
+                - Effect: Allow
+                  Action: [logs:CreateLogStream, logs:PutLogEvents]
+                  Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${self:service}-${self:provider.stage}-iacGuardrailRepair:*'
     IacDiagnosticsRole:
       Type: AWS::IAM::Role
       Properties:
@@ -1440,15 +1516,16 @@ resources:
               Version: '2012-10-17'
               Statement:
                 # IAM existence probes address absent roles without their path.
-                # Read only: creation, mutation and role passing remain path constrained.
+                # Missing-role inline-policy cleanup also probes root ARNs; only the assigned
+                # guardrail template can request it. Existing foreign-path roles fail ownership checks.
                 - Effect: Allow
-                  Action: [iam:GetRole, iam:GetRolePolicy]
+                  Action: [iam:GetRole, iam:GetRolePolicy, iam:DeleteRolePolicy]
                   Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/gapp-*'
                 - Effect: Allow
                   Action: [iam:CreateRole, iam:GetRole, iam:DeleteRole, iam:PutRolePolicy, iam:GetRolePolicy, iam:DeleteRolePolicy, iam:ListRolePolicies, iam:TagRole, iam:UntagRole, iam:UpdateAssumeRolePolicy]
                   Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/graph-deploy/gapp-*'
                 - Effect: Allow
-                  Action: [iam:CreatePolicy, iam:GetPolicy, iam:GetPolicyVersion, iam:ListPolicyVersions, iam:DeletePolicy, iam:TagPolicy, iam:UntagPolicy, iam:ListPolicyTags]
+                  Action: [iam:CreatePolicy, iam:GetPolicy, iam:GetPolicyVersion, iam:ListPolicyVersions, iam:CreatePolicyVersion, iam:DeletePolicyVersion, iam:DeletePolicy, iam:TagPolicy, iam:UntagPolicy, iam:ListPolicyTags]
                   Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/graph-guardrails/gapp-*'
     IacExecutionRole:
       Type: AWS::IAM::Role
@@ -1509,6 +1586,9 @@ resources:
                   Action: lambda:InvokeFunction
                   Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-iacDiagnostics'
                 - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-iacGuardrailRepair'
+                - Effect: Allow
                   Action: s3:GetObject
                   Resource:
                     - !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}/connections/*'
@@ -1517,7 +1597,7 @@ resources:
                   Action: s3:ListBucket
                   Resource: !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}'
                   Condition:
-                    StringLike: {s3:prefix: ['subscriptions/graph-notify-*', 'iac/progress/*', 'observations/watch/*']}
+                    StringLike: {s3:prefix: ['subscriptions/graph-notify-*', 'iac/*', 'observations/watch/*']}
                 - Effect: Allow
                   Action: execute-api:ManageConnections
                   Resource: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebsocketsApi}/${self:provider.stage}/POST/@connections/*'
@@ -1538,13 +1618,40 @@ resources:
                   Condition:
                     StringEquals: {iam:PassedToService: cloudformation.amazonaws.com}
                 - Effect: Allow
-                  Action: [cloudformation:CreateStack, cloudformation:DescribeStacks, cloudformation:TagResource]
+                  Action: [cloudformation:CreateStack, cloudformation:UpdateStack, cloudformation:DeleteStack, cloudformation:DescribeStacks, cloudformation:TagResource, cloudformation:GetTemplate, cloudformation:ListStackResources, cloudformation:ContinueUpdateRollback, cloudformation:RollbackStack, cloudformation:CreateChangeSet, cloudformation:DescribeChangeSet, cloudformation:ExecuteChangeSet]
                   Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/graph-guardrails-*/*'
                 - Effect: Allow
                   Action: iam:PassRole
                   Resource: !GetAtt IacGuardrailRole.Arn
                   Condition:
                     StringEquals: {iam:PassedToService: cloudformation.amazonaws.com}
+                # Read-only inspection and logs are selected from the stored graph operation.
+                - Effect: Allow
+                  Action: [cloudformation:DescribeStacks, cloudformation:GetTemplate, cloudformation:ListStackResources]
+                  Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/gapp-*/*'
+                - Effect: Allow
+                  Action: [cloudformation:CreateChangeSet, cloudformation:DescribeChangeSet, cloudformation:ExecuteChangeSet]
+                  Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/recovery-gapp-*/*'
+                - Effect: Allow
+                  Action: [iam:GetRole, iam:GetRolePolicy, iam:ListRolePolicies, iam:ListAttachedRolePolicies]
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/graph-deploy/gapp-*'
+                    - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/gapp-*'
+                - Effect: Allow
+                  Action: iam:GetRole
+                  Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/graph-app/gapp-*'
+                - Effect: Allow
+                  Action: [iam:GetRole, iam:GetRolePolicy]
+                  Resource: !GetAtt IacGuardrailRole.Arn
+                - Effect: Allow
+                  Action: [iam:GetPolicy, iam:GetPolicyVersion, iam:ListEntitiesForPolicy]
+                  Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/graph-guardrails/gapp-*'
+                - Effect: Allow
+                  Action: states:DescribeExecution
+                  Resource: !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${self:service}-${self:provider.stage}-iac-review:*'
+                - Effect: Allow
+                  Action: logs:FilterLogEvents
+                  Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/gapp-*:*'
                 - Effect: Allow
                   Action: sts:AssumeRole
                   Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/graph-deploy/gapp-*-worker'
