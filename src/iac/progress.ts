@@ -1,17 +1,17 @@
 import {createHash} from 'crypto';
 import {ulid} from 'ulid';
 import {ObservationJournal} from '../runtime/journal';
+import {readJournalObject} from '../runtime/journalStorage';
 import {diagnosticText,diagnosticError,recoveryFor} from './diagnosticSafety';
 
 const hash=(x:any)=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
-const missing=(e:any)=>/NoSuchKey|NotFound|not found/i.test(String(e?.code||e?.message));
 export const phaseFor=(state:string)=>({planning:'planning','awaiting-review':'awaiting-approval','apply-requested':'deploying',applying:'deploying'}[state]||'terminal');
 
 /** Immutable operation pages plus a CAS head/outbox. The bus and MCP receive the same stored event. */
 export class DeploymentProgress {
  constructor(private store:any,private notify?:(graphId:string,event:any)=>Promise<void>){}
  static prefix(id:string){if(!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id))throw Object.assign(new Error('Invalid operation ID'),{code:'SCHEMA_INVALID',status:400});return `iac/progress/${id}/`;}
- private get(key:string,versioned=false):Promise<any>{return new Promise((resolve,reject)=>this.store[versioned?'getVersioned':'get'](key,(e,v)=>e&&!missing(e)?reject(e):resolve(e?null:v)));}
+ private get(key:string,versioned=false):Promise<any>{return readJournalObject(this.store,key,versioned);}
  private cas(key:string,value:any,etag:string|null):Promise<boolean>{return new Promise((resolve,reject)=>this.store.compareAndSet(key,value,etag,(e)=>e&&(e.statusCode===412||e.code==='PreconditionFailed')?resolve(false):e?reject(e):resolve(true)));}
  async head(id:string){return (await this.get(DeploymentProgress.prefix(id)+'HEAD.json',true))?.value;}
  async mark(id:string,patch:any){const key=DeploymentProgress.prefix(id)+'HEAD.json';for(let i=0;i<12;i++){const row=await this.get(key,true);if(await this.cas(key,{seq:0,published:0,seen:[],...row?.value,...patch},row?.etag||null))return;}throw new Error('Deployment diagnostic metadata contention');}

@@ -10,7 +10,10 @@ export async function handler(event:any){
  const store=new S3Service(process.env.S3_BUCKET),progress=new DeploymentProgress(store,progressNotifier());
  const op:any=await new Promise((resolve,reject)=>store.get('iac/reviews/'+id+'.json',(e,v)=>e?reject(e):resolve(v)));
  if(event.detail&&event.detail.stateMachineArn!==process.env.IAC_REVIEW_STATE_MACHINE)throw new Error('Unexpected workflow event');
- if(!await progress.claimCollection(id,!!event.detail)){await progress.flush(op);return {operationId:id,collected:false};}
+ if(!await progress.claimCollection(id,!!event.detail)){
+  if(event.detail)throw new Error('A diagnostic collection is in progress; retry this terminal workflow notification.');
+  await progress.flush(op);return {operationId:id,collected:false};
+ }
  await new DeploymentDiagnostics(progress,diagnosticClients(op.input.stack.region)).collect(op);
  return {operationId:id,collected:true};
 }

@@ -108,6 +108,8 @@ describe('private deployment access boundaries', () => {
     expect(JSON.stringify(logs.Resource)).toContain('-iacWorker:*');expect(JSON.stringify(logs.Resource)).not.toContain('gapp-');expect(actions).not.toContain('logs:Unmask');
     const writes=statements.filter(s=>[].concat(s.Action).includes('s3:PutObject'));
     expect(writes.flatMap(s=>s.Resource).every(r=>/iac\/progress|observations\/watch/.test(JSON.stringify(r)))).toBe(true);
+    const listing=statements.find(s=>s.Action==='s3:ListBucket');
+    expect(listing.Condition.StringLike['s3:prefix']).toEqual(['subscriptions/graph-notify-*','iac/progress/*','observations/watch/*']);
     const rule=resources.IacDiagnosticWorkflowEvents.Properties;
     expect(rule.EventPattern.detail.status).toEqual(['FAILED','TIMED_OUT','ABORTED','SUCCEEDED']);
     expect(rule.EventPattern.detail.stateMachineArn).toEqual(['IacReviewStateMachine']);

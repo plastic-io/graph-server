@@ -18,7 +18,7 @@ then stays within MCP and the graph's human review interface.
 
 ## Deployment observability extension
 
-Implementation complete; release verification in progress. No Chess application
+Implementation complete; final release verification in progress. No Chess application
 deployment, retry, deletion or guardrail recovery is part of this platform change.
 
 ### Confirmed failure and narrow correction
@@ -154,12 +154,32 @@ failure display, logs, phase milestones, duplicate frames, reconnect, reload,
 resource timestamp ordering, old-operation selection and navigation races.
 Both Auth0 and Cognito builds pass. These are local/simulated deployment tests,
 not a claim of live successful application provisioning or recovered guardrails.
-Current local results: **668 server tests in 41 suites**, **109 editor integration
-tests in 12 files**, and **2 Playwright browser tests** passed. Both TypeScript
+Current local results: **670 server tests in 41 suites**, **109 editor integration
+tests in 12 files**, **125 CRDT tests**, and **2 Playwright browser tests** passed. Both TypeScript
 checks pass with the editor's zero-error baseline. All **5 CI configuration
 tests** pass. Both provider builds pass; the CI-role CloudFormation source passes
-offline lint. The existing Jest harness still uses its established `--forceExit`
+offline lint; the packaged platform template also passes lint without errors.
+The production dependency audit reports zero vulnerabilities. The existing Jest harness still uses its established `--forceExit`
 setting. Live release checks are recorded here after rollout.
+
+The first live MCP read exposed an absent-journal edge case: the collector's
+restricted S3 role received AccessDenied instead of NoSuchKey for a missing head.
+This follows S3's documented
+[GetObject permission behavior](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html).
+The correction checks only the exact missing head key using prefix-limited
+listing under the two journal prefixes. It never treats an existing denied object
+as absent or grants unrestricted bucket listing. Collector startup errors now
+preserve Lambda's bounded error message in the graph, and legacy opaque errors
+require diagnostic recovery rather than incorrectly prescribing a template edit.
+The regression tests cover cold initialization and genuine denied reads.
+
+Authenticated **live MCP `iac.status`** recovered 36 records for the reported
+operation, including the original `iam:GetRole` failure, both rollback
+`iam:DeleteRolePolicy` failures, retained boundary, absent application stack and
+secondary AssumeRole failure. The response classifies recovery as platform
+intervention. Legacy worker logs without an operation ID remain intentionally
+unavailable; CloudFormation and orchestration history supply the actionable
+evidence. The operation was inspected, not retried or approved.
 
 ## What changed
 

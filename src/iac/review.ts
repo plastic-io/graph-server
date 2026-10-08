@@ -117,7 +117,7 @@ export class IacReviewService {
         if(!/^[A-Za-z0-9_.-]{1,64}$/.test(graphId||''))problem('Invalid graph ID.','SCHEMA_INVALID');
         principal=await new DelegationStore(this.store).resolve(principal,graphId);
         const decision = decide(principal, ['graph:read',approval ? 'iac:approve' : 'iac:read-status']);
-        if (!decision.allow || (approval && principal?.kind!=='human')) problem('An authenticated human with infrastructure approval authority is required.', 'ADMISSION_DENIED', 403);
+        if (!decision.allow || (approval && principal?.kind!=='human')) problem(approval?'An authenticated human with infrastructure approval authority is required.':'Graph read and infrastructure status authority are required for this graph.', 'ADMISSION_DENIED', 403);
         return principal;
     }
     async template(graphId: string, nodeId: string, principal: any) {

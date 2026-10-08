@@ -1,12 +1,13 @@
 import {createHash} from 'crypto';
 import {ulid} from 'ulid';
 import {redactCredentials} from '../security/credentials';
+import {readJournalObject} from './journalStorage';
 
 /** Arrival-ordered, conditional-write journal. Browser timestamps/IDs never determine its cursor. */
 export class ObservationJournal {
  constructor(private store:any){}
  private get(key:string):Promise<any>{return new Promise((resolve,reject)=>this.store.get(key,(err,value)=>err&& !/NoSuchKey|NotFound|not found/i.test(String(err.code||err.message))?reject(err):resolve(err?null:value)));}
- private head(graphId:string):Promise<any>{return new Promise((resolve,reject)=>this.store.getVersioned(`observations/watch/${graphId}/HEAD.json`,(err,row)=>err&&!/NoSuchKey|NotFound|not found/i.test(String(err.code||err.message))?reject(err):resolve(err?null:row)));}
+ private head(graphId:string):Promise<any>{return readJournalObject(this.store,`observations/watch/${graphId}/HEAD.json`,true);}
  private set(key:string,value:any):Promise<void>{return new Promise((resolve,reject)=>this.store.set(key,value,{},err=>err?reject(err):resolve()));}
  async append(graphId:string,observations:any[],context:any={}){
   if(!observations.length)return;

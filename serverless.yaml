@@ -1369,7 +1369,7 @@ resources:
                   Action: s3:ListBucket
                   Resource: !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}'
                   Condition:
-                    StringLike: {s3:prefix: ['subscriptions/graph-notify-*']}
+                    StringLike: {s3:prefix: ['subscriptions/graph-notify-*', 'iac/progress/*', 'observations/watch/*']}
                 - Effect: Allow
                   Action: execute-api:ManageConnections
                   Resource: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebsocketsApi}/${self:provider.stage}/POST/@connections/*'
@@ -1517,7 +1517,7 @@ resources:
                   Action: s3:ListBucket
                   Resource: !Sub 'arn:${AWS::Partition}:s3:::${self:custom.s3Bucket}'
                   Condition:
-                    StringLike: {s3:prefix: ['subscriptions/graph-notify-*']}
+                    StringLike: {s3:prefix: ['subscriptions/graph-notify-*', 'iac/progress/*', 'observations/watch/*']}
                 - Effect: Allow
                   Action: execute-api:ManageConnections
                   Resource: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebsocketsApi}/${self:provider.stage}/POST/@connections/*'

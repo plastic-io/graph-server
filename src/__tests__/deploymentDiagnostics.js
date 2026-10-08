@@ -158,3 +158,24 @@ test('a diagnostic store outage preserves the original deployment response',asyn
  const get=f.store.get.bind(f.store);f.store.get=(key,cb)=>key.startsWith('iac/progress/')?cb(new Error('diagnostic store unavailable')):get(key,cb);
  expect(await f.reviews.current('g','stack',human)).toMatchObject({reason:'iam:GetRole denied',error:{code:'AccessDenied'},progress:{collectionWarning:{reason:expect.stringContaining('unavailable')}}});
 });
+
+test('restricted S3 journal readers initialize absent heads through exact-prefix lists, but never treat an existing denied object as empty',async()=>{
+ const {readJournalObject}=require('../runtime/journalStorage'),f=fixture(),get=f.store.getVersioned.bind(f.store);
+ const denied=()=>Object.assign(new Error('ListBucket is unavailable for this missing key'),{code:'AccessDenied'});
+ f.store.getVersioned=(key,cb)=>f.store.objects.has(key)?get(key,cb):cb(denied());
+ await f.progress.append(f.op,[{id:'cold-start',source:'worker',phase:'planning',status:'IN_PROGRESS'}]);
+ expect((await f.progress.head(id)).published).toBe(1);
+ expect((await new ObservationJournal(f.store).read('g')).observations).toHaveLength(1);
+ expect(f.store.calls.list).toBe(2);
+ const key='iac/progress/'+id+'/HEAD.json';f.store.getVersioned=(_key,cb)=>cb(denied());
+ await expect(readJournalObject(f.store,key,true)).rejects.toMatchObject({code:'AccessDenied'});
+ const list=f.store.list.bind(f.store);f.store.list=(_key,cb)=>cb(new Error('Listing is also denied'));
+ await expect(readJournalObject(f.store,'iac/progress/other/HEAD.json',true)).rejects.toMatchObject({code:'AccessDenied'});
+ f.store.list=list;
+ await expect(readJournalObject(f.store,'policy/agents/denied.json',true)).rejects.toMatchObject({code:'AccessDenied'});
+});
+
+test('a legacy opaque failure never prescribes a template edit without recovered evidence',async()=>{
+ const f=fixture({reason:'The deployment workflow failed. Check the operation in AWS before retrying.'});await f.seed();
+ expect((await f.reviews.current('g','stack',human)).recovery).toMatchObject({category:'platform-intervention',retryable:false});
+});
