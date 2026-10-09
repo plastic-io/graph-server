@@ -149,10 +149,24 @@ Maintenance requests explain that they record a review, not an executable repair
 Missing administrator configuration is actionable rather than an opaque AWS
 error. The Recovery button is in the lower system bar beside the CloudFormation
 notifications. Its dialog restores the current operation and full review without
-requiring scrolling to the bottom of a node. CF nodes default to 600 × 480 px
+requiring scrolling to the bottom of a node. CF nodes default to 600 × 400 px
 (twice the previous 300 px natural width), have a drag/keyboard resize handle,
 persist dimensions through graph properties, and retain internal scrolling with
 bounds of 300–1600 px wide and 200–960 px high.
+
+The compact node shows its stack target, current phase, graph revision, approval
+and execution in a short status card. A single failure summary includes the next
+action; resources, activity, logs, readiness/recovery and full operation identifiers
+are collapsed by default. A current approval gate takes precedence over historical
+guardrail event labels. Exact-digest recovery approval remains in the system bar.
+The layout was checked in light/dark themes, at 320 px width, and in failure,
+recovery-ready, success and empty states. Existing saved dimensions are preserved.
+The editor-only update passed 119 integration tests, type checking, both browser
+review/resize regressions and the Cognito production build. It changes no stack,
+IAM policy, authentication configuration or backend code.
+Live verification at `2026-10-09T03:44:51.029Z` matched the deployed editor
+manifest, HTML and component bundle hashes, with the Cognito provider and
+existing server revision preserved.
 
 Auto-approve is **off by default**. A human must accept a warning about costs and
 IAM changes to enable it for this graph/editor session; reload or graph change
@@ -257,16 +271,19 @@ A fresh MCP recovery plan completed all 14 IAM reads on their first attempt;
 its 22 AWS checks reported successful reads or the expected absent application
 stack/workflow. There were no current verification prerequisites.
 
-Recovery `01M4F8X2X5BSWVSND41Z8VK56G`, digest
+At the last live observation (`2026-10-09T02:48Z`), recovery
+`01M4F8X2X5BSWVSND41Z8VK56G`, digest
 `5fb160b188269c09fa727105bf168f66562008222b95bed82793dddf61329b68`, is
-`recovery-ready`. It reconciles the graph/node's approved guardrails, prepares an
+`recovery-ready`. Its plan reconciles the graph/node's approved guardrails, prepares an
 empty owned application stack, imports the same retained queue, and releases the
 old operation. It contains **no delete-stack action and no data-loss action**.
 All 16 review events matched `observations.watch` by ID and content, excluding
 the observation journal's additional `arrival` cursor position. The not-yet-started
 workflow and absent operation log tail are explicitly reported as unavailable.
-Its fresh human approval/import and the corrected disposable deployment remain
-pending. The user's latest instruction prohibits
+Its human approval/import and the corrected disposable deployment have not been
+verified. Reviews expire after 15 minutes: inspect the current operation before
+preparing a fresh review; this historical digest is not a standing approval.
+The user's latest instruction prohibits
 further stack deletion. Retained resources are left in place. Live missing-role
 recreation is not established by the disposable queue test; the exact missing-role
 case is covered by MCP SDK tests with simulated AWS and read-only live inspection.
@@ -291,8 +308,9 @@ Generic limits remain explicit:
   CLI fallback is introduced.
 
 Last released pair: server `6b1f921a71fe61252c5dae6ccc5db4d9d1cf4785`, editor
-`b8d8b72f1f614223a0bef4c06fa355b2f6b7921f`, account **230639770018 / us-west-1**.
-Release evidence is retained at `/private/tmp/graph-inspection-release-6b1f921/`,
+`35d8543e04022ac68746570d514c8bdc9f47d6b1`, account **230639770018 / us-west-1**.
+Release evidence is retained at `/private/tmp/graph-editor-compact-release/`,
+`/private/tmp/graph-inspection-release-6b1f921/`,
 `/private/tmp/graph-import-release-66558dc/` and the prior
 `/private/tmp/graph-guardrail-release-44f9760/`; the public
 [release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json)
@@ -300,7 +318,7 @@ identifies the deployed pair. This document does not instruct or authorize
 shipping the Chess application.
 
 Paired editor revision for this follow-up:
-`b8d8b72f1f614223a0bef4c06fa355b2f6b7921f`.
+`35d8543e04022ac68746570d514c8bdc9f47d6b1`.
 No CloudFormation stack deletion is authorized by platform release or automatic
 approval. No further live stack deletion will be performed under this task. Unrelated CloudFormation projects in this shared account
 are outside the task.
