@@ -1,0 +1,24 @@
+{
+  "source": "https://schema.cloudformation.us-west-1.amazonaws.com/CloudformationSchema.zip",
+  "retrievedAt": "2026-10-09",
+  "archiveSha256": "fd500ab2371e982d9c85c4c976706570c2a6b4667c1fab38d8edb9eecc3acb89",
+  "resources": {
+    "AWS::IAM::ManagedPolicy": {
+      "readPermissions": [
+        "iam:GetPolicy",
+        "iam:ListEntitiesForPolicy",
+        "iam:GetPolicyVersion"
+      ],
+      "importIdentifier": "PolicyArn"
+    },
+    "AWS::IAM::Role": {
+      "readPermissions": [
+        "iam:GetRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:GetRolePolicy"
+      ],
+      "importIdentifier": "RoleName"
+    }
+  }
+}

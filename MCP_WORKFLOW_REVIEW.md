@@ -1,9 +1,9 @@
 # Graph MCP lifecycle — current platform review
 
 Updated October 8, 2026 (PDT). This is the current review for graph-server and
-its paired graph-editor. This change implements server discovery **2.4.1** and
-lifecycle contract **1.1.0**. Release and live acceptance are pending the gates
-below. Previous release instructions are superseded; their evidence remains in
+its paired graph-editor. This change implements server discovery **2.4.2** and
+lifecycle contract **1.2.0**. The missing-role classification fix is released; the follow-up import and editor
+changes are ready for the platform release and live gates below. Previous release instructions are superseded; their evidence remains in
 git history. No Chess application source, graph node, or template was changed.
 
 ## Confirmed regression
@@ -109,9 +109,16 @@ remain authoritative.
 
 ## Isolation and approval safeguards
 
-No platform IAM permissions were expanded in this fix. The currently released
-worker can perform the fixed guardrail lifecycle, pass the fixed guardrail service
-role, and invoke the private approved-definition repair function. Application
+The follow-up adds `iam:ListAttachedRolePolicies` only on graph deployment roles
+and `iam:ListEntitiesForPolicy` only on graph runtime boundary policies to the
+platform guardrail service role. The pinned AWS public provider read contracts
+are covered by a permission regression. No shared or root-path role deletion
+permission is added. The per-stack platform worker gains `CreateStack` on its
+single assigned application stack, conditional on the assigned service role and
+GraphId/NodeId/GraphStack request tags. Application runtime roles and boundaries
+are unchanged. This updated platform definition is reconciled only through an
+approved graph recovery. The platform worker can pass the fixed guardrail service
+role and invoke the private approved-definition repair function. Application
 recovery still uses its assigned per-stack worker/execution roles; the missing-role
 regression specifically verifies guardrail restoration uses no application client.
 Root-path role creation, role deletion and policy grants were not added.
@@ -140,7 +147,22 @@ retain, import or recreate. Recovery approval explicitly does not require
 platform-maintenance administrator membership or approve application deployment.
 Maintenance requests explain that they record a review, not an executable repair.
 Missing administrator configuration is actionable rather than an opaque AWS
-error. Existing 640 × 480 px bounds and internal scrolling are preserved.
+error. The Recovery button is in the lower system bar beside the CloudFormation
+notifications. Its dialog restores the current operation and full review without
+requiring scrolling to the bottom of a node. CF nodes default to 600 × 480 px
+(twice the previous 300 px natural width), have a drag/keyboard resize handle,
+persist dimensions through graph properties, and retain internal scrolling with
+bounds of 300–1600 px wide and 200–960 px high.
+
+Auto-approve is **off by default**. A human must accept a warning about costs and
+IAM changes to enable it for this graph/editor session; reload or graph change
+turns it off. It consumes existing current reviews and exact digests, never
+accepts proposals or creates reviews. The server exposes
+`status.automaticApproval={allowed,reason}` and rejects automatic stack deletion,
+resource removal/replacement, uncertain changes, rollback recovery, and data loss.
+`approval.mode` / `recoveryApproval.mode` records manual versus automatic approval
+in durable status/events. MCP cannot enable the mode or approve. Turning the mode
+off does not cancel already approved operations.
 
 ## Verification and remaining gates
 
@@ -166,20 +188,55 @@ Automated evidence uses **disposable in-memory graphs and simulated AWS**:
   UI evidence, not real AWS or real human approval. The deployment CI now includes
   `deployment-lifecycle.spec.ts` alongside existing browser regressions.
 
-Passing checks: **726 server tests in 44 suites**, **115 editor integration tests
-in 13 files**, **125 CRDT tests in 12 files**, both browser review tests, both
+Passing checks: **744 server tests in 45 suites**, **119 editor integration tests
+in 13 files**, **125 CRDT tests in 12 files**, the updated recovery/resize/warning browser test and prior deployment review test, both
 TypeScript checks, 5 deployment-configuration tests, and both Auth0/Cognito
 server and editor bundles. The result-schema assertions were rerun after the
 final schema refinement. Jest uses the repository's existing `--forceExit`
 workaround for a test-harness handle; this is not runtime evidence.
 
-**Live gates:** the account-specific platform profile was refreshed and its
-account identity verified. The signed-in editor created disposable test graph
-`e76298c1-3d45-47ed-be95-19e1104ebab2`; MCP can read it. Platform release and
-real disposable-stack failure/recovery/import/deployment with their exact human
-approvals remain pending. Automated AWS responses do not establish actual
-CloudFormation execution. The Chess regression was read only and remains owned
-by the application agent.
+**Live evidence and remaining gates:** server `44f9760` / editor `39c8442`
+released successfully to **230639770018 / us-west-1**. Eight deployed Lambda
+package hashes and the editor manifest matched; 72 REST methods and WebSocket
+connect retained authorizers; 28 anonymous/invalid-token probes were rejected.
+The original regression inspected through MCP at `2026-10-09T01:55:17.946Z`
+reported both roles absent and recovery review available, without maintenance
+admin configuration. No Chess content or infrastructure was mutated.
+
+On disposable graph `e76298c1-3d45-47ed-be95-19e1104ebab2`, a human accepted proposal
+`01M4F5T35DVVGZ5KP7MYA2F2YR` and separately approved deployment
+`01M4F5Z1V18RJQ365K92EYRYEE`. AWS created its guardrails and queue, rejected the
+intentionally invalid generic DynamoDB key schema, and reported `ROLLBACK_COMPLETE`
+with the queue `DELETE_SKIPPED`. MCP and the CF UI displayed the actual error.
+Cross-graph recovery was denied; duplicate request keys returned the same plan;
+16 recovery events matched the observation stream by event ID/content. Reload
+restored the displayed recovery digest.
+
+The human explicitly approved recovery `01M4F6813ATZW997B0QVZACBES`, digest
+`3b17cbc651e6ae8f39644f9ad632819c2a76223b3b8dcc1fc98bb1c916034cc3`, including deletion
+of only `gapp-02abf16a0ebe1b65929693f1-stack` while retaining its queue. That named
+stack deletion completed. The import then failed with AWS `ValidationError`:
+“As part of the import operation, you cannot modify or add [RoleArn, Tags]”.
+Fresh MCP inspection recovered the deleted stack's ownership and retained queue
+record; the original failure remains durable. No other stack was deleted.
+
+This generic regression now prepares a fixed, empty stack with the assigned role
+and tags before IMPORT. A false condition prevents the placeholder from creating
+any resource. The import preserves these settings and executes only when its
+change set contains exactly the reviewed imports. Interrupted preparation retains
+and reverifies the archived ownership record for a new plan. Recovery-worker
+failures now direct `iac.inspect` / a new recovery review rather than suggesting
+an application template edit. AWS references:
+[CreateChangeSet](https://docs.aws.amazon.com/AWSCloudFormation/latest/APIReference/API_CreateChangeSet.html),
+[conditional resource creation](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/conditions-section-structure.html),
+and [public resource provider schemas](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/resource-type-schemas.html).
+The fixture now reproduces the real import-settings rejection.
+
+The follow-up release, fresh **non-deleting** recovery approval/import and corrected
+disposable deployment remain pending. The user's latest instruction prohibits
+further stack deletion. Retained resources are left in place. Live missing-role
+recreation is not established by the disposable queue test; the exact missing-role
+case is covered by MCP SDK tests with simulated AWS and read-only live inspection.
 
 Generic limits remain explicit:
 
@@ -200,17 +257,16 @@ Generic limits remain explicit:
   process is separate from application operations; no application credential or
   CLI fallback is introduced.
 
-Last released baseline: server `ac72acd806f8686c29983145e6be1dbfc7f2cb73`, editor
-`f9ce6c1b8083659959d9a0acbcdbd775c1a08e40`, account **230639770018 / us-west-1**.
+Last released pair: server `44f976064db0f0fc6d5f9b1a0bc4b36c2032b7b0`, editor
+`39c84424f9ed2660b911f5ed87e3aaa809b2e0b3`, account **230639770018 / us-west-1**.
 The prior release evidence is retained at
-`/private/tmp/graph-lifecycle-release-ac72acd/`; the public
+`/private/tmp/graph-guardrail-release-44f9760/`; the public
 [release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json)
 identifies the deployed pair. This document does not instruct or authorize
 shipping the Chess application.
 
-Paired editor revision for this platform change:
-`39c84424f9ed2660b911f5ed87e3aaa809b2e0b3`.
-No CloudFormation stack deletion is authorized by platform release. Any recovery
-deletion requires the human to approve the specific stack and exact recovery
-digest in the graph. Unrelated CloudFormation projects in this shared account
+Paired editor revision for this follow-up:
+`b8d8b72f1f614223a0bef4c06fa355b2f6b7921f`.
+No CloudFormation stack deletion is authorized by platform release or automatic
+approval. No further live stack deletion will be performed under this task. Unrelated CloudFormation projects in this shared account
 are outside the task.

@@ -1,3 +1,4 @@
+import {automaticApproval,checkApprovalMode} from './automaticApproval';
 import {deploymentCapabilities, isolationEnabled, LEGACY_APPLY_TYPES} from './capabilities';
 import {scopedPolicy,stackScope, ISOLATED_TYPES} from './isolation';
 import {DeploymentProgress,phaseFor} from './progress';
@@ -163,7 +164,7 @@ export class IacReviewService {
     private publicRecord(record: any) {
         if (!record) return null;
         const {input, policyDigest,recoveryLease, ...visible} = record;
-        return {...visible,...(record.recoveryPlan?{recoveryPlan:publicRecoveryPlan(record.recoveryPlan)}:{}),...(record.reason?{reason:diagnosticText(record.reason,record)}:{}),...(record.originalError?{originalError:diagnosticError(record.originalError,record)}:{}),template:{text:input.text, format:input.format, source:input.source}, stack:input.stack,preflight:input.preflight,readinessChecks:input.readiness||[]};
+        return {...visible,automaticApproval:automaticApproval(record),...(record.recoveryPlan?{recoveryPlan:publicRecoveryPlan(record.recoveryPlan)}:{}),...(record.reason?{reason:diagnosticText(record.reason,record)}:{}),...(record.originalError?{originalError:diagnosticError(record.originalError,record)}:{}),template:{text:input.text, format:input.format, source:input.source}, stack:input.stack,preflight:input.preflight,readinessChecks:input.readiness||[]};
     }
     private progress(){return new DeploymentProgress(this.store,this.deps.notify);}
     async current(graphId: string, nodeId: string, principal: any, operationId?:string, refresh=true) {
@@ -264,6 +265,7 @@ export class IacReviewService {
     async approve(graphId: string, nodeId: string, principal: any, body: any) {
         await this.authorize(graphId,principal,true);
         const row=await this.operation(graphId,nodeId,body.operationId), op=row.value;
+        checkApprovalMode(op,body);
         if(op.action==='recover'||op.supersededBy||(await this.read(IacReviewService.index(graphId,nodeId)))?.value.operationId!==op.operationId)problem('This is not the current application deployment review. Recovery and replacement reviews require their own exact approval.','STALE_REVIEW',409);
         if((await this.progress().head(op.operationId))?.snapshot?.orchestrationFailure)problem('The deployment workflow stopped. Create a new review after resolving its reported failure.','STALE_REVIEW',409);
         if (!body.reviewDigest || body.reviewDigest!==op.reviewDigest) problem('Approve the exact review displayed in the editor. Refresh the review.','STALE_REVIEW',409);
@@ -272,7 +274,7 @@ export class IacReviewService {
         const current=await this.reviewInput(graphId,nodeId,principal,op.action);
         if (current.inputDigest!==op.inputDigest || current.policyDigest!==op.policyDigest || current.deploymentOperationId!==op.input.deploymentOperationId || !current.validation.ok) problem('The template, deployed stack, or deployment policy changed after this review. Create a new review.','STALE_REVIEW',409);
         if (op.plan.destructive && body.confirmDestructive!==true) problem('Confirm resource removal or replacement before applying this review.','APPROVAL_REQUIRED',409);
-        const next={...op,state:'apply-requested',updatedAt:this.now(),approval:{sub:principal.sub,at:this.now(),reviewDigest:op.reviewDigest},
+        const next={...op,state:'apply-requested',updatedAt:this.now(),approval:{sub:principal.sub,at:this.now(),reviewDigest:op.reviewDigest,mode:body.approvalMode||'manual'},
             history:[...op.history,{state:'apply-requested',at:this.now(),by:principal.sub}]};
         if (!await this.cas(IacReviewService.key(op.operationId),next,row.etag)) problem('The review changed. Refresh before approving.','CONFLICT',409);
         await this.observe(next);
@@ -308,7 +310,7 @@ export class IacReviewService {
         const row=await this.read(IacReviewService.key(op.operationId));
         if(!row) return;
         const value=row.value;
-        await this.progress().append(value,[{id:'state:'+value.state,source:'worker',state:value.state,phase:phaseFor(value.state),reason:value.reason,stackName:value.input.stack.name,at:value.updatedAt}]);
+        await this.progress().append(value,[{id:'state:'+value.state,source:'worker',state:value.state,...(value.state==='apply-requested'?{lifecycle:{approval:value.approval}}:{}),phase:phaseFor(value.state),reason:value.reason,stackName:value.input.stack.name,at:value.updatedAt}]);
     }
     private checkPrivateBuckets(input: any) {
         const doc=parseTemplate(input.text,input.format).doc;

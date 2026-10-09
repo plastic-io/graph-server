@@ -125,3 +125,16 @@ test('AWS policy matrix: stack A cannot mutate B, server resources, deployment r
  expect(canTag(b.namespace,['Description'])).toBe(false);
  expect(canTag(a.namespace,['GraphStack'])).toBe(false);
 });
+
+
+test('import preparation worker can create only its one stack with the assigned role and graph ownership tags',()=>{
+ const {guardrailTemplate}=require('../iac/guardrails');
+ const a=stackScope('g','a',policy),b=stackScope('g','b',policy),doc=guardrailTemplate(a,'platform-worker').Resources.WorkerRole.Properties.Policies[0].PolicyDocument;
+ const resource=s=>'arn:aws:cloudformation:us-west-1:230639770018:stack/'+s.namespace+'stack/id';
+ const context={'cloudformation:RoleArn':a.roleArn,'aws:RequestTag/GraphId':a.graphId,'aws:RequestTag/NodeId':a.nodeId,'aws:RequestTag/GraphStack':a.namespace};
+ expect(allowed(doc,'cloudformation:CreateStack',resource(a),context)).toBe(true);
+ expect(allowed(doc,'cloudformation:CreateStack',resource(b),context,true)).toBe(false);
+ expect(allowed(doc,'cloudformation:CreateStack','arn:aws:cloudformation:us-west-1:230639770018:stack/platform/id',context,true)).toBe(false);
+ for(const key of Object.keys(context)){expect(allowed(doc,'cloudformation:CreateStack',resource(a),{...context,[key]:'foreign'})).toBe(false);}
+ expect(allowed(doc,'iam:PutRolePolicy',a.workerRoleArn)).toBe(false);
+});

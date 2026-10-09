@@ -39,10 +39,12 @@ async function fixture(graphId='g',nodeId='stack',options={}) {
   if(method==='deleteStack'){st.StackStatus='DELETE_COMPLETE';st.resources=st.resources.map(r=>({...r,ResourceStatus:st.template.Resources[r.LogicalResourceId].DeletionPolicy==='Retain'||args.RetainResources?.includes(r.LogicalResourceId)?'DELETE_SKIPPED':'DELETE_COMPLETE'}));archived.set(st.StackId,st);stacks.delete(st.StackName);return {};}
   if(method==='describeChangeSet'){if(!changes.has(args.ChangeSetName))throw Object.assign(new Error(`ChangeSet [${args.ChangeSetName}] does not exist`),{code:'ChangeSetNotFound'});return changes.get(args.ChangeSetName);}
   if(method==='createChangeSet') {
-   const template=JSON.parse(args.TemplateBody);changes.set(args.ChangeSetName,{Status:'CREATE_COMPLETE',ExecutionStatus:'AVAILABLE',args,template});
-   stack(args.StackName,'REVIEW_IN_PROGRESS',template,args.ResourcesToImport.map(r=>({LogicalResourceId:r.LogicalResourceId,PhysicalResourceId:Object.values(r.ResourceIdentifier)[0],ResourceType:r.ResourceType,ResourceStatus:'IMPORT_PENDING'})));return {Id:args.ChangeSetName};
+   if(!st||st.RoleARN!==args.RoleARN||JSON.stringify(st.Tags)!==JSON.stringify(args.Tags))throw Object.assign(new Error('As part of the import operation, you cannot modify or add [RoleArn, Tags]'),{code:'ValidationError'});
+   const template=JSON.parse(args.TemplateBody);changes.set(args.ChangeSetName,{Status:'CREATE_COMPLETE',ExecutionStatus:'AVAILABLE',args,template,Changes:args.ResourcesToImport.map(r=>({ResourceChange:{Action:'Import',LogicalResourceId:r.LogicalResourceId,ResourceType:r.ResourceType}}))});
+   return {Id:args.ChangeSetName};
   }
-  if(method==='executeChangeSet'){const cs=changes.get(args.ChangeSetName);cs.ExecutionStatus='EXECUTE_COMPLETE';stacks.get(args.StackName).StackStatus='IMPORT_COMPLETE';return {};}
+  if(method==='executeChangeSet'){const cs=changes.get(args.ChangeSetName);cs.ExecutionStatus='EXECUTE_COMPLETE';st.StackStatus='IMPORT_COMPLETE';st.template=cs.template;st.resources=cs.args.ResourcesToImport.map(r=>({LogicalResourceId:r.LogicalResourceId,PhysicalResourceId:Object.values(r.ResourceIdentifier)[0],ResourceType:r.ResourceType,ResourceStatus:'IMPORT_COMPLETE'}));return {};}
+  if(method==='createStack'&&JSON.parse(args.TemplateBody).Resources.GraphRecoveryPlaceholder){if(st)throw new Error('Stack already exists');stack(args.StackName,'CREATE_COMPLETE',JSON.parse(args.TemplateBody),[]);return {};}
   if(method==='updateStack'||method==='createStack'){const template=JSON.parse(args.TemplateBody);installRoles();stack(args.StackName,method==='createStack'?'CREATE_COMPLETE':'UPDATE_COMPLETE',template,guardResources.map(r=>({...r,ResourceStatus:'CREATE_COMPLETE'})));return {};}
   if(method==='continueUpdateRollback'||method==='rollbackStack'){st.StackStatus='UPDATE_ROLLBACK_COMPLETE';return {};}
   throw new Error('Unexpected CloudFormation call '+method);

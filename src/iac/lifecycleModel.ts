@@ -3,7 +3,7 @@ import {stackScope} from './isolation';
 import {guardrailTemplate} from './guardrails';
 import {policyFromEnv,parseTemplate} from './validator';
 
-export const LIFECYCLE_VERSION='1.1.0';
+export const LIFECYCLE_VERSION='1.2.0';
 export const terminalStates=new Set(['succeeded','failed','rolled-back','rollback-failed','cancelled','expired','stale','no-changes','destroyed','recovered','recovery-blocked','inspected']);
 export function canonical(value:any):string {
  if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';
@@ -24,12 +24,15 @@ export function scopeFor(op:any,policy=policyFromEnv()) {
 export function blocker(code:string,kind:string,message:string,extra:any={}) {return {code,kind,message,...extra};}
 export const dataType=(t:string)=>['AWS::S3::Bucket','AWS::DynamoDB::Table','AWS::SQS::Queue','AWS::SNS::Topic','AWS::Logs::LogGroup'].includes(t);
 export const importIdentifiers:any={'AWS::IAM::ManagedPolicy':'PolicyArn','AWS::IAM::Role':'RoleName','AWS::S3::Bucket':'BucketName','AWS::DynamoDB::Table':'TableName','AWS::SQS::Queue':'QueueUrl','AWS::SNS::Topic':'TopicArn','AWS::Logs::LogGroup':'LogGroupName'};
+// Establish the stack's role and tags before IMPORT, which cannot add either.
+// The false condition creates no resource and requires no additional AWS authority.
+export const importPreparationTemplate=()=>({AWSTemplateFormatVersion:'2010-09-09',Conditions:{GraphRecoveryEmpty:{'Fn::Equals':['empty','never']}},Resources:{GraphRecoveryPlaceholder:{Type:'AWS::CloudFormation::WaitConditionHandle',Condition:'GraphRecoveryEmpty',DeletionPolicy:'Retain',UpdateReplacePolicy:'Retain'}}});
 export const retained=(r:any)=>r.status==='DELETE_SKIPPED'||r.deletionPolicy==='Retain'||r.deletionPolicy==='RetainExceptOnCreate';
 
 /** Stable reviewed content excludes observation timestamps, error prose, and transient request IDs. */
 export function inspectionFingerprint(i:any) {
- const stack=(s:any)=>({name:s.name,stackId:s.stackId||null,status:s.status,roleArn:s.roleArn||null,ownership:s.ownership,templateDigest:s.templateDigest,
-  resources:(s.resources||[]).map((r:any)=>({logicalId:r.logicalId,physicalId:r.physicalId,physicalIdentity:r.physicalIdentity,resourceType:r.resourceType,status:r.status,deletionPolicy:r.deletionPolicy,exists:r.exists,definitionDigest:r.definitionDigest})).sort((a,b)=>a.logicalId.localeCompare(b.logicalId))});
+ const stack=(s:any)=>({name:s.name,stackId:s.stackId||null,status:s.status,roleArn:s.roleArn||null,ownership:s.ownership,templateDigest:s.templateDigest,lastStackId:s.lastStackId,importPreparation:s.importPreparation,
+  resources:(s.resources||[]).map((r:any)=>({logicalId:r.logicalId,physicalId:r.physicalId,physicalIdentity:r.physicalIdentity,resourceType:r.resourceType,status:r.status,deletionPolicy:r.deletionPolicy,exists:r.exists,definitionDigest:r.definitionDigest,orphaned:r.orphaned})).sort((a,b)=>a.logicalId.localeCompare(b.logicalId))});
  return digest({version:LIFECYCLE_VERSION,scope:i.scope,application:stack(i.application),guardrail:stack(i.guardrail),
   roles:i.roles?.map((r:any)=>({arn:r.arn,exists:r.exists,policyDigest:r.policyDigest,trustDigest:r.trustDigest,boundary:r.boundary,matches:r.matches})),
   boundary:i.boundary,approvedGuardrailDigest:i.approvedGuardrailDigest});
@@ -46,7 +49,7 @@ export function recoveryPlan(op:any,inspection:any,options:any={}) {
   if(stack.status==='UNKNOWN'||/IN_PROGRESS$/.test(stack.status)&&stack.status!=='REVIEW_IN_PROGRESS') {
    prerequisites.push(blocker('STACK_BUSY','busy','Wait for the current CloudFormation operation to finish.',{component:target,resource:stack.stackId||stack.name}));continue;
   }
-  let rebuild=false;
+  let rebuild=stack.importPreparation===true;
   if(['ROLLBACK_FAILED','ROLLBACK_COMPLETE','CREATE_FAILED','DELETE_FAILED','REVIEW_IN_PROGRESS'].includes(stack.status)) {
    const unsafe=resources.filter((r:any)=>dataType(r.resourceType)&&r.physicalId&&r.exists!==false&&r.status!=='DELETE_COMPLETE'&&!retained(r));
    // RetainResources is valid only in DELETE_FAILED. Never silently delete data in a failed create.
@@ -83,7 +86,7 @@ export function recoveryPlan(op:any,inspection:any,options:any={}) {
      if(k==='Ref'&&!String(x).startsWith('AWS::')&&!ids.has(x)||k==='Fn::GetAtt'&&!ids.has(Array.isArray(x)?x[0]:String(x).split('.')[0]))prerequisites.push(blocker('RETAINED_RESOURCE_DEPENDENCY','template','Retained import requires a resource absent from the import set. Preserve the resource and request a platform import review.',{component:target}));
      if(k==='Fn::Sub'&&typeof x==='string'&&[...x.matchAll(/\$\{([^}!]+)\}/g)].some(m=>!m[1].startsWith('AWS::')&&!ids.has(m[1].split('.')[0])))prerequisites.push(blocker('RETAINED_RESOURCE_DEPENDENCY','template','Retained import has an unresolved resource reference.',{component:target}));check(x);
     }};imports.forEach(r=>check(r.definition));
-    action('import-retained',target,{resources:imports,dataLoss:[],reason:'Reattach retained resources to the same owned stack; resolve name collisions without deleting data.'});
+    action('import-retained',target,{resources:imports,dataLoss:[],preparation:{kind:'owned-empty-stack',templateDigest:digest(importPreparationTemplate()),createsResources:false,roleArn:guardrail?process.env.IAC_GUARDRAIL_ROLE_ARN:inspection.scope.roleArn},reason:'Establish an empty owned stack with its assigned service role and ownership tags, then import the retained resources without changing stack settings. No application resource is created or deleted.'});
    }
   }
   if(guardrail&&(rebuild||!inspection.guardrailsMatch||stack.status==='UPDATE_ROLLBACK_FAILED'||stack.status==='UPDATE_FAILED'))action('reconcile-guardrails',target,{definitionDigest:inspection.approvedGuardrailDigest,dataLoss:[],resources:(inspection.roles||[]).filter((r:any)=>r.exists===false).map((r:any)=>({logicalId:r.logicalId,physicalId:r.arn,outcome:'Create from approved platform definition'})),reason:'Restore only the platform-approved definition for this graph/node namespace. Uses the platform guardrail service role; absent per-stack roles are created before any application role is assumed.'});

@@ -1522,10 +1522,10 @@ resources:
                   Action: [iam:GetRole, iam:GetRolePolicy, iam:DeleteRolePolicy]
                   Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/gapp-*'
                 - Effect: Allow
-                  Action: [iam:CreateRole, iam:GetRole, iam:DeleteRole, iam:PutRolePolicy, iam:GetRolePolicy, iam:DeleteRolePolicy, iam:ListRolePolicies, iam:TagRole, iam:UntagRole, iam:UpdateAssumeRolePolicy]
+                  Action: [iam:CreateRole, iam:GetRole, iam:DeleteRole, iam:PutRolePolicy, iam:GetRolePolicy, iam:DeleteRolePolicy, iam:ListRolePolicies, iam:ListAttachedRolePolicies, iam:TagRole, iam:UntagRole, iam:UpdateAssumeRolePolicy]
                   Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/graph-deploy/gapp-*'
                 - Effect: Allow
-                  Action: [iam:CreatePolicy, iam:GetPolicy, iam:GetPolicyVersion, iam:ListPolicyVersions, iam:CreatePolicyVersion, iam:DeletePolicyVersion, iam:DeletePolicy, iam:TagPolicy, iam:UntagPolicy, iam:ListPolicyTags]
+                  Action: [iam:CreatePolicy, iam:GetPolicy, iam:GetPolicyVersion, iam:ListEntitiesForPolicy, iam:ListPolicyVersions, iam:CreatePolicyVersion, iam:DeletePolicyVersion, iam:DeletePolicy, iam:TagPolicy, iam:UntagPolicy, iam:ListPolicyTags]
                   Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/graph-guardrails/gapp-*'
     IacExecutionRole:
       Type: AWS::IAM::Role

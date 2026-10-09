@@ -136,3 +136,59 @@ test('a fresh recovery preserves the historical error through legacy blocked ope
  const inspected=await f.reviews.lifecycle.inspect('g','stack',human);
  expect(inspected.historicalFailureOperationId).toBe(f.source.operationId);expect(inspected.policyAnalysis.checks.every(c=>c.result==='allowed-by-document')).toBe(true);
 });
+
+test('the guardrail service role covers AWS provider read permissions for retained imports, scoped to guardrail resources',async()=>{
+ const contracts=require('../__testHelpers__/guardrailProviderContracts.json'),{policyCoverage}=require('../iac/lifecycleAws'),{importIdentifiers}=require('../iac/lifecycleModel');
+ const f=await fixture(),policy=(await f.clients.iam('getRolePolicy',{RoleName:'platform-guardrails'})).PolicyDocument;
+ for(const [type,contract]of Object.entries(contracts.resources)){
+  expect(importIdentifiers[type]).toBe(contract.importIdentifier);
+  for(const action of contract.readPermissions){
+   const resource=type==='AWS::IAM::Role'?f.s.roleArn:f.s.boundaryArn;
+   expect(policyCoverage(policy,action,resource)).toBe('allowed-by-document');
+   expect(policyCoverage(policy,action,type==='AWS::IAM::Role'?'arn:aws:iam::230639770018:role/platform-worker':'arn:aws:iam::230639770018:policy/shared-platform')).toBe('not-granted');
+  }
+ }
+ expect(policyCoverage(policy,'iam:DeleteRole','arn:aws:iam::230639770018:role/'+f.s.namespace+'worker')).toBe('not-granted');
+ const prior={...policy,Statement:policy.Statement.map(s=>({...s,Action:[].concat(s.Action).filter(a=>!['iam:ListEntitiesForPolicy','iam:ListAttachedRolePolicies'].includes(a))}))};
+ const original=f.clients.iam.getMockImplementation();f.clients.iam.mockImplementation((m,a)=>m==='getRolePolicy'&&a.RoleName==='platform-guardrails'?Promise.resolve({PolicyDocument:prior}):original(m,a));
+ const op=await f.plan();expect(op.state).toBe('recovery-blocked');
+ expect(op.recoveryPlan.prerequisites.filter(p=>p.code==='PLATFORM_PERMISSION_REQUIRED').map(p=>p.action)).toEqual(expect.arrayContaining(['iam:ListEntitiesForPolicy','iam:ListAttachedRolePolicies']));
+});
+
+
+test('retained import establishes role and tags in an empty owned stack before IMPORT, with no arbitrary resource actions',async()=>{
+ const f=await fixture(),result=await f.recover();expect(result.state).toBe('recovered');
+ const prep=f.calls.findIndex(c=>c.method==='createStack'),imp=f.calls.findIndex(c=>c.method==='createChangeSet');
+ expect(prep).toBeGreaterThan(-1);expect(imp).toBeGreaterThan(prep);
+ const {importPreparationTemplate}=require('../iac/lifecycleModel');
+ expect(JSON.parse(f.calls[prep].args.TemplateBody)).toEqual(importPreparationTemplate());
+ expect(f.calls[prep].args.RoleARN).toBe(process.env.IAC_GUARDRAIL_ROLE_ARN);
+ expect(f.calls[imp].args.Tags).toEqual(f.calls[prep].args.Tags);
+ expect(f.clients.application).not.toHaveBeenCalled();expect(f.policies.has(f.s.boundaryArn)).toBe(true);
+});
+
+test('interrupted empty-stack preparation preserves archived retained ownership for a fresh approved recovery',async()=>{
+ const f=await fixture(),op=await f.plan();await f.approve(op);
+ for(let i=0;i<10;i++){await f.reviews.lifecycle.step(op.operationId);if(f.calls.some(c=>c.method==='createStack'))break;}
+ const stored=await read(f.store,operationKey(op.operationId));stored.state='failed';stored.recoveryLease=null;await save(f.store,operationKey(op.operationId),stored);
+ const fresh=await f.reviews.lifecycle.plan('g','stack',human,{operationId:op.operationId,idempotencyKey:'resume-import'});
+ expect(fresh.state).toBe('recovery-ready');expect(fresh.inspection.guardrail.importPreparation).toBe(true);
+ expect(fresh.recoveryPlan.actions[0]).toMatchObject({kind:'import-retained',resources:[{logicalId:'RuntimeBoundary',physicalId:f.s.boundaryArn}]});
+ expect(fresh.recoveryPlan.actions.some(a=>a.kind==='delete-stack')).toBe(false);
+ await f.approve(fresh);for(let i=0;i<20;i++)if((await f.reviews.lifecycle.step(fresh.operationId)).done)break;
+ expect((await f.reviews.current('g','stack',human,undefined,false)).state).toBe('recovered');
+ expect(f.calls.filter(c=>c.method==='createStack')).toHaveLength(1);
+});
+
+test('a retained import refuses a changeset with an unreviewed IAM or destructive action',async()=>{
+ const f=await fixture(),original=f.clients.cloud.getMockImplementation();
+ f.clients.cloud.mockImplementation(async(m,a)=>{const result=await original(m,a);if(m==='describeChangeSet')result.Changes.push({ResourceChange:{Action:'Remove',LogicalResourceId:'UnrelatedRole',ResourceType:'AWS::IAM::Role'}});return result;});
+ const result=await f.recover();expect(result.state).toBe('failed');expect(result.originalError.code).toBe('STALE_RECOVERY');
+ expect(f.calls.some(c=>c.method==='executeChangeSet')).toBe(false);expect(f.policies.has(f.s.boundaryArn)).toBe(true);
+});
+
+
+test('an import worker failure directs recovery inspection, not an application template edit',()=>{
+ const {recoveryFor}=require('../iac/diagnosticSafety');
+ expect(recoveryFor({action:'recover'},{status:'FAILED',error:{code:'ValidationError',message:'As part of the import operation, you cannot modify or add [RoleArn, Tags]'}})).toMatchObject({category:'recovery-review',retryable:false});
+});

@@ -32,8 +32,8 @@ test('Chess regression: current permission checks distinguish old IAM failures, 
  await expect(app.invoke({graphId:g,nodeId:'backend',stackNodeId:n,logicalFunctionId:'Backend',value:{action:'health'},principal:human,correlationId:'request-1',executionId:'execution-1'})).rejects.toThrow('health invariant');
  const observed=await new ObservationJournal(f.store).read(g,{filter:{operationId:review.operationId}});
  expect(observed.observations.some(e=>e.kind==='deployment.runtime-invocation'&&e.requestId==='abcde000-0000-0000-0000-000000000000'&&e.correlationId==='request-1'&&e.lifecycle.bridgeRequestId==='bridge')).toBe(true);
- const page=await f.reviews.events(g,n,human,{operationId:op.operationId,limit:100});
- const watched=await new ObservationJournal(f.store).read(g,{filter:{operationId:op.operationId}});
+ const page={events:[]};let cursor;do{const part=await f.reviews.events(g,n,human,{operationId:op.operationId,limit:100,cursor});page.events.push(...part.events);cursor=part.hasMore?part.nextCursor:null;}while(cursor);
+ const watched={observations:[]};let next;do{const part=await new ObservationJournal(f.store).read(g,{filter:{operationId:op.operationId},limit:100,cursor:next});watched.observations.push(...part.observations);next=part.hasMore?part.nextCursor:null;}while(next);
  expect(page.events.map(e=>e.id)).toEqual(watched.observations.map(e=>e.id));
  expect(watched.observations).toEqual(f.sent.filter(e=>e.operationId===op.operationId));
  expect((await f.reviews.operations(g,n,human)).operations.map(o=>o.operationId)).toEqual([review.operationId,op.operationId,f.source.operationId]);
@@ -119,7 +119,7 @@ test.each(['ROLLBACK_FAILED','DELETE_FAILED'])('application %s preserves retaine
  expect(deletion.args.RetainResources).toEqual(status==='DELETE_FAILED'?['Records']:undefined);
  const imported=f.calls.filter(c=>c.method==='createChangeSet'&&c.args.StackName===f.s.namespace+'stack')[0];
  expect(imported.args.ChangeSetType).toBe('IMPORT');expect(imported.args.ResourcesToImport).toHaveLength(1);
- expect(Object.keys(JSON.parse(imported.args.TemplateBody).Resources)).toEqual(['Records']);
+ expect(Object.keys(JSON.parse(imported.args.TemplateBody).Resources)).toEqual(['GraphRecoveryPlaceholder','Records']);
  expect(f.deployCloud.execute).not.toHaveBeenCalled();
 });
 
