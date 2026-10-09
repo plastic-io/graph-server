@@ -1,6 +1,8 @@
 # Application-role deployment permissions — current platform review
 
-Updated October 9, 2026. Server **2.5.2** follow-up, lifecycle contract **1.3.0**.
+Updated October 9, 2026. Server **2.5.2** deployed at `fcb0326`, lifecycle contract
+**1.3.0**. Live retained-role creation verification completed through MCP and
+human graph approvals; no application stack or stored data was deleted.
 This replaces the previous current review; cancellation/preservation release
 history remains in commit `040f2c3`. Jolly Fish application code and its template,
 Chess, and GLM-5/Nova integration are outside this platform change.
@@ -116,11 +118,12 @@ A platform release changes the **definition for future guardrails**. It does not
 rewrite Jolly Fish's installed execution policy or authorize recovery/deployment.
 Existing guardrails require a fresh, exact-digest human recovery approval.
 
-After release, inspect Jolly Fish again and prepare a new recovery assessment
-from the current operation with `preservation:"strict"`. That node already has
-strict preservation, which is inherited if omitted. The application stack is
-`ROLLBACK_FAILED`: ordinary CloudFormation updates are unsupported in this state.
-The current generic strict recovery path must remain blocked, with **no stack
+The post-release recovery assessment is recorded below. A fresh MCP inspection
+at **16:05:05Z** confirms Jolly Fish remains `ROLLBACK_FAILED`, its bucket remains
+`DELETE_SKIPPED`, and IAM still reports the role absent. The installed per-stack
+guardrail policy has not been reconciled. Ordinary CloudFormation updates are
+unsupported in this failed-create state. The strict recovery path remains
+blocked, with **no stack
 deletion, replacement, import, bucket emptying or destructive fallback**.
 
 If that state persists, leave the original stack and retained bucket intact.
@@ -136,7 +139,7 @@ References: [IAM GetRole](https://docs.aws.amazon.com/IAM/latest/APIReference/AP
 
 ## Verification and release state
 
-- **801 tests / 50 suites pass**, including policy-deny precedence, pre-creation
+- **819 tests / 51 suites pass**, including policy-deny precedence, pre-creation
   existence probes, legitimate path-scoped lifecycle operations, foreign paths,
   cross-graph resources, boundary enforcement, PassRole, absent versus denied
   physical-role inspection, ownership mismatches, cancellation and preservation.
@@ -144,7 +147,7 @@ References: [IAM GetRole](https://docs.aws.amazon.com/IAM/latest/APIReference/AP
   Cognito production Lambda bundles build.
 - Policy matrix and lifecycle fixtures are **local/simulated evidence**. AWS
   CloudTrail/IAM reads and IAM simulation above are separate evidence.
-- Platform release **completed**: commit `b6dbb00b7ebb3a3a5a7e8483466366ee13d9c727`
+- Initial IAM platform release **completed**: commit `b6dbb00b7ebb3a3a5a7e8483466366ee13d9c727`
   is pushed and deployed. Platform stack `pio-auth-test-230639770018` reached
   `UPDATE_COMPLETE`. The reviewed diff changed 75 Lambda code references and the
   API deployment snapshot; no shared IAM, environment or persistent-resource
@@ -160,9 +163,18 @@ References: [IAM GetRole](https://docs.aws.amazon.com/IAM/latest/APIReference/AP
   guardrail reconciliation and operation release, with no destructive actions.
   Nothing was approved or executed. Its review is durable in `iac.events` and
   `observations.watch` with the same event ID and digest.
-- Disposable graph content was accepted after the overnight pause. Live
-  deployment verification is tracked below; application deployment approval
-  and actual CloudFormation role creation are still pending.
+- Follow-up **`fcb03260f5c87f6e2ec69f9cfc4695a411f664cd` is pushed and deployed**.
+  Platform stack reached `UPDATE_COMPLETE`; its update began at **15:57:47Z**.
+  The reviewed diff added only the scoped `DescribeChangeSet` read below,
+  changed 75 Lambda code references and replaced the API deployment snapshot.
+  Verification at **16:01:42Z** passed eight function hashes, 72 protected REST
+  methods, WebSocket authentication, 30 anonymous/invalid-token rejection
+  probes, private worker checks, and the new installed read grant. Standard
+  discovery/authentication smoke passed; editor assets/configuration stayed
+  unchanged. The release used the established reviewed, pinned package process
+  with the authorized platform profile; it was not a GitHub Actions run.
+- Disposable graph acceptance, manual exact-digest deployment approval, and
+  actual CloudFormation role creation **completed**. Details follow.
 - Jolly Fish: inspection only; no recovery or application deployment approved or
   executed by this change. Successful runtime operation is not claimed.
 
@@ -183,8 +195,9 @@ Disposable graph `e76298c1-3d45-47ed-be95-19e1104ebab2`:
   `preservation:"strict"` created operation **`01M4GNEFBDM5T3NCDDBRF490ZN`**.
 - Its guardrail stack reached `CREATE_COMPLETE` at **15:45:54Z**. MCP inspection
   verified matching installed roles/boundary and actual successful worker-role
-  assumption. The application change set was created; no application role has
-  been deployed and no deployment approval has been given. Auto-approve is off.
+  assumption. At that point only the application change set existed; the
+  application role and deployment approval were still pending. Auto-approve
+  stayed off throughout this test.
 - At **15:46:08Z**, the next planning step rejected `OWNERSHIP_UNVERIFIED`:
   CloudFormation's empty `REVIEW_IN_PROGRESS` stack had the expected ARN and
   service role but no stack tags. Ownership tags reside on the CREATE change
@@ -209,16 +222,49 @@ roles, boundaries and role-passing grants are unchanged.
 
 **819 tests / 51 suites pass**, including 18 new empty-review ownership and
 preservation cases. TypeScript, five release configuration checks, and both
-Auth0/Cognito Lambda bundles pass. Live application role creation and cleanup
-remain unverified; cleanup has local policy/fixture coverage only.
+Auth0/Cognito Lambda bundles pass. Deletion/cleanup has local policy/fixture
+coverage only; it was not executed in AWS under the preservation restriction.
 
 References: [CREATE change-set empty stack behavior](https://docs.aws.amazon.com/AWSCloudFormation/latest/APIReference/API_CreateChangeSet.html),
 [change-set tags before execution](https://docs.aws.amazon.com/AWSCloudFormation/latest/APIReference/API_DescribeChangeSet.html).
 
-Resume after the platform follow-up release by monitoring the operation through
-MCP, inspecting current readiness, and obtaining the human's exact-digest
-deployment approval in the graph. Do not click approval as the human or use AWS
-credentials to deploy the fixture.
+## Live outcome and evidence limits
+
+The same review passed the new ownership checks without deleting or recreating
+its stack record. It reached `awaiting-review` at **16:00:28Z**. The user approved
+it manually in the graph at **16:02:25Z**, digest
+`758516fad51e8215d0cba9f723c204561127bbf8058eb1427820aca1eb32badc`.
+
+- `ProbeRole` reached `CREATE_COMPLETE` at **16:02:55Z**; its stack completed at
+  **16:02:58Z**. MCP reported `succeeded` at **16:03:03Z** and orchestration
+  `SUCCEEDED` at **16:03:04Z**.
+- `iac.inspect` at **16:03:58Z** verified actual role ARN
+  `arn:aws:iam::230639770018:role/graph-app/gapp-c2f4ae64f32eb41ea695c9f1-probe`,
+  assigned boundary, stack ownership, matching guardrails, successful worker
+  assumption, and **no current blockers**. The reviewed template includes the
+  namespace-limited inline policy. Successful CloudFormation creation is live
+  execution evidence; its separate policy-document fields remain analysis,
+  including `conditional-or-unknown` for conditional grants.
+- The CF node and review modal displayed **Deployment complete**, **Approved**,
+  and **Execution: Complete**, with the expected role ARN output.
+- `iac.events` recovered durable history in two pages. Resuming
+  `observations.watch` from its saved cursor recovered approval and terminal
+  events. All **six** approval/terminal events had identical IDs, digests and
+  payloads (excluding the watch arrival cursor). Duplicate deliveries were
+  deduplicated by event ID. Earlier ownership exceptions remain historical;
+  they are not current permission failures.
+- This is a role deployment fixture, with no application code or runtime. It
+  establishes actual role creation and inline-policy provisioning through the
+  constrained CloudFormation execution role. It does not establish application
+  runtime readiness, multiplayer behavior, AWS cleanup success, or live
+  cross-graph denial. Negative isolation and cleanup coverage is local/simulated.
+- Jolly Fish assessment `01M4FSY6WXT10FX54VJB9J19HB` remains unapproved and
+  `recovery-blocked`, with the unchanged strict digest above. The exact safe
+  next step is to **leave the failed stack and retained bucket intact**. A
+  platform administrator can request AWS Support assessment of non-destructive
+  repair. A separately approved new namespace and retained-data migration
+  design is an alternative, not an automatic or currently implemented adoption
+  path. Jolly Fish application shipping belongs to its application agent.
 
 - Do not execute the Jolly Fish recovery assessment or change its application.
   No stack deletion or data removal is authorized, including test stacks.
@@ -228,3 +274,11 @@ Release package, diff, smoke results, verification and scoped MCP evidence:
 simulation: `/private/tmp/jolly-platform-incident-evidence.json` and
 `/private/tmp/jolly-policy-simulation.json`. These are verification artifacts;
 the source and this durable review are in the repository.
+
+Follow-up package and final verification:
+`/private/tmp/graph-review-stack-release-fcb0326/`, including
+`package-review.json`, `platform-template-diff.json`, `verification.json`,
+`fixture-before-release.json`, and `fixture-live-verification.json`. Full test
+and provider-bundle logs are `/private/tmp/graph-review-stack-tests.log` and
+`/private/tmp/graph-review-stack-auth-builds.log`. No release process remains
+running. Disposable stacks/roles are retained; no cleanup is authorized.
