@@ -184,9 +184,35 @@ historically approved delete/import attempt is not authorization to repeat it.
 The current task performs no stack or data deletion. Its old destructive
 instructions are retired by this artifact.
 
-Platform release verification is pending. Live mutation acceptance under the new
-strict constraint would require a fresh disposable graph review and its exact
-human approval. The current MCP connection caches an older tool catalogue;
-reconnect/refresh it after release to discover `iac.cancel` and the new constraint
-arguments. No AWS CLI, direct authenticated HTTP or browser-token fallback will
-be used to run application acceptance. No Chess deployment readiness is claimed.
+Released server commit **`156fbfb7cab51fd85f3c14e2b1de81eca31d2d2c`** to platform
+stack `pio-auth-test-230639770018`, account **230639770018**, region **us-west-1**.
+The editor remains **`fbad254cfea0d5b41422841f995203f5bbb7eed1`**; only its public
+release manifest was updated. CloudFormation reached `UPDATE_COMPLETE`.
+The packaged template changed 75 Lambda code references and an ephemeral API
+deployment snapshot, with **no IAM changes, function-environment changes, stack
+deletions or persistent-resource removals**. CloudFormation lint passed. The
+production dependency audit reported zero advisories.
+
+Verification at **2026-10-09T06:15:28.748Z** matched eight deployed Lambda package
+hashes, the editor index hash and manifest. All **72 protected REST methods** and
+the WebSocket authorizer remained enabled. **30 anonymous/invalid-token requests**,
+including the discard route, were rejected. Private deployment/repair/application
+workers still have no public function URLs. Platform-admin configuration was
+preserved, not expanded. The deployment smoke check also passed OAuth discovery,
+provider selection and unauthenticated REST/MCP/WebSocket rejection.
+
+Post-release **read-only MCP** inspection at **2026-10-09T06:15:32.719Z** confirmed
+that the referenced recovery is still unapproved, its application is still
+`NOT_CREATED`, and the guardrail remains `ROLLBACK_FAILED` with both roles absent.
+The live status now advertises `iac.cancel` with `allowed:true` and no approval
+requirement. All **30** current document checks allowed their checked actions;
+actual role assumption remains untested because the role is absent. The operation
+was not cancelled or otherwise acted on.
+
+Live mutation acceptance under the new strict constraint still requires a fresh
+disposable graph review and its exact human approval. The current MCP connection
+caches an older callable tool catalogue; reconnect/refresh it to discover
+`iac.cancel` and the new constraint arguments. The live cancellation/strict
+execution cycle is therefore **not claimed as verified**. No AWS CLI, direct
+authenticated HTTP or browser-token fallback was used to run application
+acceptance. No Chess deployment readiness is claimed.
