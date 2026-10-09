@@ -255,9 +255,11 @@ export class IacReviewService {
                 lock=await this.read(lockKey);
             }
         }
+        let reviewStackProof:any;
         if(this.deps.lifecycle?.inspect&&isolationEnabled()){
             const inspected=await this.lifecycle.inspect(graphId,nodeId,principal,{preservation});
             if(!inspected.canReview)throw Object.assign(new Error('Current AWS readiness blocks deployment planning. No deployment was started. Read the returned prerequisites or iac.inspect.'),{code:inspected.blockers.some(b=>b.kind==='preservation')?'PRESERVATION_BLOCKED':'RECOVERY_REQUIRED',status:409,problems:inspected.blockers});
+            reviewStackProof=inspected.application?.reviewStackProof;
         }
         // State limitations take precedence over stricter content requirements.
         // Both checks precede operation startup and preparatory AWS mutations.
@@ -266,7 +268,7 @@ export class IacReviewService {
         const record:any={operationId:id,graphId,nodeId,input,policyDigest:input.policyDigest,inputDigest:input.inputDigest,
             revisionId:await this.deps.revision?.(graphId)||'live',previousOperationId:existingIndex?.value.operationId||null,
             state:'planning',createdAt:now,updatedAt:now,expiresAt:now+3600000,by:{sub:principal.sub,kind:principal.kind},
-            action,...(preservation?{preservation}:{}),...(retryOf?{retryOf}:{}),changeSetName:'review-'+(input.isolation?.namespace||'')+id,history:[{state:'planning',at:now}]};
+            action,...(preservation?{preservation}:{}),...(retryOf?{retryOf}:{}),...(reviewStackProof?{reviewStackProof}:{}),changeSetName:'review-'+(input.isolation?.namespace||'')+id,history:[{state:'planning',at:now}]};
         await this.cas(IacReviewService.key(id),record,null);
         if (!await this.cas(lockKey,{operationId:id},lock?.etag || null)) problem('Another review started for this stack. Refresh and try again.','CONFLICT',409);
         const indexKey=IacReviewService.index(graphId,nodeId), index=await this.read(indexKey);

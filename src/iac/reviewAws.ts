@@ -19,7 +19,7 @@ export function reviewCloud(region:string,legacyRoleArn:string):ReviewCloud {
   async prepare(op){
    if(strict(op)&&!op.input.isolation)refusePreservation([{code:'PRESERVATION_ISOLATION_REQUIRED',kind:'preservation',message:'Strict deployment requires assigned stack isolation.'}]);
    if(strict(op))refusePreservation(preservationTemplateProblems(op.input));
-   return op.input.isolation?guardrails.ensure(op.input.isolation,op.preservation):true;
+   return op.input.isolation?guardrails.ensure(op.input.isolation,op.preservation,op):true;
   },
   async template(op){const answer=await(await client(op)).send(new GetTemplateCommand({StackName:op.input.stack.name,TemplateStage:'Original'}));return parseTemplate(answer.TemplateBody,'yaml').doc;},
   async stack(name,op){

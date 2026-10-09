@@ -148,7 +148,7 @@ export class IacLifecycleService {
   const plan=recoveryPlan(source,inspection,{...options,preservation}),id=ulid(),now=this.now(),historical=await this.historicalFailure(source);
   const op:any={operationId:id,graphId:g,nodeId:n,input:source.input,inputDigest:source.inputDigest,policyDigest:source.policyDigest,revisionId:source.revisionId,
    previousOperationId:source.operationId,sourceOperationId:source.operationId,requestDigest,action:'recover',state:plan.prerequisites.length?'recovery-blocked':'recovery-ready',
-   recoveryPlan:plan,inspection,...historical,...(preservation?{preservation}:{}),
+   recoveryPlan:plan,inspection,...historical,...(preservation?{preservation}:{}),...(inspection.application?.reviewStackProof?{reviewStackProof:inspection.application.reviewStackProof}:{}),
    createdAt:now,updatedAt:now,expiresAt:now+900000,by:{sub:p.sub,kind:p.kind},history:[],recoveryIndex:0};
   await this.cas(operationKey(id),op,null);
   if(!await this.cas(lockKey(source.input.stack),{operationId:id},fence?.etag||null)) {

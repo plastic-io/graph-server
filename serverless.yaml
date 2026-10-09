@@ -1627,6 +1627,11 @@ resources:
                     StringEquals: {iam:PassedToService: cloudformation.amazonaws.com}
                 # Read-only inspection and logs are selected from the stored graph operation.
                 - Effect: Allow
+                  Action: cloudformation:DescribeChangeSet
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/gapp-*/*'
+                    - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/review-gapp-*/*'
+                - Effect: Allow
                   Action: [cloudformation:DescribeStacks, cloudformation:GetTemplate, cloudformation:ListStackResources]
                   Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/gapp-*/*'
                 - Effect: Allow

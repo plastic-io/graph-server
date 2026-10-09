@@ -34,7 +34,7 @@ export const retained=(r:any)=>r.status==='DELETE_SKIPPED'||r.deletionPolicy==='
 
 /** Stable reviewed content excludes observation timestamps, error prose, and transient request IDs. */
 export function inspectionFingerprint(i:any) {
- const stack=(s:any)=>({name:s.name,stackId:s.stackId||null,status:s.status,roleArn:s.roleArn||null,ownership:s.ownership,templateDigest:s.templateDigest,lastStackId:s.lastStackId,importPreparation:s.importPreparation,
+ const stack=(s:any)=>({name:s.name,stackId:s.stackId||null,status:s.status,roleArn:s.roleArn||null,ownership:s.ownership,templateDigest:s.templateDigest,lastStackId:s.lastStackId,importPreparation:s.importPreparation,reviewStackProof:s.reviewStackProof,
   resources:(s.resources||[]).map((r:any)=>({logicalId:r.logicalId,physicalId:r.physicalId,physicalIdentity:r.physicalIdentity,resourceType:r.resourceType,status:r.status,deletionPolicy:r.deletionPolicy,exists:r.exists,definitionDigest:r.definitionDigest,orphaned:r.orphaned})).sort((a,b)=>a.logicalId.localeCompare(b.logicalId))});
  return digest({version:LIFECYCLE_VERSION,scope:i.scope,application:stack(i.application),guardrail:stack(i.guardrail),
   roles:i.roles?.map((r:any)=>({arn:r.arn,exists:r.exists,policyDigest:r.policyDigest,trustDigest:r.trustDigest,boundary:r.boundary,matches:r.matches})),
@@ -54,6 +54,9 @@ export function recoveryPlan(op:any,inspection:any,options:any={}) {
   const stack=inspection[target],resources=stack.resources||[],guardrail=target==='guardrail';
   if(preservationBlockers.some(p=>p.component===target))continue;
   if(stack.ownership!=='verified'&&stack.status!=='NOT_CREATED')continue;
+  // CREATE change sets have an empty stack record, not a failed deployment.
+  // A verified record can receive a fresh review without deletion or recovery.
+  if(!guardrail&&stack.status==='REVIEW_IN_PROGRESS'&&stack.reviewStackProof&&!resources.length)continue;
   if(stack.status==='UNKNOWN'||/IN_PROGRESS$/.test(stack.status)&&stack.status!=='REVIEW_IN_PROGRESS') {
    prerequisites.push(blocker('STACK_BUSY','busy','Wait for the current CloudFormation operation to finish.',{component:target,resource:stack.stackId||stack.name}));continue;
   }

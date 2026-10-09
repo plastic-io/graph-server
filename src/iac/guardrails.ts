@@ -1,10 +1,11 @@
-import {CloudFormationClient,CreateStackCommand,DescribeStacksCommand,GetTemplateCommand} from '@aws-sdk/client-cloudformation';
+import {CloudFormationClient,CreateStackCommand,DescribeStacksCommand,GetTemplateCommand,DescribeChangeSetCommand,ListStackResourcesCommand} from '@aws-sdk/client-cloudformation';
 import {STS} from 'aws-sdk';
 import {StackScope,executionPolicy,runtimeBoundary} from './isolation';
 import {canonical} from './lifecycleModel';
 import {parseTemplate} from './validator';
 import {awsResourceAbsent} from './awsErrors';
 import {Preservation,preservationMode,preservationStateProblems,refusePreservation} from './preservation';
+import {verifyReviewStack} from './reviewStack';
 /** Only the trusted platform builds this template. Graph content cannot supply any part of it. */
 export function guardrailTemplate(s:StackScope,workerArn:string){
  const workload=`arn:aws:cloudformation:${s.region}:${s.account}:stack/${s.namespace}stack/*`;
@@ -24,7 +25,7 @@ export function guardrailTemplate(s:StackScope,workerArn:string){
 export class Guardrails {
  private client:CloudFormationClient;
  constructor(private region:string,private roleArn:string,private workerArn:string){this.client=new CloudFormationClient({region});}
- async ensure(s:StackScope,preservation?:Preservation):Promise<boolean>{
+ async ensure(s:StackScope,preservation?:Preservation,op?:any):Promise<boolean>{
   preservationMode(preservation);
   if(!this.roleArn||!this.workerArn)throw new Error('Isolated deployment guardrails are not configured');
   if(preservation==='strict'){
@@ -34,7 +35,9 @@ export class Guardrails {
    try{app=(await this.client.send(new DescribeStacksCommand({StackName:s.namespace+'stack'}))).Stacks?.[0];}
    catch(e){if(!awsResourceAbsent(e,'cloudformation:DescribeStacks'))throw e;}
    if(app){const tags=Object.fromEntries((app.Tags||[]).map(t=>[t.Key,t.Value]));
-    if(tags.GraphId!==s.graphId||tags.NodeId!==s.nodeId||tags.GraphStack!==s.namespace||app.RoleARN!==s.roleArn)throw Object.assign(new Error('Application ownership changed before guardrail preparation.'),{code:'OWNERSHIP_UNVERIFIED',status:403});
+    const review=app.StackStatus==='REVIEW_IN_PROGRESS'&&op&&await verifyReviewStack(s,app,op,(method,args)=>method==='describeChangeSet'?this.client.send(new DescribeChangeSetCommand(args)):this.client.send(new ListStackResourcesCommand(args)));
+    const owned=app.StackStatus==='REVIEW_IN_PROGRESS'?!!review:tags.GraphId===s.graphId&&tags.NodeId===s.nodeId&&tags.GraphStack===s.namespace&&app.RoleARN===s.roleArn;
+    if(!owned)throw Object.assign(new Error('Application ownership changed before guardrail preparation. Empty review stacks require a recorded change set, matching ownership tags and role, and a verified empty inventory.'),{code:'OWNERSHIP_UNVERIFIED',status:403});
    }
    refusePreservation(preservationStateProblems({application:{name:s.namespace+'stack',stackId:app?.StackId,status:app?.StackStatus||'NOT_CREATED'}}));
   }

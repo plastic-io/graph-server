@@ -6,6 +6,7 @@ import {awsResourceAbsent} from './awsErrors';
 import {inspectionRead,transientInspectionError} from './inspectionRead';
 import {strict,preservationActionProblems,preservationStateProblems,assertGuardrailPreservation,refusePreservation} from './preservation';
 import {ROLE_EXISTENCE_READS} from './isolation';
+import {verifyReviewStack} from './reviewStack';
 
 type Call=(method:string,args:any)=>Promise<any>;
 export interface LifecycleClients {cloud:Call;iam:Call;states:Call;assume:(scope:any)=>Promise<any>;application:(scope:any)=>Promise<Call>;repair?:(op:any)=>Promise<any>;}
@@ -64,6 +65,12 @@ export class LifecycleAws {
    const expectedRole=guardrail?process.env.IAC_GUARDRAIL_ROLE_ARN:s.roleArn,t=tags(stack.Tags);
    const owned=stack.StackId?.startsWith(`arn:aws:cloudformation:${s.region}:${s.account}:stack/${name}/`)&&t.GraphId===s.graphId&&t.NodeId===s.nodeId&&stack.RoleARN===expectedRole&&(guardrail?t.IsolationVersion===s.version:t.GraphStack===s.namespace);
    Object.assign(value,{...(archived?{lastStackId:stack.StackId}:{stackId:stack.StackId}),roleArn:stack.RoleARN,ownership:owned?'verified':'unverified',ownershipEvidence:{tags:t,expectedRole,namespace:s.namespace}});
+   if(!guardrail&&!archived&&stack.StackStatus==='REVIEW_IN_PROGRESS'){
+    const proof=await verifyReviewStack(s,stack,op,(method,args)=>check(target,method==='describeChangeSet'?'cloudformation:DescribeChangeSet':'cloudformation:ListStackResources',method==='describeChangeSet'?args.ChangeSetName:args.StackName,()=>this.clients.cloud(method,args)));
+    if(proof){value.ownership='verified';value.reviewStackProof=proof;value.ownershipEvidence.reviewStackProof=proof;return value;}
+    value.ownership='unverified';
+    blockers.push(blocker('OWNERSHIP_UNVERIFIED','ownership','The empty review stack must match a server-recorded change set, its graph ownership tags, the assigned role, and a complete empty resource inventory.',{component:target,resource:stack.StackId}));return value;
+   }
    if(!owned){blockers.push(blocker('OWNERSHIP_UNVERIFIED','ownership','Stack ownership tags, service role or ARN do not match the authenticated graph namespace.',{component:target,resource:stack.StackId}));return value;}
    const [listed,template]=await Promise.all([
     check(target,'cloudformation:ListStackResources',stack.StackId,()=>this.clients.cloud('listStackResources',{StackName:stack.StackId})),
@@ -224,7 +231,8 @@ export class LifecycleAws {
   const healthy=['CREATE_COMPLETE','UPDATE_COMPLETE','IMPORT_COMPLETE','UPDATE_ROLLBACK_COMPLETE'];
   const missingManagedRoles=roles.filter(r=>r.exists===false&&guardrail.resources.some(x=>x.logicalId===r.logicalId));
   if(healthy.includes(guardrail.status)&&missingManagedRoles.length)blockers.push(blocker('GUARDRAIL_ROLE_RECREATE_UNSUPPORTED','capability','The stable guardrail stack still owns a role record whose IAM resource was deleted. CloudFormation will not recreate it from an unchanged template, and the private repair function cannot create roles. A separately reviewed platform replacement procedure is required; graph recovery will not delete a healthy guardrail stack.',{component:'guardrail',logicalIds:missingManagedRoles.map(r=>r.logicalId),verification:'Restore the missing role through an approved platform replacement procedure, then run iac.inspect and prepare a fresh recovery plan.'}));
-  const needsRecovery=application.importPreparation||guardrail.importPreparation||!['NOT_CREATED',...healthy].includes(application.status)||!['NOT_CREATED',...healthy].includes(guardrail.status)||guardrail.status!=='NOT_CREATED'&&!guardrailsMatch||guardrail.status==='NOT_CREATED'&&boundary.exists===true;
+  const emptyReview=application.status==='REVIEW_IN_PROGRESS'&&!!application.reviewStackProof;
+  const needsRecovery=application.importPreparation||guardrail.importPreparation||!emptyReview&&!['NOT_CREATED',...healthy].includes(application.status)||!['NOT_CREATED',...healthy].includes(guardrail.status)||guardrail.status!=='NOT_CREATED'&&!guardrailsMatch||guardrail.status==='NOT_CREATED'&&boundary.exists===true;
   if(needsRecovery)blockers.push(blocker('RECOVERY_REQUIRED','recovery','Prepare a recovery plan for the current failed, retained or drifted resources.'));
   const result:any={version:1,checkedAt:new Date().toISOString(),graphId:op.graphId,nodeId:op.nodeId,sourceOperationId:sourceId,scope:s,
    application,guardrail,roles,boundary,guardrailsMatch,assumption,workflow,

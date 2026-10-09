@@ -1,6 +1,6 @@
 # Application-role deployment permissions — current platform review
 
-Updated October 9, 2026. Server **2.5.1**, lifecycle contract **1.3.0**.
+Updated October 9, 2026. Server **2.5.2** follow-up, lifecycle contract **1.3.0**.
 This replaces the previous current review; cancellation/preservation release
 history remains in commit `040f2c3`. Jolly Fish application code and its template,
 Chess, and GLM-5/Nova integration are outside this platform change.
@@ -160,15 +160,15 @@ References: [IAM GetRole](https://docs.aws.amazon.com/IAM/latest/APIReference/AP
   guardrail reconciliation and operation release, with no destructive actions.
   Nothing was approved or executed. Its review is durable in `iac.events` and
   `observations.watch` with the same event ID and digest.
-- Disposable deployment verification remains pending graph-content acceptance,
-  exact-digest human deployment approval, and actual CloudFormation outcome.
+- Disposable graph content was accepted after the overnight pause. Live
+  deployment verification is tracked below; application deployment approval
+  and actual CloudFormation role creation are still pending.
 - Jolly Fish: inspection only; no recovery or application deployment approved or
   executed by this change. Successful runtime operation is not claimed.
 
-## Overnight handoff — user requested stop
+## Resumed live verification — empty creation review regression
 
-The user is signed in to the editor in Chrome. The pending proposal is open in
-the existing disposable graph `e76298c1-3d45-47ed-be95-19e1104ebab2`:
+Disposable graph `e76298c1-3d45-47ed-be95-19e1104ebab2`:
 
 - Proposal **`01M4FSQB86BE20KCPBXJ5JT20E`**:
   “Platform IAM regression: retained role creation and inline policy”.
@@ -178,16 +178,48 @@ the existing disposable graph `e76298c1-3d45-47ed-be95-19e1104ebab2`:
 - One retained `/graph-app/` role with the assigned boundary and an inline
   `s3:ListBucket` policy limited to its own unused bucket name. No Lambda,
   application code, bucket, data or deletion is part of the fixture.
-- Proposal is validated; **not accepted at the last check**. No infrastructure
-  review or fixture deployment has been started. Auto-approve is off.
-- Resume by checking the proposal's current acceptance/revision through MCP.
-  If accepted, run `iac.review` for this node with `preservation:"strict"` and
-  agent session `platform-role-permissions-20261009`, then obtain the human's
-  exact-digest deployment approval in the graph. Do not click approval as the
-  human, reuse old approvals, or use AWS credentials to deploy the fixture.
-- Monitor `iac.status`, `iac.events`, and `observations.watch`; inspect physical
-  role readiness. Actual creation/inline-policy verification is still required.
-  Cleanup operations currently have local policy/fixture coverage only.
+- Human graph acceptance produced revision
+  `rev_01M4GND8AQC9N2CDBJ12Z7ATMF`. MCP `iac.review` with
+  `preservation:"strict"` created operation **`01M4GNEFBDM5T3NCDDBRF490ZN`**.
+- Its guardrail stack reached `CREATE_COMPLETE` at **15:45:54Z**. MCP inspection
+  verified matching installed roles/boundary and actual successful worker-role
+  assumption. The application change set was created; no application role has
+  been deployed and no deployment approval has been given. Auto-approve is off.
+- At **15:46:08Z**, the next planning step rejected `OWNERSHIP_UNVERIFIED`:
+  CloudFormation's empty `REVIEW_IN_PROGRESS` stack had the expected ARN and
+  service role but no stack tags. Ownership tags reside on the CREATE change
+  set until execution. MCP and the CF node exposed this failure.
+
+The generic follow-up verifies that exceptional state using the **server-recorded
+operation and exact change-set/stack IDs**, change-set graph/node/namespace tags,
+assigned role, and a complete empty resource inventory. It never infers ownership
+from a name alone. Denied or partial reads, conflicting tags, changed IDs, an
+executing change set, and existing resources fail closed. The empty record has no
+deployed template, so inspection does not try to read one. Verified evidence is
+carried into fresh reviews/recovery records and rechecked against AWS; old
+deployment approvals are never carried over. A verified empty review requires no
+stack deletion or import.
+
+`iac.inspect.application.reviewStackProof` exposes
+`{graphId,nodeId,operationId,stackId,changeSetId}`. Discovery describes this evidence
+and its limits. The platform worker needs only the additional read
+`cloudformation:DescribeChangeSet` on `stack/gapp-*/*` and
+`changeSet/review-gapp-*/*` in the configured account and region. Application
+roles, boundaries and role-passing grants are unchanged.
+
+**819 tests / 51 suites pass**, including 18 new empty-review ownership and
+preservation cases. TypeScript, five release configuration checks, and both
+Auth0/Cognito Lambda bundles pass. Live application role creation and cleanup
+remain unverified; cleanup has local policy/fixture coverage only.
+
+References: [CREATE change-set empty stack behavior](https://docs.aws.amazon.com/AWSCloudFormation/latest/APIReference/API_CreateChangeSet.html),
+[change-set tags before execution](https://docs.aws.amazon.com/AWSCloudFormation/latest/APIReference/API_DescribeChangeSet.html).
+
+Resume after the platform follow-up release by monitoring the operation through
+MCP, inspecting current readiness, and obtaining the human's exact-digest
+deployment approval in the graph. Do not click approval as the human or use AWS
+credentials to deploy the fixture.
+
 - Do not execute the Jolly Fish recovery assessment or change its application.
   No stack deletion or data removal is authorized, including test stacks.
 
@@ -195,5 +227,4 @@ Release package, diff, smoke results, verification and scoped MCP evidence:
 `/private/tmp/graph-role-permissions-release-b6dbb00/`. Incident audit and IAM
 simulation: `/private/tmp/jolly-platform-incident-evidence.json` and
 `/private/tmp/jolly-policy-simulation.json`. These are verification artifacts;
-the source and this durable handoff are in the repository. No release or
-deployment process remains running at this stop point.
+the source and this durable review are in the repository.
