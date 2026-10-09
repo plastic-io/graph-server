@@ -1072,6 +1072,7 @@ test('Chess acceptance: discover, preflight, propose, graph approval, isolated r
 
 test('MCP lifecycle acceptance: recover an induced guardrail failure, get fresh graph approval, invoke and diagnose without an agent AWS path',async()=>{
  const env={...process.env};require('../__testHelpers__/lifecycleCloud').environment();
+ delete process.env.PLATFORM_ADMIN_SUBS;
  Object.assign(process.env,{IAC_ACCOUNTS:'230639770018',IAC_REGIONS:'us-west-1'});
  let client;
  try{
@@ -1084,6 +1085,7 @@ test('MCP lifecycle acceptance: recover an induced guardrail failure, get fresh 
   const call=async(name,args={})=>parse(await client.callTool({name,arguments:{schemaVersion:1,graphId:'g1',...args}}));
   const discovery=(await call('server.discover',{topic:'lifecycle'})).result.contracts.lifecycle;
   expect(discovery.tools['iac.recovery.plan'].inputSchema.required).toContain('idempotencyKey');
+  const Ajv=require('ajv/dist/2020').default,validate=(name,result)=>{const check=new Ajv({strict:false,validateFormats:false}).compile(discovery.resultSchemas[name]);expect({valid:check(result),errors:check.errors}).toEqual({valid:true,errors:null});};
   expect((await client.listTools()).tools.some(t=>/approve|deploy$/.test(t.name))).toBe(false);
   const example=(await call('server.discover',{topic:'example',nodeId:'stack'})).result.contracts.example;
   expect((await call('iac.preflight',{nodeId:'stack',configuration:example.configuration})).result.deployable).toBe(true);
@@ -1092,8 +1094,12 @@ test('MCP lifecycle acceptance: recover an induced guardrail failure, get fresh 
   expect((await call('proposal.validate',{proposalId:proposal.proposalId})).result.proposalDigest).toBe(proposal.proposalDigest);
   expect((await f.proposals.commit('g1',proposal.proposalId,owner)).proposal.state).toBe('committed');
   const inspection=(await call('iac.inspect',{nodeId:'stack'})).result;
+  validate('iac.inspect',inspection);expect(inspection.roles.map(r=>r.exists)).toEqual([false,false]);
+  expect(inspection.recoveryReadiness).toMatchObject({state:'review-available',requiresPlatformAdmin:false});
+  expect(inspection.maintenanceConfiguration.configured).toBe(false);
   expect(inspection.application.status).toBe('NOT_CREATED');expect(inspection.guardrail.status).toBe('ROLLBACK_FAILED');
   const plan=(await call('iac.recovery.plan',{nodeId:'stack',operationId:fixture.source.operationId,idempotencyKey:'recover'})).result;
+  validate('iac.recovery.plan',plan);
   expect(plan.state).toBe('recovery-ready');expect(plan.recoveryPlan.preservesData).toBe(true);
   const fromUi=(action,body,principal=owner)=>new Promise((resolve,reject)=>f.reviews.route({principal,httpMethod:'POST',pathParameters:{id:'g1',nodeId:'stack'},path:'/iac/stack/'+action,body:JSON.stringify(body)},null,(error,result)=>error?reject(error):resolve({...result,json:JSON.parse(result.body)})));
   expect((await fromUi('recovery-approve',{operationId:plan.operationId,recoveryDigest:plan.recoveryPlan.digest},agent)).statusCode).toBe(403);
@@ -1102,6 +1108,12 @@ test('MCP lifecycle acceptance: recover an induced guardrail failure, get fresh 
   await client.close();client=await connect(f.mcp,agent); // reconnect using only durable graph state
   const recovered=(await call('iac.status',{nodeId:'stack'})).result;
   expect(recovered.state).toBe('recovered');expect(recovered.approval).toBeUndefined();
+  expect(recovered.canReviewMaintenance).toBe(false);
+  const recoveryEvents=(await call('iac.events',{nodeId:'stack',operationId:plan.operationId,limit:100})).result.events;
+  const recoveryWatch=(await call('observations.watch',{filter:{operationId:plan.operationId},from:'beginning',limit:100})).result.observations;
+  expect(recoveryWatch.map(({arrival,...event})=>event)).toEqual(recoveryEvents);
+  expect(recoveryWatch).toEqual(fixture.sent.filter(e=>e.operationId===plan.operationId));
+  expect(recoveryEvents.some(e=>e.kind==='deployment.recovery.complete')).toBe(true);
   const review=(await call('iac.review',{nodeId:'stack',retryOf:recovered.operationId})).result;
   await f.reviews.step(review.operationId);await f.reviews.step(review.operationId);
   const pending=(await call('iac.status',{nodeId:'stack'})).result;

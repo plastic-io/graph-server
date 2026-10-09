@@ -97,7 +97,7 @@ jobs:
           AUTH_PROVIDER: auth0
         run: |
           npx playwright install --with-deps chromium
-          npx playwright test chat.spec.ts infra-review.spec.ts
+          npx playwright test chat.spec.ts infra-review.spec.ts deployment-lifecycle.spec.ts
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

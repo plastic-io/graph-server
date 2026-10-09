@@ -1,7 +1,8 @@
 import {CloudFormation,IAM,STS,StepFunctions,Lambda} from 'aws-sdk';
-import {scopeFor,digest,blocker,platformDefinition,inspectionFingerprint,refused,retained} from './lifecycleModel';
+import {scopeFor,digest,blocker,platformDefinition,inspectionFingerprint,refused,retained,recoveryPlan} from './lifecycleModel';
 import {diagnosticError} from './diagnosticSafety';
 import {parseTemplate,policyFromEnv} from './validator';
+import {awsResourceAbsent} from './awsErrors';
 
 type Call=(method:string,args:any)=>Promise<any>;
 export interface LifecycleClients {cloud:Call;iam:Call;states:Call;assume:(scope:any)=>Promise<any>;application:(scope:any)=>Promise<Call>;repair?:(op:any)=>Promise<any>;}
@@ -13,7 +14,6 @@ export function lifecycleClients(region:string):LifecycleClients {
   repair:async op=>{if(!process.env.IAC_GUARDRAIL_REPAIR_FUNCTION)refused('CAPABILITY_UNAVAILABLE','The approved guardrail repair function is not configured.');const r=await new Lambda({region}).invoke({FunctionName:process.env.IAC_GUARDRAIL_REPAIR_FUNCTION,Payload:JSON.stringify({operationId:op.operationId,leaseId:op.recoveryLease?.id})}).promise();const body=JSON.parse(String(r.Payload||'null'));if(r.FunctionError||!body?.restored)throw new Error(body?.errorMessage||'Guardrail repair failed');return body;},
   application:async s=>{const c=await assume(s),client=new CloudFormation({...options,credentials:{accessKeyId:c.AccessKeyId,secretAccessKey:c.SecretAccessKey,sessionToken:c.SessionToken}});return (m,a)=>(client as any)[m](a).promise();}};
 }
-const absent=(e:any)=>/does not exist|NoSuchEntity|not found/i.test(String(e?.message||e?.code));
 const document=(value:any)=>typeof value==='string'?JSON.parse(decodeURIComponent(value)):value;
 const tags=(items:any[])=>Object.fromEntries((items||[]).map(t=>[t.Key,t.Value]));
 const match=(pattern:string,value:string)=>new RegExp('^'+pattern.replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.')+'$','i').test(value);
@@ -33,7 +33,7 @@ export class LifecycleAws {
   const check=async(component:string,action:string,resource:string,call:()=>Promise<any>,missingOkay=false)=>{
    if(Date.now()>deadline){if(!blockers.some(b=>b.code==='INSPECTION_INCOMPLETE'))blockers.push(blocker('INSPECTION_INCOMPLETE','platform-maintenance','AWS verification exceeded its bounded time budget. These partial reads do not establish readiness. Retry inspection; persistent timeouts require platform maintenance.',{component,action,resource}));return undefined;}
    try {const value=await call();actualChecks.push({component,action,resource,result:'succeeded'});return value;}
-   catch(e){if(missingOkay&&absent(e)){actualChecks.push({component,action,resource,result:'absent'});return null;}
+   catch(e){if(missingOkay&&awsResourceAbsent(e,action)){actualChecks.push({component,action,resource,result:'absent',code:e.code||e.name});return null;}
     const error=diagnosticError(e,op);actualChecks.push({component,action,resource,result:'failed',error});
     blockers.push(blocker('AWS_CHECK_FAILED',/AccessDenied|Unauthorized|not authorized/i.test(error.code+' '+error.message)?'platform-permission':'platform-maintenance',error.message,{component,action,resource,error,verification:'Repeat iac.inspect after the approved platform prerequisite has been restored.'}));return undefined;}
   };
@@ -65,6 +65,22 @@ export class LifecycleAws {
    value.resources=(listed?.StackResourceSummaries||[]).slice(0,100).map(r=>({logicalId:r.LogicalResourceId,physicalId:r.PhysicalResourceId,resourceType:r.ResourceType,status:r.ResourceStatus,
     deletionPolicy:doc.Resources[r.LogicalResourceId]?.DeletionPolicy||'Delete',definitionDigest:digest(doc.Resources[r.LogicalResourceId]||null),
     ownershipVerified:true,...(archived?{orphaned:r.ResourceStatus==='DELETE_SKIPPED'}:{})})).sort((a,b)=>a.logicalId.localeCompare(b.logicalId));
+   if(guardrail){
+    // Ownership of the stack is not permission to delete a foreign resource inserted into it.
+    const permitted=(id:string)=>{
+     const expected=approved.Resources[id],actual=doc.Resources[id];
+     if(!expected||actual?.Type!==expected.Type||actual.Properties?.Path!==expected.Properties.Path)return false;
+     const key=id==='RuntimeBoundary'?'ManagedPolicyName':'RoleName';
+     return actual.Properties[key]===expected.Properties[key];
+    };
+    const invalid=Object.keys(doc.Resources).filter(id=>!permitted(id));
+    for(const r of value.resources){
+     const expected=approved.Resources[r.logicalId],physical=expected&&(r.logicalId==='RuntimeBoundary'?s.boundaryArn:expected.Properties.RoleName);
+     r.ownershipVerified=permitted(r.logicalId)&&r.resourceType===expected?.Type&&(!r.physicalId||r.physicalId===physical);
+     if(!r.ownershipVerified)invalid.push(r.logicalId);
+    }
+    if(invalid.length)blockers.push(blocker('GUARDRAIL_RESOURCE_UNVERIFIED','ownership','Guardrail inventory or resource names/paths differ from the assigned platform definition. Recovery cannot delete or adopt these resources.',{component:target,logicalIds:[...new Set(invalid)].sort()}));
+   }
    return value;
   };
   const [application,guardrail]=await Promise.all([readStack('application'),readStack('guardrail')]);
@@ -85,7 +101,7 @@ export class LifecycleAws {
    const policyDigest=digest(policy?document(policy.PolicyDocument):null),trustDigest=digest(document(role.AssumeRolePolicyDocument));
    const row=guardrail.resources.find(r=>r.logicalId===logicalId);
    if(!row?.ownershipVerified||row.physicalId!==name)blockers.push(blocker('ORPHAN_OWNERSHIP_UNVERIFIED','ownership','Role exists but no verified CloudFormation ownership record was found. Prefix alone does not prove ownership.',{resource:arn}));
-   if(row)row.exists=true;
+   if(row){row.exists=true;row.physicalIdentity=role.RoleId;}
    return {logicalId,arn,exists:true,policyDigest,trustDigest,boundary:role.PermissionsBoundary?.PermissionsBoundaryArn||null,
     matches:policyDigest===digest(definition.Policies[0].PolicyDocument)&&trustDigest===digest(definition.AssumeRolePolicyDocument)};
   }));
@@ -94,7 +110,7 @@ export class LifecycleAws {
   const got=await check('guardrail','iam:GetPolicy',s.boundaryArn,()=>this.clients.iam('getPolicy',{PolicyArn:s.boundaryArn}),true);
   if(got?.Policy){
    const version=await check('guardrail','iam:GetPolicyVersion',s.boundaryArn,()=>this.clients.iam('getPolicyVersion',{PolicyArn:s.boundaryArn,VersionId:got.Policy.DefaultVersionId}));
-   boundary={arn:s.boundaryArn,exists:true,versionId:got.Policy.DefaultVersionId,policyDigest:version?digest(document(version.PolicyVersion.Document)):null};
+   boundary={arn:s.boundaryArn,exists:true,physicalIdentity:got.Policy.PolicyId,versionId:got.Policy.DefaultVersionId,policyDigest:version?digest(document(version.PolicyVersion.Document)):null};
    boundary.matches=boundary.policyDigest===digest(approved.Resources.RuntimeBoundary.Properties.PolicyDocument);
    for(const usage of ['PermissionsBoundary','PermissionsPolicy']){
     const entities=await check('guardrail','iam:ListEntitiesForPolicy',s.boundaryArn,()=>this.clients.iam('listEntitiesForPolicy',{PolicyArn:s.boundaryArn,PolicyUsageFilter:usage,MaxItems:100}));
@@ -107,7 +123,7 @@ export class LifecycleAws {
     }
    }
    const resource=guardrail.resources.find(r=>r.logicalId==='RuntimeBoundary'&&r.physicalId===s.boundaryArn);
-   if(resource){resource.exists=true;resource.orphaned=resource.status==='DELETE_SKIPPED';}
+   if(resource){resource.exists=true;resource.physicalIdentity=got.Policy.PolicyId;resource.orphaned=resource.status==='DELETE_SKIPPED';}
    else blockers.push(blocker('RETAINED_BOUNDARY_OWNERSHIP','ownership','The retained boundary exists but no matching owned CloudFormation resource record was found. Recovery will not adopt a policy based only on its name.',{resource:s.boundaryArn}));
   } else if(got===undefined)boundary.exists='unknown';
   else {const r=guardrail.resources.find(r=>r.logicalId==='RuntimeBoundary');if(r)r.exists=false;}
@@ -146,6 +162,8 @@ export class LifecycleAws {
   }
   const guardrailsMatch=roles.every(r=>r.matches)&&boundary.matches;
   const healthy=['CREATE_COMPLETE','UPDATE_COMPLETE','IMPORT_COMPLETE','UPDATE_ROLLBACK_COMPLETE'];
+  const missingManagedRoles=roles.filter(r=>r.exists===false&&guardrail.resources.some(x=>x.logicalId===r.logicalId));
+  if(healthy.includes(guardrail.status)&&missingManagedRoles.length)blockers.push(blocker('GUARDRAIL_ROLE_RECREATE_UNSUPPORTED','capability','The stable guardrail stack still owns a role record whose IAM resource was deleted. CloudFormation will not recreate it from an unchanged template, and the private repair function cannot create roles. A separately reviewed platform replacement procedure is required; graph recovery will not delete a healthy guardrail stack.',{component:'guardrail',logicalIds:missingManagedRoles.map(r=>r.logicalId),verification:'Restore the missing role through an approved platform replacement procedure, then run iac.inspect and prepare a fresh recovery plan.'}));
   const needsRecovery=!['NOT_CREATED',...healthy].includes(application.status)||!['NOT_CREATED',...healthy].includes(guardrail.status)||guardrail.status!=='NOT_CREATED'&&!guardrailsMatch||guardrail.status==='NOT_CREATED'&&boundary.exists===true;
   if(needsRecovery)blockers.push(blocker('RECOVERY_REQUIRED','recovery','Prepare a recovery plan for the current failed, retained or drifted resources.'));
   const result:any={version:1,checkedAt:new Date().toISOString(),graphId:op.graphId,nodeId:op.nodeId,sourceOperationId:sourceId,scope:s,
@@ -153,6 +171,11 @@ export class LifecycleAws {
    policyAnalysis:{kind:'document-analysis',verifiedDeployment:false,checks:policyAnalysis,platformRole:{arn:platformArn,trustDigest:digest(platformTrust),boundary:platformRole?.Role.PermissionsBoundary?.PermissionsBoundaryArn||null},limitations:'This is not IAM simulation or a deployment test. SCPs, session policies, service checks and eventual consistency can still deny operations.'},
    awsVerification:{kind:'actual-read-and-assume-calls',checks:actualChecks,deploymentTested:false},
    approvedGuardrailTemplate:approved,approvedGuardrailDigest:digest(approved),blockers,canReview:!blockers.length};
+  const preview=recoveryPlan(op,result);
+  result.recoveryReadiness={state:preview.prerequisites.length?'blocked':needsRecovery?'review-available':'not-required',
+   prerequisites:preview.prerequisites,missingRoles:roles.filter(r=>r.exists===false).map(r=>r.logicalId),
+   executionAuthority:'Platform worker and approved guardrail service role; per-stack roles are not assumed to restore guardrails.',
+   requiredApproval:'human-exact-recovery-digest',requiresPlatformAdmin:preview.prerequisites.some(b=>['platform-permission','platform-maintenance','capability'].includes(b.kind))};
   result.fingerprint=inspectionFingerprint(result);return result;
  }
 
@@ -166,11 +189,31 @@ export class LifecycleAws {
   const cloud=guardrail?this.clients.cloud:await this.clients.application(s);
   const token='recovery-'+s.namespace+op.operationId+'-'+index;
   let stack:any;
-  try{stack=(await cloud('describeStacks',{StackName:name})).Stacks?.[0];}catch(e){if(!absent(e))throw e;}
+  try{stack=(await cloud('describeStacks',{StackName:name})).Stacks?.[0];}catch(e){if(!awsResourceAbsent(e,'cloudformation:DescribeStacks'))throw e;}
   if(stack){const t=tags(stack.Tags);
    if(!stack.StackId?.startsWith(`arn:aws:cloudformation:${s.region}:${s.account}:stack/${name}/`)||stack.RoleARN!==roleArn||t.GraphId!==s.graphId||t.NodeId!==s.nodeId||(guardrail?t.IsolationVersion!==s.version:t.GraphStack!==s.namespace))refused('OWNERSHIP_UNVERIFIED','Recovery target ownership changed. No action was taken.',403);
   }
   const status=stack?.StackStatus||'NOT_CREATED';
+  const verifyGuardrailIdentity=async(logicalId:string)=>{
+   const expected=plan.ownershipEvidence.guardrail.resources.find(r=>r.logicalId===logicalId);
+   if(!expected?.ownershipVerified)refused('OWNERSHIP_UNVERIFIED','Retained guardrails require a reviewed CloudFormation resource record.',403);
+   const boundary=logicalId==='RuntimeBoundary',method=boundary?'getPolicy':'getRole',actionName=boundary?'iam:GetPolicy':'iam:GetRole';
+   let current:any;
+   try{const response=await this.clients.iam(method,boundary?{PolicyArn:s.boundaryArn}:{RoleName:platformDefinition(s).Resources[logicalId].Properties.RoleName});current=boundary?response.Policy:response.Role;}
+   catch(e){if(!awsResourceAbsent(e,actionName))throw e;}
+   if(expected.exists===false){if(current)refused('STALE_RECOVERY','A previously absent guardrail resource now exists. Prepare a fresh ownership review.');return;}
+   const arn=boundary?s.boundaryArn:logicalId==='WorkerRole'?s.workerRoleArn:s.roleArn;
+   if(!current||current.Arn!==arn||expected.physicalIdentity&&(current.PolicyId||current.RoleId)!==expected.physicalIdentity)refused('STALE_RECOVERY','A reviewed guardrail resource disappeared or was replaced. It will not be imported or deleted.');
+   if(boundary){
+    const version=await this.clients.iam('getPolicyVersion',{PolicyArn:s.boundaryArn,VersionId:current.DefaultVersionId});
+    if(digest(document(version.PolicyVersion.Document))!==op.inspection.boundary.policyDigest)refused('STALE_RECOVERY','The retained boundary changed after review. Prepare a fresh recovery plan.');
+    await Promise.all(['PermissionsBoundary','PermissionsPolicy'].map(async usage=>{
+     const entities=await this.clients.iam('listEntitiesForPolicy',{PolicyArn:s.boundaryArn,PolicyUsageFilter:usage,MaxItems:100});
+     if(entities.IsTruncated||entities.PolicyGroups?.length||entities.PolicyUsers?.length||entities.PolicyRoles?.some(r=>usage==='PermissionsPolicy'||!r.RoleName.startsWith(s.namespace)))refused('OWNERSHIP_UNVERIFIED','Boundary consumers changed. Recovery will preserve it and stop.',403);
+     await Promise.all((entities.PolicyRoles||[]).map(async r=>{const role=await this.clients.iam('getRole',{RoleName:r.RoleName});if(!role.Role.Arn.startsWith(`arn:aws:iam::${s.account}:role/graph-app/${s.namespace}`))refused('OWNERSHIP_UNVERIFIED','The retained boundary has a foreign consumer.',403);}));
+    }));
+   }
+  };
   const verifyReviewedInventory=async()=>{
    const expected=plan.ownershipEvidence[action.target];
    const [listed,template]=await Promise.all([cloud('listStackResources',{StackName:stack.StackId}),cloud('getTemplate',{StackName:stack.StackId,TemplateStage:'Original'})]);
@@ -187,6 +230,7 @@ export class LifecycleAws {
    if(status!==plan.ownershipEvidence[action.target].status)refused('STALE_RECOVERY','The stack state changed after recovery review.');
    if(!['ROLLBACK_FAILED','ROLLBACK_COMPLETE','CREATE_FAILED','DELETE_FAILED','REVIEW_IN_PROGRESS'].includes(status))refused('STALE_RECOVERY','The stack is no longer in the reviewed failed creation/deletion state.');
    await verifyReviewedInventory();
+   if(guardrail)await Promise.all(plan.ownershipEvidence.guardrail.resources.map(r=>verifyGuardrailIdentity(r.logicalId)));
    await cloud('deleteStack',{StackName:stack.StackId,RoleARN:roleArn,ClientRequestToken:token,...(status==='DELETE_FAILED'&&action.retainIds.length?{RetainResources:action.retainIds}:{})});
    return {done:false,submitted:true,status:'DELETE_IN_PROGRESS'};
   }
@@ -212,12 +256,12 @@ export class LifecycleAws {
    if(status==='IMPORT_IN_PROGRESS')return {done:false,status};
    if(!['NOT_CREATED','REVIEW_IN_PROGRESS'].includes(status))refused('STALE_RECOVERY','A retained-resource import cannot replace or modify an existing application stack.');
    let changes:any;
-   try{changes=await cloud('describeChangeSet',{StackName:name,ChangeSetName:changeSetName});}catch(e){if(!absent(e))throw e;}
-   if(!changes){await cloud('createChangeSet',{StackName:name,ChangeSetName:changeSetName,ClientToken:token,ChangeSetType:'IMPORT',RoleARN:roleArn,Capabilities:['CAPABILITY_NAMED_IAM'],TemplateBody:JSON.stringify(template),Tags:ownershipTags,
+   try{changes=await cloud('describeChangeSet',{StackName:name,ChangeSetName:changeSetName});}catch(e){if(!awsResourceAbsent(e,'cloudformation:DescribeChangeSet'))throw e;}
+   if(!changes){if(guardrail)await Promise.all(action.resources.map(r=>verifyGuardrailIdentity(r.logicalId)));await cloud('createChangeSet',{StackName:name,ChangeSetName:changeSetName,ClientToken:token,ChangeSetType:'IMPORT',RoleARN:roleArn,Capabilities:['CAPABILITY_NAMED_IAM'],TemplateBody:JSON.stringify(template),Tags:ownershipTags,
      ResourcesToImport:action.resources.map(r=>({ResourceType:r.resourceType,LogicalResourceId:r.logicalId,ResourceIdentifier:{[r.identifier]:r.physicalId}}))});return {done:false,submitted:true,status:'IMPORT_PLANNING'};}
    if(['CREATE_PENDING','CREATE_IN_PROGRESS'].includes(changes.Status))return {done:false,status:changes.Status};
    if(changes.Status!=='CREATE_COMPLETE')throw new Error('Retained-resource import failed: '+changes.StatusReason);
-   if(changes.ExecutionStatus==='AVAILABLE')await cloud('executeChangeSet',{StackName:name,ChangeSetName:changeSetName,ClientRequestToken:token});
+   if(changes.ExecutionStatus==='AVAILABLE'){if(guardrail)await Promise.all(action.resources.map(r=>verifyGuardrailIdentity(r.logicalId)));await cloud('executeChangeSet',{StackName:name,ChangeSetName:changeSetName,ClientRequestToken:token});}
    else if(!['EXECUTE_IN_PROGRESS','EXECUTE_COMPLETE'].includes(changes.ExecutionStatus))throw new Error('Retained-resource import is no longer executable: '+changes.ExecutionStatus);
    return {done:false,submitted:true,status:'IMPORT_IN_PROGRESS'};
   }

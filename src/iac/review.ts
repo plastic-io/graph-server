@@ -3,7 +3,7 @@ import {scopedPolicy,stackScope, ISOLATED_TYPES} from './isolation';
 import {DeploymentProgress,phaseFor} from './progress';
 import {diagnosticError,diagnosticText,recoveryFor} from './diagnosticSafety';
 import {DelegationStore} from '../policy/delegation';
-import {IacLifecycleService,publicRecoveryPlan,isPlatformAdmin} from './lifecycle';
+import {IacLifecycleService,publicRecoveryPlan,isPlatformAdmin,maintenanceConfiguration} from './lifecycle';
 import {nextActions,terminalStates} from './lifecycleModel';
 import {readinessProblems} from './readiness';
 import {progressAllowed} from './progressAccess';
@@ -180,7 +180,7 @@ export class IacReviewService {
         for(const key of ['latest','lastEvent','lifecycle'])if(progress[key]&&!progressAllowed(principal,progress[key]))delete progress[key];
         const workflowFailed=progress.orchestrationFailure&&!terminal.has(record.state);
         const failure=['failed','rolled-back','rollback-failed'].includes(record.state)||workflowFailed||progress.cleanup?.status==='DELETE_FAILED';
-        return {...this.publicRecord(record),...(workflowFailed?{state:'failed',workflowState:record.state}:{}),progress,nextActions:nextActions(record),canReviewMaintenance:isPlatformAdmin(principal),
+        return {...this.publicRecord(record),...(workflowFailed?{state:'failed',workflowState:record.state}:{}),progress,nextActions:nextActions(record),canReviewMaintenance:isPlatformAdmin(principal),maintenanceConfiguration:maintenanceConfiguration(),
             ...(failure?{error:progress.failure?.error||(progress.failure?.reason?diagnosticError({code:progress.failure.status||'DEPLOYMENT_ERROR',message:progress.failure.reason},record):record.originalError),reason:progress.failure?.reason||record.reason,
                 recovery:progress.recovery||recoveryFor(record,{status:record.state,reason:record.reason}),
                 manualRecoveryRequired:record.manualRecoveryRequired||!!workflowFailed||progress.recovery?.category==='platform-intervention'}:{})};

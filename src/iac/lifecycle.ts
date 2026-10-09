@@ -24,6 +24,14 @@ export function publicRecoveryPlan(plan:any) {
 export function isPlatformAdmin(principal:any) {
  return principal?.kind==='human'&&decide(principal,['policy:admin']).allow&&(process.env.PLATFORM_ADMIN_SUBS||'').split(',').map(s=>s.trim()).filter(Boolean).includes(principal.sub);
 }
+export function maintenanceConfiguration() {
+ const configured=!!(process.env.PLATFORM_ADMIN_SUBS||'').split(',').map(s=>s.trim()).filter(Boolean).length;
+ return {configured,mode:'record-and-verify-only',executesAws:false,
+  approvalEffect:'Records platform-admin approval for a separately reviewed platform release. It does not execute AWS changes, recovery or application deployment.',
+  administratorRequirement:'A verified human subject configured in PLATFORM_ADMIN_SUBS with policy:admin authority.',
+  ...(configured?{}:{blocker:{code:'PLATFORM_ADMIN_NOT_CONFIGURED',kind:'configuration',component:'platform-authorization',
+   message:'No platform-maintenance administrator is configured. An authorized platform administrator must configure PLATFORM_ADMIN_SUBS through the platform release process. Ordinary graph recovery approval does not require this configuration.'}})};
+}
 /** Shares review records, per-stack fences and the durable bus outbox with normal deployment. */
 export class IacLifecycleService {
  constructor(private store:any,private deps:LifecycleDeps){}
@@ -47,11 +55,22 @@ export class IacLifecycleService {
   scopeFor(row.value,this.policy());return row;
  }
  private public(op:any){const {input,policyDigest,recoveryLease,...visible}=op;return {...visible,recoveryPlan:publicRecoveryPlan(op.recoveryPlan),stack:input.stack,nextActions:nextActions(op)};}
+ private async historicalFailure(op:any) {
+  const seen=new Set<string>();
+  for(let depth=0;op&&depth<20&&!seen.has(op.operationId);depth++){
+   seen.add(op.operationId);
+   const failure=op.originalError||op.historicalFailure||op.reason||op.inspection?.historicalFailure;
+   if(failure)return {historicalFailure:failure,historicalFailureOperationId:op.originalError?op.operationId:op.historicalFailureOperationId||op.inspection?.historicalFailureOperationId||op.operationId};
+   const previous=op.sourceOperationId||op.previousOperationId;
+   op=previous?(await this.op(op.graphId,op.nodeId,previous))?.value:null;
+  }
+  return {historicalFailure:null};
+ }
  private async emit(op:any,kind:string,detail:any,status=op.state) {
   await this.progress().append(op,[{id:kind+':'+digest(detail),source:'lifecycle',kind,phase:kind.startsWith('runtime')?'runtime':kind.startsWith('maintenance')?'maintenance':op.action==='recover'?'recovering':'readiness',status,lifecycle:detail}]);
  }
  async inspect(g:string,n:string,p:any,options:any={}) {
-  await this.authority(g,n,p);
+  p=await this.authority(g,n,p);
   if(!this.deps.inspect)refused('CAPABILITY_UNAVAILABLE','Current AWS inspection is not configured. A platform administrator must deploy the graph lifecycle worker.');
   let row=await this.op(g,n,options.operationId);
   if(!row){
@@ -69,11 +88,17 @@ export class IacLifecycleService {
    if(active.value.operationId!==op.operationId)inspection.blockers.push({code:'OPERATION_ACTIVE',kind:'busy',message:'Another operation owns this stack.',operationId:active.value.operationId});
   }
   if(op.manualRecoveryRequired){inspection.canReview=false;inspection.blockers.push({code:'OPERATION_RECONCILIATION_REQUIRED',kind:'recovery',message:'The failed operation retains its safety lock. Prepare and approve recovery to reconcile its outcome before a fresh deployment review.'});}
+  if(inspection.recoveryReadiness){
+   const busy=inspection.blockers.filter(b=>b.kind==='busy');
+   if(busy.length){inspection.recoveryReadiness.state='blocked';inspection.recoveryReadiness.prerequisites=[...inspection.recoveryReadiness.prerequisites.filter(b=>b.kind!=='busy'),...busy];}
+   else if(op.manualRecoveryRequired&&inspection.recoveryReadiness.state==='not-required')inspection.recoveryReadiness.state='review-available';
+  }
   try{inspection.templateValidation={kind:'static-template-validation',...(await this.deps.input?.(g,n,p))?.validation};}
   catch(e){inspection.templateValidation={kind:'static-template-validation',ok:false,error:diagnosticError(e,op)};}
   if(inspection.templateValidation.ok===false){inspection.canReview=false;inspection.blockers.push({code:'TEMPLATE_INVALID',kind:'template',message:'Current graph template validation failed. Correct it through a graph proposal before a new deployment review.'});}
-  inspection.historicalFailure=op.originalError||op.reason||null;
+  Object.assign(inspection,await this.historicalFailure(op));
   inspection.historyIsNotCurrentPermissionEvidence=true;
+  inspection.maintenanceConfiguration=maintenanceConfiguration();
   const latest=await this.read(operationKey(op.operationId));
   await this.cas(operationKey(op.operationId),{...latest.value,inspection},latest.etag);
   await this.emit(op,'inspection',inspection);
@@ -105,10 +130,11 @@ export class IacLifecycleService {
    if(!stranded&&!expired)refused('OPERATION_ACTIVE','Another deployment or recovery owns this stack. Wait for it to finish.');
   }
   if(inspection.blockers.some(b=>b.kind==='busy'))refused('OPERATION_ACTIVE','A CloudFormation or workflow operation is still active.',409,inspection.blockers);
-  const plan=recoveryPlan(source,inspection,options),id=ulid(),now=this.now();
+  const plan=recoveryPlan(source,inspection,options),id=ulid(),now=this.now(),historical=await this.historicalFailure(source);
   const op:any={operationId:id,graphId:g,nodeId:n,input:source.input,inputDigest:source.inputDigest,policyDigest:source.policyDigest,revisionId:source.revisionId,
    previousOperationId:source.operationId,sourceOperationId:source.operationId,requestDigest,action:'recover',state:plan.prerequisites.length?'recovery-blocked':'recovery-ready',
-   recoveryPlan:plan,inspection,createdAt:now,updatedAt:now,expiresAt:now+900000,by:{sub:p.sub,kind:p.kind},history:[],recoveryIndex:0};
+   recoveryPlan:plan,inspection,...historical,
+   createdAt:now,updatedAt:now,expiresAt:now+900000,by:{sub:p.sub,kind:p.kind},history:[],recoveryIndex:0};
   await this.cas(operationKey(id),op,null);
   if(!await this.cas(lockKey(source.input.stack),{operationId:id},fence?.etag||null)) {
    const winner=await this.read(lockKey(source.input.stack)),record=winner?.value.operationId&&await this.read(operationKey(winner.value.operationId));
@@ -221,11 +247,13 @@ export class IacLifecycleService {
   if(action==='request') {
    const inspection=await this.deps.inspect!(op),requirements=inspection.blockers.filter(b=>['platform-permission','platform-maintenance','capability'].includes(b.kind));
    if(!requirements.length)refused('NO_MAINTENANCE_REQUIRED','Current inspection found no platform prerequisites.');
-   const content={graphId:g,nodeId:n,operationId:op.operationId,requirements,approvedDefinitionDigest:inspection.approvedGuardrailDigest,verification:['Review this request using a configured platform administrator identity.','Deploy only the separately reviewed platform change through platform CI.','Run iac.inspect and verify this request from the graph; approval alone does not establish readiness.']};
+   const content={graphId:g,nodeId:n,operationId:op.operationId,requirements,approvedDefinitionDigest:inspection.approvedGuardrailDigest,
+    execution:{mode:'record-and-verify-only',executesAws:false,approvalTriggersRelease:false,recoveryApproved:false,applicationDeploymentApproved:false},
+    verification:['Review this request using a configured platform administrator identity.','Deploy only the separately reviewed platform change through platform CI.','Run iac.inspect and verify this request from the graph; approval alone does not establish readiness.']};
    const request={...content,digest:digest(content),state:'requested',createdAt:this.now(),requestedBy:p.sub};
-   if(op.maintenance?.digest===request.digest)return op.maintenance;
+   if(op.maintenance?.digest===request.digest)return {...op.maintenance,administration:maintenanceConfiguration()};
    if(!await this.cas(operationKey(op.operationId),{...op,maintenance:request,inspection},row.etag))refused('CONFLICT','Operation changed; refresh the maintenance request.');
-   await this.emit(op,'maintenance.request',request);return request;
+   await this.emit(op,'maintenance.request',{...request,administration:maintenanceConfiguration()});return {...request,administration:maintenanceConfiguration()};
   }
   if(!isPlatformAdmin(p))refused('PLATFORM_ADMIN_REQUIRED','This review requires a human subject explicitly configured in PLATFORM_ADMIN_SUBS. Graph ownership and agent delegation cannot grant platform administration.',403);
   const request=op.maintenance;

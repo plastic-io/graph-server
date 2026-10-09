@@ -3,7 +3,7 @@ import {stackScope} from './isolation';
 import {guardrailTemplate} from './guardrails';
 import {policyFromEnv,parseTemplate} from './validator';
 
-export const LIFECYCLE_VERSION='1.0.0';
+export const LIFECYCLE_VERSION='1.1.0';
 export const terminalStates=new Set(['succeeded','failed','rolled-back','rollback-failed','cancelled','expired','stale','no-changes','destroyed','recovered','recovery-blocked','inspected']);
 export function canonical(value:any):string {
  if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';
@@ -29,7 +29,7 @@ export const retained=(r:any)=>r.status==='DELETE_SKIPPED'||r.deletionPolicy==='
 /** Stable reviewed content excludes observation timestamps, error prose, and transient request IDs. */
 export function inspectionFingerprint(i:any) {
  const stack=(s:any)=>({name:s.name,stackId:s.stackId||null,status:s.status,roleArn:s.roleArn||null,ownership:s.ownership,templateDigest:s.templateDigest,
-  resources:(s.resources||[]).map((r:any)=>({logicalId:r.logicalId,physicalId:r.physicalId,resourceType:r.resourceType,status:r.status,deletionPolicy:r.deletionPolicy,exists:r.exists,definitionDigest:r.definitionDigest})).sort((a,b)=>a.logicalId.localeCompare(b.logicalId))});
+  resources:(s.resources||[]).map((r:any)=>({logicalId:r.logicalId,physicalId:r.physicalId,physicalIdentity:r.physicalIdentity,resourceType:r.resourceType,status:r.status,deletionPolicy:r.deletionPolicy,exists:r.exists,definitionDigest:r.definitionDigest})).sort((a,b)=>a.logicalId.localeCompare(b.logicalId))});
  return digest({version:LIFECYCLE_VERSION,scope:i.scope,application:stack(i.application),guardrail:stack(i.guardrail),
   roles:i.roles?.map((r:any)=>({arn:r.arn,exists:r.exists,policyDigest:r.policyDigest,trustDigest:r.trustDigest,boundary:r.boundary,matches:r.matches})),
   boundary:i.boundary,approvedGuardrailDigest:i.approvedGuardrailDigest});
@@ -50,9 +50,13 @@ export function recoveryPlan(op:any,inspection:any,options:any={}) {
   if(['ROLLBACK_FAILED','ROLLBACK_COMPLETE','CREATE_FAILED','DELETE_FAILED','REVIEW_IN_PROGRESS'].includes(stack.status)) {
    const unsafe=resources.filter((r:any)=>dataType(r.resourceType)&&r.physicalId&&r.exists!==false&&r.status!=='DELETE_COMPLETE'&&!retained(r));
    // RetainResources is valid only in DELETE_FAILED. Never silently delete data in a failed create.
-   const retainIds=stack.status==='DELETE_FAILED'?resources.filter((r:any)=>r.physicalId&&r.exists!==false&&r.status!=='DELETE_COMPLETE'&&(dataType(r.resourceType)||retained(r))).map((r:any)=>r.logicalId):[];
+   const retainIds=stack.status==='DELETE_FAILED'?resources.filter((r:any)=>r.physicalId&&r.status!=='DELETE_COMPLETE'&&r.status!=='DELETE_SKIPPED'&&(
+    r.exists!==false&&(dataType(r.resourceType)||retained(r))||guardrail&&r.resourceType==='AWS::IAM::Role'&&r.exists===false&&r.ownershipVerified
+   )).map((r:any)=>r.logicalId):[];
    if(!allowDataLoss&&unsafe.length&&stack.status!=='DELETE_FAILED')prerequisites.push(blocker('DATA_PRESERVATION_REQUIRED','human-approval','This failed stack has data without a retention policy. Prepare an explicit allowDataLoss plan only if its listed deletions are acceptable; otherwise a platform administrator must arrange a backup or preservation procedure.',{component:target,resources:unsafe.map((r:any)=>r.logicalId)}));
-   action('delete-stack',target,{stackId:stack.stackId,retainIds,dataLoss:unsafe.filter((r:any)=>!retainIds.includes(r.logicalId)).map((r:any)=>r.logicalId),resources:resources.map((r:any)=>({logicalId:r.logicalId,physicalId:r.physicalId,resourceType:r.resourceType,outcome:retained(r)||retainIds.includes(r.logicalId)?'Retain':'Delete'}))});
+   action('delete-stack',target,{stackId:stack.stackId,retainIds,
+    reason:stack.status==='DELETE_FAILED'?'Delete the owned failed stack while retaining listed data and skipping deletion handlers for verified-absent deployment roles. Absent role records do not represent live IAM resources.':'Delete the owned failed stack; CloudFormation retention policies preserve the listed survivors.',
+    dataLoss:unsafe.filter((r:any)=>!retainIds.includes(r.logicalId)).map((r:any)=>r.logicalId),resources:resources.map((r:any)=>({logicalId:r.logicalId,physicalId:r.physicalId,resourceType:r.resourceType,outcome:r.exists===false?'Already absent':retained(r)||retainIds.includes(r.logicalId)?'Retain':'Delete'}))});
    rebuild=true;
   } else if(stack.status==='UPDATE_ROLLBACK_FAILED') {
    action('continue-update-rollback',target,{stackId:stack.stackId,resourcesToSkip:[],dataLoss:[]});
@@ -71,7 +75,7 @@ export function recoveryPlan(op:any,inspection:any,options:any={}) {
     if(!r.ownershipVerified||!importIdentifiers[r.resourceType]||!definitions[r.logicalId]||!guardrail&&r.definitionDigest!==digest(definitions[r.logicalId])) {
      prerequisites.push(blocker('RETAINED_RESOURCE_COLLISION','platform-maintenance','A retained resource needs proven ownership and a supported import before its name can be reused. It will not be deleted.',{component:target,resource:r.physicalId,logicalId:r.logicalId}));continue;
     }
-    imports.push({logicalId:r.logicalId,resourceType:r.resourceType,physicalId:r.physicalId,identifier:importIdentifiers[r.resourceType],definition:{...definitions[r.logicalId],DeletionPolicy:'Retain',UpdateReplacePolicy:'Retain'}});
+    imports.push({logicalId:r.logicalId,resourceType:r.resourceType,physicalId:r.physicalId,physicalIdentity:r.physicalIdentity,identifier:importIdentifiers[r.resourceType],definition:{...definitions[r.logicalId],DeletionPolicy:'Retain',UpdateReplacePolicy:'Retain'}});
    }
    if(imports.length) {
     const ids=new Set(imports.map(r=>r.logicalId));
@@ -82,13 +86,14 @@ export function recoveryPlan(op:any,inspection:any,options:any={}) {
     action('import-retained',target,{resources:imports,dataLoss:[],reason:'Reattach retained resources to the same owned stack; resolve name collisions without deleting data.'});
    }
   }
-  if(guardrail&&(rebuild||!inspection.guardrailsMatch||stack.status==='UPDATE_ROLLBACK_FAILED'||stack.status==='UPDATE_FAILED'))action('reconcile-guardrails',target,{definitionDigest:inspection.approvedGuardrailDigest,dataLoss:[],reason:'Restore only the platform-approved definition for this graph/node namespace.'});
+  if(guardrail&&(rebuild||!inspection.guardrailsMatch||stack.status==='UPDATE_ROLLBACK_FAILED'||stack.status==='UPDATE_FAILED'))action('reconcile-guardrails',target,{definitionDigest:inspection.approvedGuardrailDigest,dataLoss:[],resources:(inspection.roles||[]).filter((r:any)=>r.exists===false).map((r:any)=>({logicalId:r.logicalId,physicalId:r.arn,outcome:'Create from approved platform definition'})),reason:'Restore only the platform-approved definition for this graph/node namespace. Uses the platform guardrail service role; absent per-stack roles are created before any application role is assumed.'});
  }
  action('release-operation','operation',{dataLoss:[],reason:'Retire stale reviews and release the operation lock. A new application deployment requires a fresh review and human approval.'});
  const content={version:LIFECYCLE_VERSION,graphId:op.graphId,nodeId:op.nodeId,sourceOperationId:op.operationId,namespace:inspection.scope.namespace,
   inputDigest:op.inputDigest,inspectionDigest:inspectionFingerprint(inspection),approvedGuardrailDigest:inspection.approvedGuardrailDigest,
   allowDataLoss,actions,prerequisites,preservesData:actions.every(a=>!a.dataLoss.length),ownershipEvidence:{application:inspection.application,guardrail:inspection.guardrail},
-  approval:'An authenticated human must approve this exact recovery digest. It never approves a new application template.'};
+  approvalRequirements:{kind:'infrastructure-recovery',exactDigest:true,platformAdministrator:false,applicationDeployment:false},
+  approval:'An authenticated human with graph infrastructure approval authority must approve this exact recovery digest. Platform-maintenance administrator membership is not required. It never approves a new application template.'};
  return {...content,digest:digest(content)};
 }
 export function validRecoveryDigest(plan:any) {const {digest:expected,...content}=plan||{};return !!expected&&expected===digest(content);}

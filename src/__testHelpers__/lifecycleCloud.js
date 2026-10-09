@@ -6,11 +6,13 @@ const {prepareReview,IacReviewService}=require('../iac/review');
 const {LifecycleAws}=require('../iac/lifecycleAws');
 const Store=require('./fakeS3');
 const {ulid}=require('ulid');
+const platformGuardrailPolicy=require('yaml').parse(require('fs').readFileSync(require('path').join(__dirname,'../../serverless.yaml'),'utf8'),{logLevel:'silent'}).resources.Resources.IacGuardrailRole.Properties.Policies[0].PolicyDocument;
 const policy={...DEFAULT_POLICY,accounts:['230639770018'],regions:['us-west-1']};
 const human={sub:'owner',kind:'human',tenant:'personal:owner',scopes:[]};
 const save=(store,key,value)=>new Promise((resolve,reject)=>store.set(key,value,{},e=>e?reject(e):resolve()));
 const read=(store,key)=>new Promise((resolve,reject)=>store.get(key,(e,v)=>e?reject(e):resolve(v)));
-const absent=()=>Object.assign(new Error('Resource does not exist'),{code:'NoSuchEntity'});
+const missingRole=name=>Object.assign(new Error(`The role with name ${name} cannot be found.`),{code:'NoSuchEntity',statusCode:404});
+const missingStack=name=>Object.assign(new Error(`Stack with id ${name} does not exist`),{code:'ValidationError',statusCode:400});
 function environment(){Object.assign(process.env,{IAC_STACK_ISOLATION:'true',IAC_GUARDRAIL_ROLE_ARN:'arn:aws:iam::230639770018:role/platform-guardrails',IAC_WORKER_ROLE_ARN:'arn:aws:iam::230639770018:role/platform-worker',IAC_REVIEW_STATE_MACHINE:'arn:aws:states:us-west-1:230639770018:stateMachine:platform-iac',PLATFORM_ADMIN_SUBS:'admin'});}
 async function fixture(graphId='g',nodeId='stack',options={}) {
  const store=options.store||new Store(),s=stackScope(graphId,nodeId,policy),approved=guardrailTemplate(s,process.env.IAC_WORKER_ROLE_ARN),example=authenticatedApplicationExample(s);
@@ -31,11 +33,11 @@ async function fixture(graphId='g',nodeId='stack',options={}) {
  const cloud=jest.fn(async(method,args)=>{
   calls.push({service:'cloud',method,args});
   let st=stacks.get(args.StackName)||[...stacks.values(),...archived.values()].find(r=>r.StackId===args.StackName);
-  if(method==='describeStacks'){if(!st)throw absent();return {Stacks:[st]};}
-  if(method==='listStackResources'){if(!st)throw absent();return {StackResourceSummaries:st.resources};}
-  if(method==='getTemplate'){if(!st)throw absent();return {TemplateBody:JSON.stringify(st.template)};}
+  if(method==='describeStacks'){if(!st)throw missingStack(args.StackName);return {Stacks:[st]};}
+  if(method==='listStackResources'){if(!st)throw missingStack(args.StackName);return {StackResourceSummaries:st.resources};}
+  if(method==='getTemplate'){if(!st)throw missingStack(args.StackName);return {TemplateBody:JSON.stringify(st.template)};}
   if(method==='deleteStack'){st.StackStatus='DELETE_COMPLETE';st.resources=st.resources.map(r=>({...r,ResourceStatus:st.template.Resources[r.LogicalResourceId].DeletionPolicy==='Retain'||args.RetainResources?.includes(r.LogicalResourceId)?'DELETE_SKIPPED':'DELETE_COMPLETE'}));archived.set(st.StackId,st);stacks.delete(st.StackName);return {};}
-  if(method==='describeChangeSet'){if(!changes.has(args.ChangeSetName))throw absent();return changes.get(args.ChangeSetName);}
+  if(method==='describeChangeSet'){if(!changes.has(args.ChangeSetName))throw Object.assign(new Error(`ChangeSet [${args.ChangeSetName}] does not exist`),{code:'ChangeSetNotFound'});return changes.get(args.ChangeSetName);}
   if(method==='createChangeSet') {
    const template=JSON.parse(args.TemplateBody);changes.set(args.ChangeSetName,{Status:'CREATE_COMPLETE',ExecutionStatus:'AVAILABLE',args,template});
    stack(args.StackName,'REVIEW_IN_PROGRESS',template,args.ResourcesToImport.map(r=>({LogicalResourceId:r.LogicalResourceId,PhysicalResourceId:Object.values(r.ResourceIdentifier)[0],ResourceType:r.ResourceType,ResourceStatus:'IMPORT_PENDING'})));return {Id:args.ChangeSetName};
@@ -47,16 +49,19 @@ async function fixture(graphId='g',nodeId='stack',options={}) {
  });
  const iam=jest.fn(async(method,args)=>{
   calls.push({service:'iam',method,args});
-  if(method==='getRole'){if(args.RoleName===platformRole)return {Role:{Arn:process.env.IAC_GUARDRAIL_ROLE_ARN,AssumeRolePolicyDocument:{Version:'2012-10-17',Statement:[{Effect:'Allow',Principal:{Service:'cloudformation.amazonaws.com'},Action:'sts:AssumeRole'}]}}};const role=roles.get(args.RoleName);if(!role)throw absent();return {Role:role};}
-  if(method==='getRolePolicy'){if(args.RoleName===platformRole)return {PolicyDocument:{Version:'2012-10-17',Statement:permissions?[{Effect:'Allow',Action:'iam:*',Resource:'*'}]:[]}};if(!roles.has(args.RoleName))throw absent();return {PolicyDocument:roles.get(args.RoleName).policy};}
+  if(method==='getRole'){if(args.RoleName===platformRole)return {Role:{Arn:process.env.IAC_GUARDRAIL_ROLE_ARN,AssumeRolePolicyDocument:{Version:'2012-10-17',Statement:[{Effect:'Allow',Principal:{Service:'cloudformation.amazonaws.com'},Action:'sts:AssumeRole'}]}}};const role=roles.get(args.RoleName);if(!role)throw missingRole(args.RoleName);return {Role:role};}
+  if(method==='getRolePolicy'){if(args.RoleName===platformRole)return {PolicyDocument:permissions?JSON.parse(JSON.stringify(platformGuardrailPolicy).replaceAll('${AWS::Partition}','aws').replaceAll('${AWS::AccountId}',s.account)):{Version:'2012-10-17',Statement:[]}};if(!roles.has(args.RoleName))throw missingRole(args.RoleName);return {PolicyDocument:roles.get(args.RoleName).policy};}
   if(method==='listRolePolicies')return {PolicyNames:[roles.get(args.RoleName).policyName]};
   if(method==='listAttachedRolePolicies')return {AttachedPolicies:[]};
-  if(method==='getPolicy'){if(!policies.has(args.PolicyArn))throw absent();return {Policy:{Arn:args.PolicyArn,DefaultVersionId:'v1'}};}
+  if(method==='getPolicy'){if(!policies.has(args.PolicyArn))throw Object.assign(new Error(`Policy ${args.PolicyArn} was not found.`),{code:'NoSuchEntity'});return {Policy:{Arn:args.PolicyArn,DefaultVersionId:'v1'}};}
   if(method==='getPolicyVersion')return {PolicyVersion:{Document:policies.get(args.PolicyArn)}};
   if(method==='listEntitiesForPolicy')return {PolicyRoles:[],PolicyUsers:[],PolicyGroups:[]};
   throw new Error('Unexpected IAM call '+method);
  });
- const clients={cloud,iam,states:jest.fn(async()=>({status:workflow})),assume:jest.fn(async()=>({AccessKeyId:'never-return-credentials',SecretAccessKey:'never-return-secret'})),application:async()=>cloud,repair:jest.fn(async()=>({restored:true}))};
+ const clients={cloud,iam,states:jest.fn(async()=>({status:workflow})),assume:jest.fn(async()=>({AccessKeyId:'never-return-credentials',SecretAccessKey:'never-return-secret'})),application:jest.fn(async()=>{
+  if(!roles.has(approved.Resources.WorkerRole.Properties.RoleName))throw Object.assign(new Error('Assigned worker cannot be assumed before guardrail restoration'),{code:'AccessDenied'});
+  return cloud;
+ }),repair:jest.fn(async()=>({restored:true}))};
  const aws=new LifecycleAws(clients,()=>policy),sent=[],start=jest.fn(async()=>{});
  const resources=Object.entries(JSON.parse(input.text).Resources).map(([logical,r])=>({logicalId:logical,resourceType:r.Type,physicalId:r.Type==='AWS::Lambda::Function'?s.namespace+'backend':s.namespace+logical.toLowerCase()}));
  let appStatus={exists:false};
