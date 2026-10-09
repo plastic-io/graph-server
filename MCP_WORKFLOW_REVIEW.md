@@ -82,7 +82,7 @@ approve via MCP. No maintenance-admin allowlist change is needed for this fix.
    retained boundary; restore the platform-defined roles; retire the failed
    operation. The boundary remains retained and there is no application data loss.
 3. A human reviews resource outcomes and approves the **exact recovery digest**
-   in the CF node. Approval starts the platform worker. State, ownership,
+   in the system bar's Recovery dialog. Approval starts the platform worker. State, ownership,
    immutable IAM resource IDs, policy contents and boundary consumers are checked
    again before deletion/import. No arbitrary resource adoption is permitted.
 4. Observe recovery via the node, `iac.status`, `iac.events` and
@@ -167,6 +167,27 @@ IAM policy, authentication configuration or backend code.
 Live verification at `2026-10-09T03:44:51.029Z` matched the deployed editor
 manifest, HTML and component bundle hashes, with the Cognito provider and
 existing server revision preserved.
+
+The Infrastructure recovery dialog uses the same compact visual treatment:
+stack/ownership status in a short summary, numbered recovery actions, explicit
+retention and deletion notices, and collapsed resource/evidence sections. Long
+resource tables scroll within a bounded dialog; the full recovery digest and
+approval controls stay in a fixed footer. Expired and superseded reviews are
+identified directly. Platform maintenance remains a separate, record-only review.
+Approval scope, exact-digest submission, data-loss confirmation, reconnect and
+fresh-deployment review behavior are preserved.
+
+The modal follow-up passed 119 integration tests, both browser regressions,
+zero-error Vue/TypeScript checking and the Cognito production build. Browser checks use mocked infrastructure on
+disposable in-memory graphs: a 35-resource review keeps its approval footer in
+view while scrolling, at desktop and 390 px viewport widths, and restores its
+digest after reload. Light/dark themes and failed, ready, expired, blocked and
+recovered states were rendered and inspected. These UI checks do not execute
+live recovery or establish additional AWS deployment evidence.
+The editor-only release was verified at `2026-10-09T04:44:52.499Z`: the public
+manifest, HTML and recovery component bundle match editor revision `fbad254`.
+Cognito configuration and server revision are preserved; no stack operation or
+resource deletion was requested.
 
 Auto-approve is **off by default**. A human must accept a warning about costs and
 IAM changes to enable it for this graph/editor session; reload or graph change
@@ -308,8 +329,9 @@ Generic limits remain explicit:
   CLI fallback is introduced.
 
 Last released pair: server `6b1f921a71fe61252c5dae6ccc5db4d9d1cf4785`, editor
-`35d8543e04022ac68746570d514c8bdc9f47d6b1`, account **230639770018 / us-west-1**.
-Release evidence is retained at `/private/tmp/graph-editor-compact-release/`,
+`fbad254cfea0d5b41422841f995203f5bbb7eed1`, account **230639770018 / us-west-1**.
+Release evidence is retained at `/private/tmp/graph-recovery-modal-release/`,
+`/private/tmp/graph-editor-compact-release/`,
 `/private/tmp/graph-inspection-release-6b1f921/`,
 `/private/tmp/graph-import-release-66558dc/` and the prior
 `/private/tmp/graph-guardrail-release-44f9760/`; the public
@@ -318,7 +340,7 @@ identifies the deployed pair. This document does not instruct or authorize
 shipping the Chess application.
 
 Paired editor revision for this follow-up:
-`35d8543e04022ac68746570d514c8bdc9f47d6b1`.
+`fbad254cfea0d5b41422841f995203f5bbb7eed1`.
 No CloudFormation stack deletion is authorized by platform release or automatic
 approval. No further live stack deletion will be performed under this task. Unrelated CloudFormation projects in this shared account
 are outside the task.
