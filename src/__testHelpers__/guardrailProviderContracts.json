@@ -9,7 +9,50 @@
         "iam:ListEntitiesForPolicy",
         "iam:GetPolicyVersion"
       ],
-      "importIdentifier": "PolicyArn"
+      "importIdentifier": "PolicyArn",
+      "handlerPermissions": {
+        "create": [
+          "iam:CreatePolicy",
+          "iam:AttachGroupPolicy",
+          "iam:AttachUserPolicy",
+          "iam:AttachRolePolicy"
+        ],
+        "read": [
+          "iam:GetPolicy",
+          "iam:ListEntitiesForPolicy",
+          "iam:GetPolicyVersion"
+        ],
+        "update": [
+          "iam:DetachRolePolicy",
+          "iam:GetPolicy",
+          "iam:ListPolicyVersions",
+          "iam:DetachGroupPolicy",
+          "iam:DetachUserPolicy",
+          "iam:CreatePolicyVersion",
+          "iam:DeletePolicyVersion",
+          "iam:AttachGroupPolicy",
+          "iam:AttachUserPolicy",
+          "iam:AttachRolePolicy"
+        ],
+        "delete": [
+          "iam:DetachRolePolicy",
+          "iam:GetPolicy",
+          "iam:ListPolicyVersions",
+          "iam:DetachGroupPolicy",
+          "iam:DetachUserPolicy",
+          "iam:DeletePolicyVersion",
+          "iam:DeletePolicy",
+          "iam:ListEntitiesForPolicy"
+        ],
+        "list": [
+          "iam:ListPolicies"
+        ]
+      },
+      "createOnlyProperties": [
+        "/properties/ManagedPolicyName",
+        "/properties/Description",
+        "/properties/Path"
+      ]
     },
     "AWS::IAM::Role": {
       "readPermissions": [
@@ -18,7 +61,54 @@
         "iam:ListRolePolicies",
         "iam:GetRolePolicy"
       ],
-      "importIdentifier": "RoleName"
+      "importIdentifier": "RoleName",
+      "handlerPermissions": {
+        "create": [
+          "iam:CreateRole",
+          "iam:PutRolePolicy",
+          "iam:AttachRolePolicy",
+          "iam:GetRolePolicy",
+          "iam:TagRole",
+          "iam:UntagRole",
+          "iam:GetRole"
+        ],
+        "read": [
+          "iam:GetRole",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListRolePolicies",
+          "iam:GetRolePolicy"
+        ],
+        "update": [
+          "iam:UpdateRole",
+          "iam:UpdateRoleDescription",
+          "iam:UpdateAssumeRolePolicy",
+          "iam:DetachRolePolicy",
+          "iam:AttachRolePolicy",
+          "iam:DeleteRolePermissionsBoundary",
+          "iam:PutRolePermissionsBoundary",
+          "iam:DeleteRolePolicy",
+          "iam:PutRolePolicy",
+          "iam:TagRole",
+          "iam:UntagRole"
+        ],
+        "delete": [
+          "iam:DeleteRole",
+          "iam:DetachRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:GetRole",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListRolePolicies",
+          "iam:TagRole",
+          "iam:UntagRole"
+        ],
+        "list": [
+          "iam:ListRoles"
+        ]
+      },
+      "createOnlyProperties": [
+        "/properties/Path",
+        "/properties/RoleName"
+      ]
     }
   }
 }

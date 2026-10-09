@@ -2,9 +2,12 @@ import {createHash} from 'crypto';
 import {stackScope} from './isolation';
 import {guardrailTemplate} from './guardrails';
 import {policyFromEnv,parseTemplate} from './validator';
+import {preservationMode,preservationStateProblems,preservationActionProblems} from './preservation';
 
-export const LIFECYCLE_VERSION='1.2.1';
+export const LIFECYCLE_VERSION='1.3.0';
 export const terminalStates=new Set(['succeeded','failed','rolled-back','rollback-failed','cancelled','expired','stale','no-changes','destroyed','recovered','recovery-blocked','inspected']);
+export function pendingReview(op:any){return !!op&&!op.approval&&!op.recoveryApproval&&!op.startedAt&&!op.recoveryDispatchedAt&&
+ !op.reviewInvalidatedAt&&['awaiting-review','recovery-ready','recovery-blocked','expired','stale'].includes(op.state);}
 export function canonical(value:any):string {
  if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';
  if(value&&typeof value==='object')return '{'+Object.keys(value).filter(k=>value[k]!==undefined).sort().map(k=>JSON.stringify(k)+':'+canonical(value[k])).join(',')+'}';
@@ -41,10 +44,15 @@ export function inspectionFingerprint(i:any) {
 /** No client can choose AWS commands, resource ARNs, guardrail policies, or role contents. */
 export function recoveryPlan(op:any,inspection:any,options:any={}) {
  const actions:any[]=[],prerequisites=[...(inspection.blockers||[]).filter((b:any)=>b.kind!=='recovery')];
+ const preservation=preservationMode(options.preservation,op.preservation);
  const allowDataLoss=options.allowDataLoss===true;
+ if(preservation&&allowDataLoss)refused('SCHEMA_INVALID','Strict preservation and allowDataLoss cannot be combined.',400);
+ const preservationBlockers=preservation?preservationStateProblems(inspection):[];
+ prerequisites.push(...preservationBlockers);
  const action=(kind:string,target:string,extra:any={})=>actions.push({kind,target,...extra});
  for(const target of ['guardrail','application']) {
   const stack=inspection[target],resources=stack.resources||[],guardrail=target==='guardrail';
+  if(preservationBlockers.some(p=>p.component===target))continue;
   if(stack.ownership!=='verified'&&stack.status!=='NOT_CREATED')continue;
   if(stack.status==='UNKNOWN'||/IN_PROGRESS$/.test(stack.status)&&stack.status!=='REVIEW_IN_PROGRESS') {
    prerequisites.push(blocker('STACK_BUSY','busy','Wait for the current CloudFormation operation to finish.',{component:target,resource:stack.stackId||stack.name}));continue;
@@ -92,9 +100,15 @@ export function recoveryPlan(op:any,inspection:any,options:any={}) {
   if(guardrail&&(rebuild||!inspection.guardrailsMatch||stack.status==='UPDATE_ROLLBACK_FAILED'||stack.status==='UPDATE_FAILED'))action('reconcile-guardrails',target,{definitionDigest:inspection.approvedGuardrailDigest,dataLoss:[],resources:(inspection.roles||[]).filter((r:any)=>r.exists===false).map((r:any)=>({logicalId:r.logicalId,physicalId:r.arn,outcome:'Create from approved platform definition'})),reason:'Restore only the platform-approved definition for this graph/node namespace. Uses the platform guardrail service role; absent per-stack roles are created before any application role is assumed.'});
  }
  action('release-operation','operation',{dataLoss:[],reason:'Retire stale reviews and release the operation lock. A new application deployment requires a fresh review and human approval.'});
+ if(preservation){
+  const unsafe=preservationActionProblems(actions);
+  prerequisites.push(...unsafe);
+  // A blocked preservation review never presents destructive actions for approval.
+  for(let i=actions.length-1;i>=0;i--)if(preservationActionProblems([actions[i]]).length)actions.splice(i,1);
+ }
  const content={version:LIFECYCLE_VERSION,graphId:op.graphId,nodeId:op.nodeId,sourceOperationId:op.operationId,namespace:inspection.scope.namespace,
   inputDigest:op.inputDigest,inspectionDigest:inspectionFingerprint(inspection),approvedGuardrailDigest:inspection.approvedGuardrailDigest,
-  allowDataLoss,actions,prerequisites,preservesData:actions.every(a=>!a.dataLoss.length),ownershipEvidence:{application:inspection.application,guardrail:inspection.guardrail},
+  allowDataLoss,actions,prerequisites,preservesData:actions.every(a=>!a.dataLoss.length),...(preservation?{preservation}:{}),ownershipEvidence:{application:inspection.application,guardrail:inspection.guardrail},
   approvalRequirements:{kind:'infrastructure-recovery',exactDigest:true,platformAdministrator:false,applicationDeployment:false},
   approval:'An authenticated human with graph infrastructure approval authority must approve this exact recovery digest. Platform-maintenance administrator membership is not required. It never approves a new application template.'};
  return {...content,digest:digest(content)};
@@ -103,17 +117,18 @@ export function validRecoveryDigest(plan:any) {const {digest:expected,...content
 export function platformDefinition(s:any) {return guardrailTemplate(s,process.env.IAC_WORKER_ROLE_ARN);}
 
 export function nextActions(op:any,inspection=op?.inspection) {
- const state=op?.state,leased=op?.recoveryLease?.until>Date.now(),blocked=[...(inspection?.blockers||[]),...(leased?[{code:'WORKER_ACTIVE',kind:'busy',message:'A previous worker may still be finishing. Wait for its bounded lease before recovery.',leaseUntil:op.recoveryLease.until}]:[])];
+ const state=op?.state,leased=op?.recoveryLease?.until>Date.now(),blocked=[...(inspection?.blockers||[]),...(op?.preservationBlockers||[]),...(op?.recoveryPlan?.prerequisites||[]),...(leased?[{code:'WORKER_ACTIVE',kind:'busy',message:'A previous worker may still be finishing. Wait for its bounded lease before recovery.',leaseUntil:op.recoveryLease.until}]:[])];
  const expired=op?.action==='recover'&&state==='recovery-ready'&&op.expiresAt<Date.now();
  const active=leased||state&&!terminalStates.has(state),recovery=op?.action==='recover';
  const current=!op?.supersededBy;
  return {retryable:current&&!active&&!!inspection?.canReview,automaticRetry:false,blockingPrerequisites:blocked,
   actions:[
    {tool:'iac.inspect',allowed:true,requiredApproval:null},
+   {tool:'iac.cancel',allowed:current&&(pendingReview(op)||!!op?.cancellation),requiredApproval:null,reason:'Cancel only this unapproved review; no AWS resources are changed. Expired reviews can also be cancelled.'},
    {tool:'iac.recovery.plan',allowed:current&&!!op&&(!active||recovery&&state==='recovery-ready'),requiredApproval:null,reason:expired?'Recovery review expired. Prepare a fresh plan.':active?'A fresh plan replaces the unapproved recovery review; an executing operation cannot be replaced.':undefined},
    {action:'approve-recovery-in-graph',allowed:current&&recovery&&state==='recovery-ready'&&!expired,requiredApproval:'human-exact-recovery-digest'},
    {tool:'iac.maintenance.request',allowed:blocked.some((b:any)=>b.kind==='platform-permission'||b.kind==='platform-maintenance'),requiredApproval:'separate-platform-admin-review'},
-   {tool:'iac.review',allowed:current&&!active&&!!inspection?.canReview,requiredApproval:'new-human-exact-deployment-digest'},
+   {tool:'iac.review',allowed:current&&!active&&(!!inspection?.canReview||state==='cancelled'),requiredApproval:'new-human-exact-deployment-digest',...(state==='cancelled'?{reason:'Cancellation released the review. A fresh review must still pass current AWS state, ownership and preservation checks; deployment readiness is not established.'}:{})},
    {action:'approve-deployment-in-graph',allowed:current&&!recovery&&state==='awaiting-review',requiredApproval:'human-exact-deployment-digest'},
    {tool:'iac.runtime.logs',allowed:!!op?.approval&&state==='succeeded',requiredApproval:null},
    {tool:'iac.readiness',allowed:!!op?.approval&&state==='succeeded',requiredApproval:'declared-in-approved-deployment'},

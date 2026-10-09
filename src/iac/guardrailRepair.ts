@@ -1,6 +1,7 @@
 import {IAM,CloudFormation} from 'aws-sdk';
 import {scopeFor,platformDefinition,validRecoveryDigest,digest,operationKey,indexKey,lockKey,refused} from './lifecycleModel';
 import {policyFromEnv} from './validator';
+import {strict,preservationActionProblems,refusePreservation} from './preservation';
 
 /** Privileged platform repair accepts only an operation ID/fence, never IAM JSON or resource identifiers. */
 export async function repairApprovedGuardrails(store:any,request:any,iamCall=(m,a)=>(new IAM() as any)[m](a).promise(),policy=policyFromEnv(),cloudCall=(m,a)=>(new CloudFormation() as any)[m](a).promise()) {
@@ -11,6 +12,14 @@ export async function repairApprovedGuardrails(store:any,request:any,iamCall=(m,
  const [index,lock]=await Promise.all([read(indexKey(op.graphId,op.nodeId)),read(lockKey(op.input.stack))]);
  if(op.action!=='recover'||op.state!=='recovering'||op.recoveryApproval?.digest!==op.recoveryPlan?.digest||!validRecoveryDigest(op.recoveryPlan)||op.recoveryPlan.approvedGuardrailDigest!==digest(definition)||op.recoveryPlan.prerequisites.length||op.recoveryPlan.actions[op.recoveryIndex]?.kind!=='reconcile-guardrails'||op.recoveryLease?.id!==request.leaseId||op.recoveryLease.until<Date.now()||index.operationId!==op.operationId||lock.operationId!==op.operationId)
   refused('RECOVERY_APPROVAL_REQUIRED','An active, fenced, exact-digest human recovery approval is required to restore guardrails.',403);
+ if(op.reviewInvalidatedAt||op.preservation!==op.recoveryPlan.preservation)refused('STALE_RECOVERY','The recovery approval or preservation constraint changed.');
+ if(strict(op)){
+  refusePreservation(preservationActionProblems(op.recoveryPlan.actions));
+  const boundary=await iamCall('getPolicy',{PolicyArn:s.boundaryArn});
+  const version=await iamCall('getPolicyVersion',{PolicyArn:s.boundaryArn,VersionId:boundary.Policy.DefaultVersionId});
+  const doc=typeof version.PolicyVersion.Document==='string'?JSON.parse(decodeURIComponent(version.PolicyVersion.Document)):version.PolicyVersion.Document;
+  if(digest(doc)!==digest(definition.Resources.RuntimeBoundary.Properties.PolicyDocument))refusePreservation([{code:'PRESERVATION_BOUNDARY_UPDATE_UNVERIFIED',kind:'preservation',message:'The boundary document changed. Restoring policy versions without deleting any version is not verified; strict recovery stops before IAM mutations.'}]);
+ }
  const stack=(await cloudCall('describeStacks',{StackName:s.guardrailStack})).Stacks?.[0],tags=Object.fromEntries((stack?.Tags||[]).map(t=>[t.Key,t.Value]));
  if(!stack?.StackId?.startsWith(`arn:aws:cloudformation:${s.region}:${s.account}:stack/${s.guardrailStack}/`)||stack.RoleARN!==process.env.IAC_GUARDRAIL_ROLE_ARN||tags.GraphId!==s.graphId||tags.NodeId!==s.nodeId||tags.IsolationVersion!==s.version||!['CREATE_COMPLETE','UPDATE_COMPLETE','IMPORT_COMPLETE','UPDATE_ROLLBACK_COMPLETE'].includes(stack.StackStatus))refused('OWNERSHIP_UNVERIFIED','Current guardrail stack ownership or state changed before repair.',403);
  const inventory=await cloudCall('listStackResources',{StackName:stack.StackId});
@@ -35,6 +44,7 @@ export async function repairApprovedGuardrails(store:any,request:any,iamCall=(m,
  const policyRow=await iamCall('getPolicy',{PolicyArn:s.boundaryArn}),current=await iamCall('getPolicyVersion',{PolicyArn:s.boundaryArn,VersionId:policyRow.Policy.DefaultVersionId});
  const value=typeof current.PolicyVersion.Document==='string'?JSON.parse(decodeURIComponent(current.PolicyVersion.Document)):current.PolicyVersion.Document;
  if(digest(value)!==digest(definition.Resources.RuntimeBoundary.Properties.PolicyDocument)) {
+  if(strict(op))refusePreservation([{code:'PRESERVATION_BOUNDARY_UPDATE_UNVERIFIED',kind:'preservation',message:'The boundary changed during reconciliation. Strict recovery cannot modify or remove its policy versions.'}]);
   const versions=await iamCall('listPolicyVersions',{PolicyArn:s.boundaryArn});
   if(versions.IsTruncated)refused('INVENTORY_TRUNCATED','Cannot verify boundary policy versions.');
   if(versions.Versions.length>=5){const old=versions.Versions.filter(v=>!v.IsDefaultVersion).sort((a,b)=>new Date(a.CreateDate).getTime()-new Date(b.CreateDate).getTime())[0];if(!old)refused('PLATFORM_MAINTENANCE_REQUIRED','No removable nondefault boundary version.');await iamCall('deletePolicyVersion',{PolicyArn:s.boundaryArn,VersionId:old.VersionId});}

@@ -148,7 +148,7 @@ describe("MCP over the Lambda handler", () => {
         const tools = (await client.listTools()).tools.map((t) => t.name).sort();
         expect(tools).toEqual([
             "component.consumers", "component.publish", "component.search", "execution.cancel", "graph.expand", "graph.invoke", "graph.summary",
-            "iac.events", "iac.history", "iac.inspect", "iac.maintenance.request", "iac.plan", "iac.preflight", "iac.readiness", "iac.recovery.plan", "iac.review", "iac.runtime.logs", "iac.status", "journey.run", "observations.query", "observations.watch", "proposal.commit", "proposal.create", "proposal.decide", "proposal.retire", "proposal.simulate", "proposal.validate",
+            "iac.cancel", "iac.events", "iac.history", "iac.inspect", "iac.maintenance.request", "iac.plan", "iac.preflight", "iac.readiness", "iac.recovery.plan", "iac.review", "iac.runtime.logs", "iac.status", "journey.run", "observations.query", "observations.watch", "proposal.commit", "proposal.create", "proposal.decide", "proposal.retire", "proposal.simulate", "proposal.validate",
             "revision.activate", "revision.cut", "revision.rollback", "server.discover", "tasks.cancel", "tasks.get", "tasks.list", "tests.run",
             "view.screenshot",
         ]);
@@ -1135,5 +1135,57 @@ test('MCP lifecycle acceptance: recover an induced guardrail failure, get fresh 
   expect(watched.map(({arrival,...e})=>e)).toEqual(diagnostic.events);
   expect((await call('iac.history',{nodeId:'stack'})).result.operations.map(o=>o.operationId)).toEqual([pending.operationId,plan.operationId,fixture.source.operationId]);
   expect((await call('iac.inspect',{graphId:'other',nodeId:'stack',operationId:pending.operationId})).error.code).toBe('ADMISSION_DENIED');
+ }finally{await client?.close();process.env=env;}
+});
+
+test('MCP cancellation and preservation: discover, discard unwanted recovery, reconnect, and reach current-state validation without AWS mutations',async()=>{
+ const env={...process.env};require('../__testHelpers__/lifecycleCloud').environment();
+ Object.assign(process.env,{IAC_ACCOUNTS:'230639770018',IAC_REGIONS:'us-west-1'});
+ let client;
+ try{
+  const f=await setup({lifecycle:true}),fixture=f.lifecycleFixture;
+  await f.delegations.put({agentSub:agent.sub,graphId:'g1',delegatedBy:owner.sub,scopes:['graph:read','graph:propose','graph:observe','iac:propose','iac:read-status'],expiresAt:null});
+  client=await connect(f.mcp,agent);
+  const call=async(name,args={})=>parse(await client.callTool({name,arguments:{schemaVersion:1,graphId:'g1',...args}}));
+  const discovery=(await call('server.discover',{topic:'lifecycle'})).result;
+  expect(discovery.server.version).toBe('2.5.0');expect(discovery.contracts.lifecycle.version).toBe('1.3.0');
+  const contracts=discovery.contracts.lifecycle;
+  expect(contracts.tools['iac.cancel'].inputSchema.required).toContain('operationId');
+  for(const name of ['iac.inspect','iac.review','iac.recovery.plan'])expect(contracts.tools[name].inputSchema.properties.preservation.const).toBe('strict');
+  const config=JSON.parse(JSON.stringify(fixture.graph.nodes[0].properties.iac)),table=JSON.parse(config.template.text).Resources.Records;
+  config.template.text=JSON.stringify({Resources:{Records:table}});config.capabilities=[];
+  const base=(await call('graph.summary')).envelope.resultRevision;
+  const proposal=(await call('proposal.create',{baseRevision:base,idempotencyKey:ULID,description:'Disposable preservation-only platform fixture',ops:[
+   {op:'add-node',node:{id:'stack',url:'stack',name:'Preservation test stack'}},
+   {op:'set-iac-desired',nodeId:'stack',desired:config},
+  ]})).result;
+  expect((await f.proposals.commit('g1',proposal.proposalId,owner)).proposal.state).toBe('committed');
+  const plan=(await call('iac.recovery.plan',{nodeId:'stack',operationId:fixture.source.operationId,idempotencyKey:'pending-unwanted'})).result;
+  expect(plan.state).toBe('recovery-ready');
+  const before=fixture.calls.length;
+  const cancelled=(await call('iac.cancel',{nodeId:'stack',operationId:plan.operationId,reason:'Keep every stack and resource intact.'})).result;
+  expect(cancelled).toMatchObject({state:'cancelled',reviewDigest:null,recoveryPlan:{digest:null},cancellation:{awsMutations:false}});
+  const check=new(require('ajv/dist/2020').default)({strict:false,validateFormats:false}).compile(contracts.resultSchemas['iac.cancel']);
+  expect({valid:check(cancelled),errors:check.errors}).toEqual({valid:true,errors:null});
+  expect(fixture.calls).toHaveLength(before);
+  await client.close();client=await connect(f.mcp,agent);
+  expect((await call('iac.cancel',{nodeId:'stack',operationId:plan.operationId})).result.cancellation).toEqual(cancelled.cancellation);
+  const status=(await call('iac.status',{nodeId:'stack'})).result;expect(status.state).toBe('cancelled');
+  expect(status.nextActions.actions.find(a=>a.tool==='iac.review').allowed).toBe(true);
+  const blocked=await call('iac.review',{nodeId:'stack',retryOf:plan.operationId,preservation:'strict'});
+  expect(blocked.error.code).toBe('PRESERVATION_BLOCKED');
+  expect(JSON.stringify(blocked)).toContain('PRESERVATION_IN_PLACE_UNSUPPORTED');expect(JSON.stringify(blocked)).not.toContain('Recovery owns this stack');
+  const strict=(await call('iac.recovery.plan',{nodeId:'stack',operationId:plan.operationId,idempotencyKey:'preserve-1',preservation:'strict'})).result;
+  expect(strict.state).toBe('recovery-blocked');expect(strict.recoveryPlan.actions.every(a=>a.kind==='release-operation')).toBe(true);
+  await expect(f.reviews.lifecycle.approve('g1','stack',owner,{operationId:plan.operationId,recoveryDigest:plan.recoveryPlan.digest})).rejects.toMatchObject({code:'STALE_RECOVERY'});
+  const events=(await call('iac.events',{nodeId:'stack',operationId:plan.operationId,limit:100})).result.events;
+  const watched=(await call('observations.watch',{from:'beginning',filter:{operationId:plan.operationId},limit:100})).result;
+  expect(watched.observations.map(({arrival,...e})=>e)).toEqual(events);
+  expect(watched.observations).toEqual(fixture.sent.filter(e=>e.operationId===plan.operationId));
+  expect(events.filter(e=>e.kind==='deployment.review.cancelled')).toHaveLength(1);
+  expect((await call('observations.watch',{cursor:watched.nextCursor,filter:{operationId:plan.operationId}})).result.observations).toEqual([]);
+  expect((await call('iac.history',{nodeId:'stack'})).result.operations.find(o=>o.operationId===plan.operationId)).toMatchObject({state:'cancelled',cancellation:{awsMutations:false}});
+  expect((await call('iac.cancel',{graphId:'another-graph',nodeId:'stack',operationId:plan.operationId})).error.code).toBe('ADMISSION_DENIED');
+  expect(fixture.calls.some(c=>/^(delete|create|update|execute|put|purge|rollback|continue)/i.test(c.method))).toBe(false);expect(fixture.start).not.toHaveBeenCalled();
  }finally{await client?.close();process.env=env;}
 });

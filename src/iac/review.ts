@@ -5,7 +5,7 @@ import {DeploymentProgress,phaseFor} from './progress';
 import {diagnosticError,diagnosticText,recoveryFor} from './diagnosticSafety';
 import {DelegationStore} from '../policy/delegation';
 import {IacLifecycleService,publicRecoveryPlan,isPlatformAdmin,maintenanceConfiguration} from './lifecycle';
-import {nextActions,terminalStates} from './lifecycleModel';
+import {nextActions,terminalStates,pendingReview} from './lifecycleModel';
 import {readinessProblems} from './readiness';
 import {progressAllowed} from './progressAccess';
 import {createHash} from 'crypto';
@@ -14,12 +14,14 @@ import {decide} from '../policy/decide';
 import {assemble} from './assemble';
 import {IacService} from './service';
 import {parseTemplate, policyFromEnv, validateDesired, validateTemplate} from './validator';
+import {preservationMode,strict,refusePreservation,preservationTemplateProblems,preservationChangeProblems} from './preservation';
 
 // These types match the dedicated execution role, which cannot create IAM roles,
 // execute code, or alter the graph service. Expanding this set also requires IAM.
 export const APPLY_TYPES = LEGACY_APPLY_TYPES;
 const terminal = terminalStates;
 const hash = (value: any): string => createHash('sha256').update(canonical(value)).digest('hex');
+const reviewDigest=(op:any,plan:any)=>hash({inputDigest:op.inputDigest,policyDigest:op.policyDigest,...(op.action==='destroy'?{action:'destroy'}:{}),plan,...(op.preservation?{preservation:op.preservation}:{})});
 const accessChange = (type:string,before:any,after:any) => /^AWS::IAM::/.test(type)||/::(?:BucketPolicy|QueuePolicy|TopicPolicy|Permission|Authorizer)$/.test(type)
     ? {before:before?.Properties||null,after:after?.Properties||null} : undefined;
 function canonical(value: any): string {
@@ -57,6 +59,7 @@ export function prepareReview(projection: any, nodeId: string, policy = policyFr
 
 export interface ReviewCloud {
     prepare?(record:any):Promise<boolean>;
+    template?(record:any):Promise<any>;
     resources?(record:any):Promise<any[]>;
     destroy?(record:any):Promise<void>;
     stack(name: string, record?:any): Promise<any>;
@@ -105,7 +108,7 @@ export class IacReviewService {
             if (event.httpMethod==='POST' && action==='recovery-approve') return {status:await this.lifecycle.approve(graphId,nodeId,event.principal,body)};
             if (event.httpMethod==='POST' && action==='maintenance') return this.lifecycle.maintenance(graphId,nodeId,event.principal,body,body.action||'request');
             if (event.httpMethod==='POST' && action==='readiness') return this.lifecycle.readiness(graphId,nodeId,event.principal,body);
-            if (event.httpMethod==='POST' && action==='plan') return {status:await this.begin(graphId,nodeId,event.principal,body.replace===true,body.action||'apply',body.retryOf)};
+            if (event.httpMethod==='POST' && action==='plan') return {status:await this.begin(graphId,nodeId,event.principal,body.replace===true,body.action||'apply',body.retryOf,body.preservation)};
             if (event.httpMethod==='POST' && action==='apply') return {status:await this.approve(graphId,nodeId,event.principal,body)};
             if (event.httpMethod==='POST' && action==='discard') return {status:await this.cancel(graphId,nodeId,event.principal,body)};
             problem('Unknown infrastructure action.','NOT_FOUND',404);
@@ -172,6 +175,7 @@ export class IacReviewService {
         const index = await this.read(IacReviewService.index(graphId,nodeId));
         if (!index&&!operationId) return null;
         const record=(await this.operation(graphId,nodeId,operationId||index.value.operationId)).value;
+        if(record.cancellation)await this.completeCancellation(record);
         try{if(refresh)await this.deps.refreshDiagnostics?.(record.operationId);}catch(e){
             try{await this.progress().append(record,[{id:'collector-unavailable',source:'diagnostics',kind:'diagnostic-warning',phase:phaseFor(record.state),status:'UNAVAILABLE',reason:'Diagnostic refresh failed. Stored progress and the original error remain available.',error:diagnosticError(e,record)}]);}catch{/* The stored deployment failure remains the primary response. */}
         }
@@ -199,7 +203,7 @@ export class IacReviewService {
         const operations:any[]=[];
         for(let n=0;id&&n<Math.min(Math.max(Number(options.limit)||20,1),50);n++){
             const op=(await this.operation(graphId,nodeId,id)).value;
-            operations.push({operationId:id,state:op.state,action:op.action,createdAt:op.createdAt,updatedAt:op.updatedAt,revisionId:op.revisionId||'live',inputDigest:op.inputDigest,reviewDigest:op.reviewDigest,reason:diagnosticText(op.reason,op)});
+            operations.push({operationId:id,state:op.state,action:op.action,createdAt:op.createdAt,updatedAt:op.updatedAt,revisionId:op.revisionId||'live',inputDigest:op.inputDigest,reviewDigest:op.reviewDigest,preservation:op.preservation,cancellation:op.cancellation,reason:diagnosticText(op.reason,op)});
             id=op.previousOperationId;
         }
         return {operations,nextCursor:id||null};
@@ -210,8 +214,9 @@ export class IacReviewService {
         if (!row || row.value.graphId!==graphId || row.value.nodeId!==nodeId) problem('Review not found.','NOT_FOUND',404);
         return row;
     }
-    async begin(graphId: string, nodeId: string, principal: any, replace = false, action='apply',retryOf?:string) {
+    async begin(graphId: string, nodeId: string, principal: any, replace = false, action='apply',retryOf?:string,preservation?:any) {
         principal=await this.authorize(graphId,principal);
+        preservation=preservationMode(preservation);
         if(!['apply','destroy'].includes(action))problem('Unknown deployment action.');
         if(action==='destroy'&&!isolationEnabled())problem('Reviewed destroy requires stack isolation.');
         if (!decide(principal,['iac:propose']).allow) problem('Infrastructure planning is not permitted.','ADMISSION_DENIED',403);
@@ -222,34 +227,46 @@ export class IacReviewService {
         if (unsupported.length) problem('The deployment role does not support: '+[...new Set(unsupported)].join(', '));
         this.checkPrivateBuckets(input);
         const lockKey = this.lockKey(input.stack);
-        const lock = await this.read(lockKey);
+        let lock = await this.read(lockKey);
         const existingIndex=await this.read(IacReviewService.index(graphId,nodeId));
+        const currentRecord=existingIndex?.value.operationId?await this.read(IacReviewService.key(existingIndex.value.operationId)):null;
+        preservation=preservationMode(preservation,currentRecord?.value.preservation);
+        if(preservation==='strict'){
+            if(action==='destroy')refusePreservation([{code:'PRESERVATION_STACK_DELETION',kind:'preservation',message:'Strict preservation prohibits stack deletion. No review or AWS operation was created.'}]);
+        }
         if(retryOf){const prior=(await this.operation(graphId,nodeId,retryOf)).value;if(!terminal.has(prior.state)||existingIndex?.value.operationId!==retryOf)problem('Retry must reference the current terminal operation; inspect or recover it first.','STALE_REVIEW',409);}
         if(existingIndex?.value.operationId){const priorProgress=await this.progress().head(existingIndex.value.operationId),prior=await this.read(IacReviewService.key(existingIndex.value.operationId));
-            if(this.deps.lifecycle?.inspect&&prior&&terminal.has(prior.value.state)&&!['succeeded','destroyed','no-changes'].includes(prior.value.state)){
-                const inspection=await this.lifecycle.inspect(graphId,nodeId,principal,{operationId:prior.value.operationId});
-                if(!inspection.canReview)problem('Current readiness blocks a fresh review. Use iac.inspect, iac.recovery.plan or iac.maintenance.request for its precise prerequisites.','RECOVERY_REQUIRED',409);
+            if(this.deps.lifecycle?.inspect&&!isolationEnabled()&&prior&&terminal.has(prior.value.state)&&!['succeeded','destroyed','no-changes'].includes(prior.value.state)){
+                const inspection=await this.lifecycle.inspect(graphId,nodeId,principal,{operationId:prior.value.operationId,preservation});
+                if(!inspection.canReview)throw Object.assign(new Error('Current readiness blocks a fresh review. Inspect its current prerequisites.'),{code:'RECOVERY_REQUIRED',status:409,problems:inspection.blockers});
             }
             if(!this.deps.lifecycle?.inspect&&prior&&terminal.has(prior.value.state)&&!['succeeded','destroyed','recovered'].includes(prior.value.state)&&priorProgress?.snapshot?.recovery?.category==='platform-intervention')problem('The previous operation requires platform intervention. Read its resource failures and recovery guidance in this graph before retrying.','RECOVERY_REQUIRED',409);}
         if (lock?.value.operationId) {
             const old = await this.read(IacReviewService.key(lock.value.operationId));
             if(old?.value.input.isolation && ['succeeded','destroyed'].includes(old.value.state) && !old.value.finalizedAt) return this.publicRecord(old.value);
             if (old && (!terminal.has(old.value.state) || old.value.manualRecoveryRequired)) {
-                if(old.value.action==='recover')problem('Recovery owns this stack. Wait for its outcome before creating a fresh deployment review.','CONFLICT',409);
+                if(old.value.action==='recover')problem('Recovery owns this stack. Use iac.cancel with its current operationId to discard an unapproved review, or wait for approved work to finish.','CONFLICT',409);
                 if (old.value.graphId!==graphId || old.value.nodeId!==nodeId || old.value.manualRecoveryRequired) problem('Another operation holds this stack. Finish its review or recovery before starting another.','CONFLICT',409);
-                if (!replace || !['awaiting-review'].includes(old.value.state)) return this.publicRecord(old.value);
-                if (!await this.cas(IacReviewService.key(old.value.operationId), {...old.value,state:'cancelled',reason:'Replaced by a new review.'},old.etag)) problem('The review changed. Refresh and try again.','CONFLICT',409);
+                if (!replace || !['awaiting-review'].includes(old.value.state)){
+                    if(preservation!==old.value.preservation)problem('The pending review has different preservation constraints. Cancel it with iac.cancel or explicitly replace the unapproved deployment review.','CONSTRAINT_REVIEW_MISMATCH',409);
+                    return this.publicRecord(old.value);
+                }
+                await this.cancel(graphId,nodeId,principal,{operationId:old.value.operationId,reason:'Replaced by a new review.'});
+                lock=await this.read(lockKey);
             }
         }
         if(this.deps.lifecycle?.inspect&&isolationEnabled()){
-            const inspected=await this.lifecycle.inspect(graphId,nodeId,principal);
-            if(!inspected.canReview)problem('Current AWS readiness blocks deployment planning. Use iac.inspect for the current prerequisites.','RECOVERY_REQUIRED',409);
+            const inspected=await this.lifecycle.inspect(graphId,nodeId,principal,{preservation});
+            if(!inspected.canReview)throw Object.assign(new Error('Current AWS readiness blocks deployment planning. No deployment was started. Read the returned prerequisites or iac.inspect.'),{code:inspected.blockers.some(b=>b.kind==='preservation')?'PRESERVATION_BLOCKED':'RECOVERY_REQUIRED',status:409,problems:inspected.blockers});
         }
+        // State limitations take precedence over stricter content requirements.
+        // Both checks precede operation startup and preparatory AWS mutations.
+        if(preservation==='strict')refusePreservation(preservationTemplateProblems(input));
         const id=ulid(), now=this.now();
         const record:any={operationId:id,graphId,nodeId,input,policyDigest:input.policyDigest,inputDigest:input.inputDigest,
             revisionId:await this.deps.revision?.(graphId)||'live',previousOperationId:existingIndex?.value.operationId||null,
             state:'planning',createdAt:now,updatedAt:now,expiresAt:now+3600000,by:{sub:principal.sub,kind:principal.kind},
-            action,...(retryOf?{retryOf}:{}),changeSetName:'review-'+(input.isolation?.namespace||'')+id,history:[{state:'planning',at:now}]};
+            action,...(preservation?{preservation}:{}),...(retryOf?{retryOf}:{}),changeSetName:'review-'+(input.isolation?.namespace||'')+id,history:[{state:'planning',at:now}]};
         await this.cas(IacReviewService.key(id),record,null);
         if (!await this.cas(lockKey,{operationId:id},lock?.etag || null)) problem('Another review started for this stack. Refresh and try again.','CONFLICT',409);
         const indexKey=IacReviewService.index(graphId,nodeId), index=await this.read(indexKey);
@@ -271,6 +288,8 @@ export class IacReviewService {
         if (!body.reviewDigest || body.reviewDigest!==op.reviewDigest) problem('Approve the exact review displayed in the editor. Refresh the review.','STALE_REVIEW',409);
         if (op.approval && ['apply-requested','applying','succeeded','destroyed','rolled-back','rollback-failed'].includes(op.state)) return this.publicRecord(op);
         if (op.state!=='awaiting-review' || this.now()>op.expiresAt) problem('This review is no longer available. Create a new review.','STALE_REVIEW',409);
+        if(op.reviewInvalidatedAt||op.reviewDigest!==reviewDigest(op,op.plan))problem('The reviewed content or preservation constraint changed. Prepare a fresh review.','STALE_REVIEW',409);
+        if(strict(op))refusePreservation(preservationChangeProblems(op.plan.changes));
         const current=await this.reviewInput(graphId,nodeId,principal,op.action);
         if (current.inputDigest!==op.inputDigest || current.policyDigest!==op.policyDigest || current.deploymentOperationId!==op.input.deploymentOperationId || !current.validation.ok) problem('The template, deployed stack, or deployment policy changed after this review. Create a new review.','STALE_REVIEW',409);
         if (op.plan.destructive && body.confirmDestructive!==true) problem('Confirm resource removal or replacement before applying this review.','APPROVAL_REQUIRED',409);
@@ -281,13 +300,41 @@ export class IacReviewService {
         return this.publicRecord(next);
     }
     async cancel(graphId: string,nodeId: string,principal: any,body: any) {
-        await this.authorize(graphId,principal,true);
-        const row=await this.operation(graphId,nodeId,body.operationId),op=row.value;
-        if (!['planning','awaiting-review'].includes(op.state)) problem('Only a pending review can be discarded. An apply already submitted to AWS must finish.','CONFLICT',409);
-        const next={...op,state:'cancelled',reason:'Review discarded.',updatedAt:this.now(),history:[...op.history,{state:'cancelled',at:this.now(),by:principal.sub}]};
-        if (!await this.cas(IacReviewService.key(op.operationId),next,row.etag)) problem('The review changed. Refresh and try again.','CONFLICT',409);
-        await this.observe(next);
-        return this.publicRecord(next);
+        principal=await new DelegationStore(this.store).resolve(principal,graphId);
+        if(!decide(principal,['graph:read','iac:propose']).allow)problem('Cancelling a review requires graph-scoped infrastructure proposal authority.','ADMISSION_DENIED',403);
+        if(!/^[A-Za-z0-9_.-]{1,64}$/.test(graphId||'')||!/^[A-Za-z0-9_.-]{1,64}$/.test(nodeId||''))problem('Invalid graph or node ID.','SCHEMA_INVALID');
+        if(body.reason!==undefined&&(typeof body.reason!=='string'||body.reason.length>400))problem('Cancellation reason must be at most 400 characters.','SCHEMA_INVALID');
+        for(let attempt=0;attempt<8;attempt++){
+            const row=await this.operation(graphId,nodeId,body.operationId),op=row.value;
+            if(op.state==='cancelled'&&op.cancellation){await this.completeCancellation(op);return {...this.publicRecord(op),nextActions:nextActions(op)};}
+            if(!pendingReview(op))problem('Only an unapproved recovery or deployment review can be cancelled. Planning, approved, and executing operations must finish; this tool never stops AWS work.','REVIEW_NOT_CANCELLABLE',409);
+            if(op.supersededBy||(await this.read(IacReviewService.index(graphId,nodeId)))?.value.operationId!==op.operationId)problem('Cancel the expected current operation returned by iac.status.','STALE_REVIEW',409);
+            const at=this.now(),reason=diagnosticText(body.reason||'Unapproved infrastructure review cancelled.',op,400);
+            // This CAS is the linearization point shared with approval and worker
+            // admission. A cancelled row makes its lock logically free immediately.
+            // Physical fence cleanup is owner-conditional and resumable after failure.
+            const cancellation={at,by:principal.sub,priorState:op.state,reason,awsMutations:false,
+                invalidatedDigests:{deployment:op.reviewDigest||null,recovery:op.recoveryPlan?.digest||null},
+                retainedChangeSet:op.changeSetId||null};
+            const next={...op,state:'cancelled',reason,updatedAt:at,reviewInvalidatedAt:at,reviewDigest:null,
+                ...(op.recoveryPlan?{recoveryPlan:{...op.recoveryPlan,digest:null}}:{}),
+                manualRecoveryRequired:false,cancellation,history:[...(op.history||[]),{state:'cancelled',at,by:principal.sub}]};
+            if(!await this.cas(IacReviewService.key(op.operationId),next,row.etag))continue;
+            await this.completeCancellation(next);
+            return {...this.publicRecord(next),nextActions:nextActions(next)};
+        }
+        problem('The review changed during cancellation. Read iac.status and retry the same operation ID.','CONFLICT',409);
+    }
+    private async completeCancellation(op:any){
+        const key=this.lockKey(op.input.stack);
+        for(let attempt=0;attempt<8;attempt++){
+            const lock=await this.read(key);
+            if(lock?.value.operationId!==op.operationId)break;
+            if(await this.cas(key,{operationId:null},lock.etag))break;
+            if(attempt===7)problem('Review cancelled; lock cleanup is pending. Retry iac.cancel with the same operation ID.','CANCELLATION_CLEANUP_PENDING',409);
+        }
+        await this.progress().append(op,[{id:'review-cancelled',source:'worker',kind:'review.cancelled',state:'cancelled',phase:'terminal',at:op.cancellation.at,
+            reason:op.cancellation.reason,lifecycle:{cancellation:op.cancellation,approvalValid:false,lockReleased:true}}]);
     }
     private async release(op: any) {
         if (op.manualRecoveryRequired) return;
@@ -310,7 +357,8 @@ export class IacReviewService {
         const row=await this.read(IacReviewService.key(op.operationId));
         if(!row) return;
         const value=row.value;
-        await this.progress().append(value,[{id:'state:'+value.state,source:'worker',state:value.state,...(value.state==='apply-requested'?{lifecycle:{approval:value.approval}}:{}),phase:phaseFor(value.state),reason:value.reason,stackName:value.input.stack.name,at:value.updatedAt}]);
+        const lifecycle={...(value.state==='apply-requested'?{approval:value.approval}:{}),...(value.preservation?{preservation:value.preservation}:{}),...(value.preservationBlockers?{preservationBlockers:value.preservationBlockers}:{})};
+        await this.progress().append(value,[{id:'state:'+value.state,source:'worker',state:value.state,...(Object.keys(lifecycle).length?{lifecycle}:{}),phase:phaseFor(value.state),reason:value.reason,stackName:value.input.stack.name,at:value.updatedAt}]);
     }
     private checkPrivateBuckets(input: any) {
         const doc=parseTemplate(input.text,input.format).doc;
@@ -337,7 +385,7 @@ export class IacReviewService {
         if (terminal.has(op.state)) return;
         const error=op.originalError||diagnosticError(reason,op);
         const manual=!!op.approval||/guardrail.*fail|ROLLBACK_FAILED/i.test(error.message);
-        const next={...op,state:'failed',reason:error.message,originalError:error,manualRecoveryRequired:manual,updatedAt:this.now(),history:[...op.history,{state:'failed',at:this.now()}]};
+        const next={...op,state:'failed',reason:error.message,originalError:error,...(reason?.code==='PRESERVATION_BLOCKED'?{preservationBlockers:reason.problems}:{}),manualRecoveryRequired:manual,updatedAt:this.now(),history:[...op.history,{state:'failed',at:this.now()}]};
         if (await this.cas(IacReviewService.key(id),next,row.etag)) {await this.progress().append(next,[{id:'original-failure',source:'worker',kind:'exception',phase:'terminal',state:'failed',error,reason:error.message}]);await this.observe(next);await this.release(next);}
     }
     /** A short step, retried/polled by Step Functions rather than an HTTP request. */
@@ -370,8 +418,14 @@ export class IacReviewService {
             return true;
         };
         if (terminal.has(op.state)) {
+            // Cancelling or expiring a review is metadata-only. In particular,
+            // delayed workflow deliveries must not delete a retained change set.
+            if(['cancelled','expired','stale'].includes(op.state)&&!op.approval){
+                if(op.cancellation)await this.completeCancellation(op);else await this.release(op);
+                return result(true);
+            }
             // No change set means there is nothing to clean up. Never assume an uncreated role just to record failure.
-            if (!op.approval&&op.action!=='destroy'&&op.changeSetId) {
+            if (!strict(op)&&!op.approval&&op.action!=='destroy'&&op.changeSetId) {
                 try{await cloud.remove(op);await this.progress().append(op,[{id:'cleanup-complete',source:'worker',kind:'cleanup',phase:'cleanup',status:'COMPLETE',reason:'Unexecuted change set removed.'}]);}
                 catch(e){await save({manualRecoveryRequired:true});await this.progress().append(op,[{id:'cleanup-failed',source:'worker',kind:'cleanup',phase:'cleanup',status:'DELETE_FAILED',reason:diagnosticError(e,op).message,error:e}]);}
             }
@@ -391,13 +445,18 @@ export class IacReviewService {
                 await this.fail(id,'The stored template no longer passes deployment validation.');return result();
             }
             this.checkPrivateBuckets(checked);
+            preservationMode(op.preservation);
+            if(strict(op)){
+                if(op.action==='destroy')refusePreservation([{code:'PRESERVATION_STACK_DELETION',kind:'preservation',message:'Strict preservation prohibits stack deletion.'}]);
+                refusePreservation(preservationTemplateProblems(checked));
+            }
             if(cloud.prepare){await this.progress().append(op,[{id:'guardrails-start',source:'worker',kind:'phase',phase:'guardrails',status:'IN_PROGRESS',reason:'Preparing platform-managed stack guardrails.'}]);if(!await cloud.prepare(op))return result();}
             await this.progress().append(op,[{id:'planning-changes',source:'worker',kind:'phase',phase:'planning',status:'IN_PROGRESS',reason:'Guardrails are ready. Preparing the exact CloudFormation change set.'}]);
             if(op.action==='destroy'){
                 if(!cloud.resources||!cloud.destroy)throw new Error('Reviewed destroy is unavailable');
                 const resources=await cloud.resources(op);
                 const plan={changes:this.removalPlan(op,resources),destructive:true,changeSetRetained:false,stackExists:true};
-                await save({state:'awaiting-review',plan,reviewDigest:hash({inputDigest:op.inputDigest,policyDigest:op.policyDigest,action:'destroy',plan}),expiresAt:this.now()+3600000});return result();
+                await save({state:'awaiting-review',plan,reviewDigest:reviewDigest(op,plan),expiresAt:this.now()+3600000});return result();
             }
             if (!op.changeSetId) {
                 const stack=await cloud.stack(op.input.stack.name,op);
@@ -406,22 +465,22 @@ export class IacReviewService {
                 }
                 const exists=stack.exists && stack.status!=='REVIEW_IN_PROGRESS' && stack.status!=='DELETE_COMPLETE';
                 const created=await cloud.create({...op,stackExists:exists});
-                // Cancellation can win while AWS creates a change set; remove the
-                // newly-created set if the saved operation no longer owns this step.
-                if (!await save({...created,stackExists:exists})) await cloud.remove({...op,...created});
+                // A lost planning CAS may leave inert metadata. Strict requests
+                // retain it; AWS cleanup is outside the preservation contract.
+                if (!await save({...created,stackExists:exists})&&!strict(op)) await cloud.remove({...op,...created});
                 return result();
             }
             const described=await cloud.describe(op);
             if (['CREATE_IN_PROGRESS','CREATE_PENDING'].includes(described.status)) return result();
             const noChanges=described.status==='FAILED' && /didn.t contain changes|no updates|no changes/i.test(described.reason || '');
             if (noChanges) {
-                await cloud.remove(op);
+                if(!strict(op))await cloud.remove(op);
                 const bound=await this.read(`iac/deployed/${op.graphId}/${op.nodeId}.json`),previous=bound?.value.operationId&&await this.read(IacReviewService.key(bound.value.operationId));
                 if(op.input.isolation&&previous?.value.inputDigest!==op.inputDigest){
                     const resources=cloud.resources?await cloud.resources(op):[];
                     const plan={changes:[],destructive:false,changeSetRetained:false,stackExists:true,metadataOnly:true,resources,
                         reason:'CloudFormation reports no resource changes. Approval binds the current template and declared readiness checks to this existing owned stack.'};
-                    await save({state:'awaiting-review',plan,reviewDigest:hash({inputDigest:op.inputDigest,policyDigest:op.policyDigest,plan}),expiresAt:this.now()+3600000});return result();
+                    await save({state:'awaiting-review',plan,reviewDigest:reviewDigest(op,plan),expiresAt:this.now()+3600000});return result();
                 }
                 await save({state:'no-changes',reason:'The deployed stack already matches this template.'});await this.release(op);return result(true);
             }
@@ -435,11 +494,21 @@ export class IacReviewService {
                 return {...c,access:accessChange(c.resourceType,old[c.logicalId],definitions[c.logicalId]),deletionPolicy:definition?(definition.DeletionPolicy||'Delete'):'Not recorded',updateReplacePolicy:definition?(definition.UpdateReplacePolicy||'Delete'):'Not recorded'};
             });
             const plan={changeSetId:op.changeSetId,changes,destructive:changes.some((c:any)=>c.action==='Remove'||c.action==='Replace'||(c.action==='Modify' && c.replacement && c.replacement!=='False')),changeSetRetained:true,stackExists:op.stackExists};
-            await save({state:'awaiting-review',plan,reviewDigest:hash({inputDigest:op.inputDigest,policyDigest:op.policyDigest,plan}),expiresAt:this.now()+3600000});
+            if(strict(op)){
+                const problems=preservationChangeProblems(changes);
+                if(op.stackExists&&!cloud.template)problems.push({code:'PRESERVATION_TEMPLATE_UNAVAILABLE',kind:'preservation',message:'The deployment worker cannot verify the current AWS template for data-retention changes.'});
+                else problems.push(...preservationTemplateProblems(op.input,op.stackExists?await cloud.template!(op):undefined));
+                if(problems.length){await save({plan,preservationBlockers:problems});await this.fail(id,Object.assign(new Error(problems.map(p=>p.message).join('\n')),{code:'PRESERVATION_BLOCKED',problems}));return result(true);}
+            }
+            await save({state:'awaiting-review',plan,reviewDigest:reviewDigest(op,plan),expiresAt:this.now()+3600000});
             return result();
         }
         if (op.state==='apply-requested') {
-            if (!op.approval || op.approval.reviewDigest!==op.reviewDigest || hash(isolationEnabled()?scopedPolicy(stackScope(op.graphId,op.nodeId,this.policy()),this.policy()):this.policy())!==op.policyDigest) {await this.fail(id,'The approval or deployment policy is no longer valid.');return result(true);}
+            if (!op.approval || op.reviewInvalidatedAt || op.approval.reviewDigest!==op.reviewDigest || op.reviewDigest!==reviewDigest(op,op.plan) || hash(isolationEnabled()?scopedPolicy(stackScope(op.graphId,op.nodeId,this.policy()),this.policy()):this.policy())!==op.policyDigest) {await this.fail(id,'The approval, preservation constraint or deployment policy is no longer valid.');return result(true);}
+            if(strict(op)){
+                if(op.action==='destroy')refusePreservation([{code:'PRESERVATION_STACK_DELETION',kind:'preservation',message:'Strict preservation prohibits stack deletion.'}]);
+                refusePreservation(preservationChangeProblems(op.plan.changes));
+            }
             if(op.plan?.metadataOnly){
                 const resources=cloud.resources?await cloud.resources(op):[];
                 if(hash(resources)!==hash(op.plan.resources)){await this.fail(id,'Owned resources changed after the metadata review. Create a new review.');return result(true);}
@@ -456,6 +525,11 @@ export class IacReviewService {
                 await save({state:'applying',startedAt:this.now()});return result();
             }
             const described=await cloud.describe(op);
+            if(strict(op)){
+                refusePreservation(preservationChangeProblems(described.changes));
+                if(op.stackExists&&!cloud.template)refusePreservation([{code:'PRESERVATION_TEMPLATE_UNAVAILABLE',kind:'preservation',message:'Current template verification is unavailable.'}]);
+                refusePreservation(preservationTemplateProblems(op.input,op.stackExists?await cloud.template!(op):undefined));
+            }
             if (described.executionStatus==='AVAILABLE') await cloud.execute(op);
             else if (!['EXECUTE_IN_PROGRESS','EXECUTE_COMPLETE'].includes(described.executionStatus)) {await this.fail(id,'This CloudFormation change set is no longer executable. Create a new review.');return result(true);}
             await save({state:'applying',startedAt:this.now()});return result();

@@ -7,7 +7,7 @@ import {deploymentCapabilities,graphDeploymentCapabilities} from '../iac/capabil
 import {ObservationJournal} from '../runtime/journal';
 import {isolationAvailable} from '../runtime/isolate';
 import {deploymentProgressContract} from '../discovery/deploymentProgress';
-import {lifecycleContract,lifecycleTools} from '../discovery/lifecycle';
+import {lifecycleContract,lifecycleTools,deploymentReviewSchema} from '../discovery/lifecycle';
 import type {IacLifecycleService} from '../iac/lifecycle';
 import {progressAllowed} from '../iac/progressAccess';
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
@@ -38,7 +38,7 @@ import {ChatError} from "../chat/store";
  * instance is built per request, bound to the caller's principal.
  */
 export interface McpDeps {
-    reviews?: {lifecycle?:IacLifecycleService;begin(graphId:string,nodeId:string,principal:any,replace?:boolean,action?:string,retryOf?:string):Promise<any>;current?(graphId:string,nodeId:string,principal:any,operationId?:string):Promise<any>;events?(graphId:string,nodeId:string,principal:any,options:any):Promise<any>;operations?(graphId:string,nodeId:string,principal:any,options:any):Promise<any>;preflight?(graphId:string,nodeId:string,principal:any):Promise<any>};
+    reviews?: {lifecycle?:IacLifecycleService;begin(graphId:string,nodeId:string,principal:any,replace?:boolean,action?:string,retryOf?:string,preservation?:'strict'):Promise<any>;cancel?(graphId:string,nodeId:string,principal:any,body:any):Promise<any>;current?(graphId:string,nodeId:string,principal:any,operationId?:string):Promise<any>;events?(graphId:string,nodeId:string,principal:any,options:any):Promise<any>;operations?(graphId:string,nodeId:string,principal:any,options:any):Promise<any>;preflight?(graphId:string,nodeId:string,principal:any):Promise<any>};
     chat?: ChatService;
     crdtStore: CrdtStore;
     tocStore: TocStore;
@@ -72,7 +72,7 @@ export interface McpDeps {
     rate?: { reads: RateLimiter; writes: RateLimiter; chat?: RateLimiter };
 }
 
-export const SERVER_INFO = { name: "plastic-io-graph-server", version: "2.4.3" };
+export const SERVER_INFO = { name: "plastic-io-graph-server", version: "2.5.0" };
 const ID = z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/);
 const ULID = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/);
 const REV = z.string().regex(/^rev_[0-9A-HJKMNP-TV-Z]{26}$/);
@@ -232,17 +232,17 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
         return ok(p,args.configuration?deploymentCapabilities(args.graphId,args.nodeId,args.configuration):graphDeploymentCapabilities(graph||{id:args.graphId,nodes:[]},args.nodeId));
     }));
     server.registerTool('iac.review',{
-        title:'Submit infrastructure for graph-side deployment review',description:'Prepares a durable review of this graph stack. Does not approve or apply it. The user approves its exact digest in the graph. Destroy is a separate destructive review.',
-        inputSchema:z.object({schemaVersion:z.literal(1),graphId:ID,nodeId:ID,agentSessionId:ID.optional(),replace:z.boolean().optional(),action:z.enum(['apply','destroy']).optional(),retryOf:ULID.optional()}).strict(),annotations:{readOnlyHint:false},
+        title:'Submit infrastructure for graph-side deployment review',description:'Prepares a durable review of this graph stack. preservation=strict prohibits stack/resource deletion, replacement and deployment-induced data removal, including preparatory guardrails. State or verification limitations return structured blockers without destructive fallback. Cancel an unwanted pending review with iac.cancel. The user approves a fresh exact digest in the graph; this tool cannot approve deployment. Destroy is prohibited under strict preservation.',
+        inputSchema:deploymentReviewSchema,annotations:{readOnlyHint:false},
     },guarded('iac.review','write',a=>a.graphId,['iac:propose'],async(args,p)=>{
         if(!deps.reviews)return fail('CAPABILITY_UNAVAILABLE','This server has no durable reviewed-deployment service. Request a platform improvement; do not deploy outside MCP.');
-        return ok(p,await deps.reviews.begin(args.graphId,args.nodeId,p,!!args.replace,args.action||'apply',args.retryOf));
+        return ok(p,await deps.reviews.begin(args.graphId,args.nodeId,p,!!args.replace,args.action||'apply',args.retryOf,args.preservation));
     }));
     for(const [name,tool]of Object.entries(lifecycleTools)) {
         const required:Authority[]=name==='iac.readiness'?['graph:read','iac:read-status','graph:execute','graph:observe']:['graph:read',tool.write?'iac:propose':'iac:read-status'];
         server.registerTool(name,{title:tool.description.split('.')[0],description:tool.description,inputSchema:tool.schema,annotations:{readOnlyHint:!tool.write}},guarded(name,tool.write?'write':'read',a=>a.graphId,required,async(a,p)=>{
-            const lifecycle=deps.reviews?.lifecycle;
-            if(!lifecycle)return fail('CAPABILITY_UNAVAILABLE','Graph-native lifecycle operations are not configured. Request a separately reviewed platform deployment; do not bypass MCP.');
+            const lifecycle=name==='iac.cancel'?deps.reviews:deps.reviews?.lifecycle;
+            if(!lifecycle||typeof (lifecycle as any)[tool.method]!=='function')return fail('CAPABILITY_UNAVAILABLE','Graph-native lifecycle operations are not configured. Request a separately reviewed platform deployment; do not bypass MCP.');
             return ok(p,await (lifecycle as any)[tool.method](a.graphId,a.nodeId,p,a,...(name==='iac.readiness'?[deps.invoke]:[])),{graphId:a.graphId});
         }));
     }

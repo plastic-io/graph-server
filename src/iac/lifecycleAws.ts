@@ -4,6 +4,7 @@ import {diagnosticError} from './diagnosticSafety';
 import {parseTemplate,policyFromEnv} from './validator';
 import {awsResourceAbsent} from './awsErrors';
 import {inspectionRead,transientInspectionError} from './inspectionRead';
+import {strict,preservationActionProblems,preservationStateProblems,assertGuardrailPreservation,refusePreservation} from './preservation';
 
 type Call=(method:string,args:any)=>Promise<any>;
 export interface LifecycleClients {cloud:Call;iam:Call;states:Call;assume:(scope:any)=>Promise<any>;application:(scope:any)=>Promise<Call>;repair?:(op:any)=>Promise<any>;}
@@ -169,8 +170,10 @@ export class LifecycleAws {
   if(platformRole&&(platformRole.Role.Arn!==platformArn||platformRole.Role.PermissionsBoundary))blockers.push(blocker('PLATFORM_ROLE_CONSTRAINT_CHANGED','platform-maintenance','The platform guardrail role ARN or permissions boundary differs from the approved platform definition. An administrator must review this prerequisite.',{component:'IacGuardrailRole',resource:platformArn}));
   const approvedTrust={Version:'2012-10-17',Statement:[{Effect:'Allow',Principal:{Service:'cloudformation.amazonaws.com'},Action:'sts:AssumeRole'}]};
   if(platformTrust&&digest(platformTrust)!==digest(approvedTrust))blockers.push(blocker('PLATFORM_TRUST_REQUIRED','platform-maintenance','The platform guardrail role trust differs from the approved CloudFormation service trust. A platform administrator must review and restore it.',{component:'IacGuardrailRole',action:'iam:UpdateAssumeRolePolicy',resource:platformArn}));
-  const required=[...roles.flatMap(r=>['iam:GetRole','iam:GetRolePolicy','iam:ListRolePolicies','iam:ListAttachedRolePolicies','iam:DeleteRolePolicy','iam:CreateRole','iam:PutRolePolicy'].map(action=>({action,resource:r.exists===false&&['iam:GetRole','iam:GetRolePolicy','iam:DeleteRolePolicy'].includes(action)?`arn:aws:iam::${s.account}:role/${r.arn.split('/').pop()}`:r.arn}))),
-   ...['iam:GetPolicy','iam:GetPolicyVersion','iam:ListEntitiesForPolicy','iam:CreatePolicy','iam:CreatePolicyVersion','iam:DeletePolicyVersion'].map(action=>({action,resource:s.boundaryArn}))];
+  // Fixed guardrails contain inline policies and an unattached boundary; they
+  // never attach managed policies, alter role boundaries or list account IAM.
+  const required=[...roles.flatMap(r=>['iam:GetRole','iam:GetRolePolicy','iam:ListRolePolicies','iam:ListAttachedRolePolicies','iam:DeleteRolePolicy','iam:CreateRole','iam:PutRolePolicy','iam:DeleteRole','iam:UpdateAssumeRolePolicy','iam:TagRole','iam:UntagRole'].map(action=>({action,resource:r.exists===false&&['iam:GetRole','iam:GetRolePolicy','iam:DeleteRolePolicy'].includes(action)?`arn:aws:iam::${s.account}:role/${r.arn.split('/').pop()}`:r.arn}))),
+   ...['iam:GetPolicy','iam:GetPolicyVersion','iam:ListEntitiesForPolicy','iam:CreatePolicy','iam:CreatePolicyVersion','iam:DeletePolicyVersion','iam:ListPolicyVersions','iam:DeletePolicy'].map(action=>({action,resource:s.boundaryArn}))];
   const policyAnalysis=required.map(r=>({...r,result:platform?policyCoverage(document(platform.PolicyDocument),r.action,r.resource):'unavailable'}));
   for(const r of policyAnalysis)if(['not-granted','explicit-deny'].includes(r.result))blockers.push(blocker('PLATFORM_PERMISSION_REQUIRED','platform-permission','The platform guardrail role’s current approved policy does not grant '+r.action+'.',{component:'IacGuardrailRole',action:r.action,resource:r.resource,verification:'Review the platform policy change separately, deploy through platform CI, then run iac.inspect. Policy analysis is not proof of AWS execution success.'}));
   let assumption:any={result:'not-tested',reason:'The assigned worker role is absent or its approved trust/policy has not been restored.'};
@@ -215,6 +218,7 @@ export class LifecycleAws {
  /** Execute one fixed, human-reviewed action. Returns a short polling state. */
  async advance(op:any,action:any,index:number) {
   const s=scopeFor(op,this.policy()),plan=op.recoveryPlan;
+  if(strict(op))refusePreservation(preservationActionProblems([action]));
   if(action.kind==='release-operation')return {done:true};
   if(plan.approvedGuardrailDigest!==digest(platformDefinition(s)))refused('STALE_RECOVERY','The approved platform definition changed. Prepare a new recovery review.');
   const guardrail=action.target==='guardrail',name=guardrail?s.guardrailStack:op.input.stack.name;
@@ -227,6 +231,7 @@ export class LifecycleAws {
    if(!stack.StackId?.startsWith(`arn:aws:cloudformation:${s.region}:${s.account}:stack/${name}/`)||stack.RoleARN!==roleArn||t.GraphId!==s.graphId||t.NodeId!==s.nodeId||(guardrail?t.IsolationVersion!==s.version:t.GraphStack!==s.namespace))refused('OWNERSHIP_UNVERIFIED','Recovery target ownership changed. No action was taken.',403);
   }
   const status=stack?.StackStatus||'NOT_CREATED';
+  if(strict(op)&&!action.submitted)refusePreservation(preservationStateProblems({[action.target]:{name,stackId:stack?.StackId,status}}));
   const verifyGuardrailIdentity=async(logicalId:string)=>{
    const expected=plan.ownershipEvidence.guardrail.resources.find(r=>r.logicalId===logicalId);
    if(!expected?.ownershipVerified)refused('OWNERSHIP_UNVERIFIED','Retained guardrails require a reviewed CloudFormation resource record.',403);
@@ -315,7 +320,15 @@ export class LifecycleAws {
   if(action.kind==='reconcile-guardrails'&&guardrail) {
    if(/IN_PROGRESS$/.test(status))return {done:false,status};
    if(action.submitted){if(!['CREATE_COMPLETE','UPDATE_COMPLETE'].includes(status))throw new Error('Guardrail reconciliation failed: '+status);if(!this.clients.repair)refused('CAPABILITY_UNAVAILABLE','Approved guardrail repair is not configured.');await this.clients.repair(op);return {done:true,status};}
-   const args={StackName:name,RoleARN:roleArn,Capabilities:['CAPABILITY_NAMED_IAM'],TemplateBody:JSON.stringify(platformDefinition(s)),Tags:ownershipTags,ClientRequestToken:token};
+   const definition=platformDefinition(s);
+   if(strict(op)&&status!=='NOT_CREATED'){
+    const current=await cloud('getTemplate',{StackName:stack.StackId,TemplateStage:'Original'});
+    assertGuardrailPreservation(parseTemplate(current.TemplateBody,'yaml').doc,definition);
+   }
+   const args={StackName:name,RoleARN:roleArn,Capabilities:['CAPABILITY_NAMED_IAM'],TemplateBody:JSON.stringify(definition),Tags:ownershipTags,ClientRequestToken:token,
+    // SDK v2 has DisableRollback but predates RetainExceptOnCreate. Omit the
+    // latter (AWS defaults it to false) instead of sending an unsupported key.
+    ...(strict(op)?{DisableRollback:true}:{})};
    if(status==='NOT_CREATED')await cloud('createStack',args);
    else if(['IMPORT_COMPLETE','CREATE_COMPLETE','UPDATE_COMPLETE','UPDATE_ROLLBACK_COMPLETE'].includes(status)){
     try{await cloud('updateStack',args);}catch(e){if(/No updates are to be performed/i.test(e.message)){if(!this.clients.repair)refused('CAPABILITY_UNAVAILABLE','Approved guardrail repair is not configured.');await this.clients.repair(op);return {done:true,status};}throw e;}

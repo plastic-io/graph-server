@@ -69,14 +69,14 @@ test('an execute retried after AWS accepted it observes rather than submitting a
 test('only one operation per stack; reopening a pending review returns it',async()=>{
     const f=fixture(),op=await f.planned();expect((await f.begin()).operationId).toBe(op.operationId);
     const next=await f.service.begin('g','stack',human,true);expect(next.operationId).not.toBe(op.operationId);
-    await f.service.step(op.operationId);expect(f.cloud.remove).toHaveBeenCalled();
+    await f.service.step(op.operationId);expect(f.cloud.remove).not.toHaveBeenCalled();
     await expect(f.approve(op)).rejects.toMatchObject({code:'STALE_REVIEW'});
 });
-test.each(['cancel','expiry'])('%s removes the retained review without executing',async(mode)=>{
+test.each(['cancel','expiry'])('%s releases the review without AWS mutations',async(mode)=>{
     const f=fixture(),op=await f.planned();
     if(mode==='cancel')await f.service.cancel('g','stack',human,{operationId:op.operationId});
     else {f.advance(3600001);await f.service.step(op.operationId);}
-    await f.service.step(op.operationId);expect(f.cloud.remove).toHaveBeenCalled();expect(f.cloud.execute).not.toHaveBeenCalled();
+    await f.service.step(op.operationId);expect(f.cloud.remove).not.toHaveBeenCalled();expect(f.cloud.execute).not.toHaveBeenCalled();
     expect((await f.begin()).operationId).not.toBe(op.operationId);
 });
 test('rollback failures retain the lock and identify manual recovery',async()=>{
@@ -125,10 +125,10 @@ test('successful deployment publishes planning, approval and completion as separ
 });
 
 test('failed cleanup preserves the original outcome, reports recovery and retains the operation lock',async()=>{
- const f=fixture(),op=await f.planned();await f.service.cancel('g','stack',human,{operationId:op.operationId});
+ const f=fixture(),op=await f.planned();await f.service.fail(op.operationId,'Planning failed before approval.');
  f.cloud.remove.mockRejectedValue(Object.assign(new Error('Cannot delete unexecuted change set: AccessDenied'),{code:'AccessDenied'}));
  await f.service.step(op.operationId);
  const current=await f.service.current('g','stack',human);
- expect(current.state).toBe('cancelled');expect(current.progress.cleanup.status).toBe('DELETE_FAILED');expect(current.manualRecoveryRequired).toBe(true);
+ expect(current.state).toBe('failed');expect(current.reason).toBe('Planning failed before approval.');expect(current.progress.cleanup.status).toBe('DELETE_FAILED');expect(current.manualRecoveryRequired).toBe(true);
  await expect(f.begin()).rejects.toMatchObject({code:'RECOVERY_REQUIRED'});
 });

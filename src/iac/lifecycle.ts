@@ -6,6 +6,7 @@ import {DeploymentProgress} from './progress';
 import {diagnosticError} from './diagnosticSafety';
 import {policyFromEnv} from './validator';
 import {canonical,digest,refused,scopeFor,recoveryPlan,validRecoveryDigest,inspectionFingerprint,operationKey,indexKey,lockKey,terminalStates,nextActions,platformDefinition} from './lifecycleModel';
+import {preservationMode,preservationStateProblems,preservationActionProblems,refusePreservation,strict} from './preservation';
 
 export interface LifecycleDeps {
  invoke?:(graphId:string,principal:any,request:any)=>Promise<any>;
@@ -72,6 +73,7 @@ export class IacLifecycleService {
  }
  async inspect(g:string,n:string,p:any,options:any={}) {
   p=await this.authority(g,n,p);
+  preservationMode(options.preservation);
   if(!this.deps.inspect)refused('CAPABILITY_UNAVAILABLE','Current AWS inspection is not configured. A platform administrator must deploy the graph lifecycle worker.');
   let row=await this.op(g,n,options.operationId);
   if(!row){
@@ -80,6 +82,12 @@ export class IacLifecycleService {
    scopeFor(record,this.policy());await this.cas(operationKey(record.operationId),record,null);row=await this.read(operationKey(record.operationId));
   }
   const op=row.value,inspection=await this.deps.inspect(op);
+  const preservation=preservationMode(options.preservation,op.preservation);
+  if(preservation){
+   inspection.preservation=preservation;
+   inspection.blockers.push(...preservationStateProblems(inspection));
+   if(inspection.blockers.length)inspection.canReview=false;
+  }
   const lock=await this.read(lockKey(op.input.stack));
   const active=lock?.value.operationId&&await this.read(operationKey(lock.value.operationId));
   if(lock?.value.leaseUntil>this.now()){inspection.canReview=false;inspection.blockers.push({code:'WORKER_ACTIVE',kind:'busy',message:'A deployment worker still holds its execution lease.',operationId:lock.value.operationId,leaseUntil:lock.value.leaseUntil});}
@@ -97,6 +105,10 @@ export class IacLifecycleService {
   try{inspection.templateValidation={kind:'static-template-validation',...(await this.deps.input?.(g,n,p))?.validation};}
   catch(e){inspection.templateValidation={kind:'static-template-validation',ok:false,error:diagnosticError(e,op)};}
   if(inspection.templateValidation.ok===false){inspection.canReview=false;inspection.blockers.push({code:'TEMPLATE_INVALID',kind:'template',message:'Current graph template validation failed. Correct it through a graph proposal before a new deployment review.'});}
+  if(preservation&&inspection.recoveryReadiness){
+   const preview=recoveryPlan({...op,preservation},inspection,{preservation});
+   inspection.recoveryReadiness={...inspection.recoveryReadiness,state:preview.prerequisites.length?'blocked':inspection.recoveryReadiness.state,prerequisites:preview.prerequisites};
+  }
   Object.assign(inspection,await this.historicalFailure(op));
   inspection.historyIsNotCurrentPermissionEvidence=true;
   inspection.maintenanceConfiguration=maintenanceConfiguration();
@@ -110,10 +122,12 @@ export class IacLifecycleService {
   if(!this.deps.inspect||!this.deps.start)refused('CAPABILITY_UNAVAILABLE','Recovery requires the configured lifecycle worker and reviewed-operation workflow.');
   if(!/^[A-Za-z0-9_.-]{1,128}$/.test(options.idempotencyKey||''))refused('SCHEMA_INVALID','Supply a stable idempotencyKey for this recovery-plan request.',400);
   const source=(await this.op(g,n,options.operationId))?.value;if(!source)refused('NOT_FOUND','A prior operation is required for recovery.',404);
-  const requestDigest=digest({g,n,source:source.operationId,key:options.idempotencyKey,allowDataLoss:options.allowDataLoss===true});
+  const preservation=preservationMode(options.preservation,source.preservation);
+  if(preservation&&options.allowDataLoss===true)refused('SCHEMA_INVALID','Strict preservation and allowDataLoss cannot be combined.',400);
+  const requestDigest=digest({g,n,source:source.operationId,key:options.idempotencyKey,allowDataLoss:options.allowDataLoss===true,...(preservation?{preservation}:{})});
   const requestKey=`iac/recovery-requests/${g}/${n}/${digest(options.idempotencyKey)}.json`;
   const previous=await this.read(requestKey);
-  if(previous){if(previous.value.requestDigest!==requestDigest)refused('IDEMPOTENCY_CONFLICT','This key was used for a different recovery request.');const found=await this.op(g,n,previous.value.operationId);if(found){await this.emit(found.value,'recovery.plan',{plan:publicRecoveryPlan(found.value.recoveryPlan),state:found.value.recoveryPlan.prerequisites.length?'recovery-blocked':'recovery-ready'});return this.public(found.value);}}
+  if(previous){if(previous.value.requestDigest!==requestDigest)refused('IDEMPOTENCY_CONFLICT','This key was used for a different recovery request.');const found=await this.op(g,n,previous.value.operationId);if(found){await this.emit(found.value,'recovery.plan',{plan:publicRecoveryPlan(found.value.recoveryPlan),state:found.value.state});return this.public(found.value);}}
   const currentIndex=await this.read(indexKey(g,n));
   if(currentIndex?.value.operationId&&currentIndex.value.operationId!==source.operationId){
    const indexed=await this.read(operationKey(currentIndex.value.operationId));
@@ -131,10 +145,10 @@ export class IacLifecycleService {
    if(!stranded&&!expired)refused('OPERATION_ACTIVE','Another deployment or recovery owns this stack. Wait for it to finish.');
   }
   if(inspection.blockers.some(b=>b.kind==='busy'))refused('OPERATION_ACTIVE','A CloudFormation or workflow operation is still active.',409,inspection.blockers);
-  const plan=recoveryPlan(source,inspection,options),id=ulid(),now=this.now(),historical=await this.historicalFailure(source);
+  const plan=recoveryPlan(source,inspection,{...options,preservation}),id=ulid(),now=this.now(),historical=await this.historicalFailure(source);
   const op:any={operationId:id,graphId:g,nodeId:n,input:source.input,inputDigest:source.inputDigest,policyDigest:source.policyDigest,revisionId:source.revisionId,
    previousOperationId:source.operationId,sourceOperationId:source.operationId,requestDigest,action:'recover',state:plan.prerequisites.length?'recovery-blocked':'recovery-ready',
-   recoveryPlan:plan,inspection,...historical,
+   recoveryPlan:plan,inspection,...historical,...(preservation?{preservation}:{}),
    createdAt:now,updatedAt:now,expiresAt:now+900000,by:{sub:p.sub,kind:p.kind},history:[],recoveryIndex:0};
   await this.cas(operationKey(id),op,null);
   if(!await this.cas(lockKey(source.input.stack),{operationId:id},fence?.etag||null)) {
@@ -154,9 +168,12 @@ export class IacLifecycleService {
   const src=await this.read(operationKey(op.sourceOperationId));
   if(src)await this.cas(operationKey(op.sourceOperationId),{...src.value,supersededBy:op.operationId,reviewInvalidatedAt:op.createdAt},src.etag);
   await this.cas(requestKey,{operationId:op.operationId,requestDigest},null);
-  await this.emit(op,'recovery.plan',{plan:publicRecoveryPlan(op.recoveryPlan),state:op.recoveryPlan.prerequisites.length?'recovery-blocked':'recovery-ready'});
-  if(op.state==='recovery-blocked')await this.release(op);
-  return this.public(op);
+  // Cancellation can win immediately after index publication. Never revive the
+  // cached ready state or digest when finishing/retrying plan publication.
+  const current=(await this.read(operationKey(op.operationId))).value;
+  await this.emit(current,'recovery.plan',{plan:publicRecoveryPlan(current.recoveryPlan),state:current.state});
+  if(current.state==='recovery-blocked')await this.release(current);
+  return this.public(current);
  }
  async approve(g:string,n:string,p:any,body:any) {
   p=await this.authority(g,n,p,false,true);
@@ -167,6 +184,8 @@ export class IacLifecycleService {
   if(op.supersededBy||(await this.read(indexKey(g,n)))?.value.operationId!==op.operationId)refused('STALE_RECOVERY','A newer operation replaced this recovery review.');
   if(op.recoveryApproval&&['recovery-requested','recovering','recovered'].includes(op.state)){if(op.state==='recovery-requested'&&!op.recoveryDispatchedAt)await this.dispatchRecovery(op);return this.public((await this.op(g,n,op.operationId)).value);}
   if(op.state!=='recovery-ready'||this.now()>op.expiresAt||op.recoveryPlan.prerequisites.length)refused('STALE_RECOVERY','The plan is blocked, expired or no longer awaiting approval. Prepare a new recovery plan.');
+  if(op.reviewInvalidatedAt||op.preservation!==op.recoveryPlan.preservation)refused('STALE_RECOVERY','The recovery approval or preservation constraint was invalidated.');
+  if(strict(op))refusePreservation(preservationActionProblems(op.recoveryPlan.actions));
   if(!op.recoveryPlan.preservesData&&body.confirmDataLoss!==true)refused('APPROVAL_REQUIRED','Explicitly approve the listed data loss before executing this recovery.');
   await this.assertFence(op);
   const inspection=await this.deps.inspect!(op);
@@ -194,11 +213,13 @@ export class IacLifecycleService {
  private async release(op:any) {const key=lockKey(op.input.stack),lock=await this.read(key);if(lock?.value.operationId===op.operationId)await this.cas(key,{operationId:null},lock.etag);}
  private async fail(op:any,error:any) {
   const row=await this.read(operationKey(op.operationId));if(!row)return;
+  if(terminalStates.has(row.value.state))return;
   // A transport failure can return while a private Lambda is still finishing.
   // Keep that worker's bounded lease; known local refusals ran no AWS mutation.
   const safe=diagnosticError(error,op),lease=error.status?null:row.value.recoveryLease;
-  const next={...row.value,state:'failed',originalError:row.value.originalError||safe,reason:safe.message,manualRecoveryRequired:true,recoveryLease:lease,updatedAt:this.now()};
-  await this.cas(operationKey(op.operationId),next,row.etag);await this.emit(next,'recovery.failure',{error:safe,sourceOperationId:op.sourceOperationId,...(lease?{workerLeaseUntil:lease.until,mayStillBeFinishing:true}:{})},'FAILED');
+  const preservationBlockers=error?.code==='PRESERVATION_BLOCKED'?error.problems:undefined;
+  const next={...row.value,state:'failed',originalError:row.value.originalError||safe,reason:safe.message,...(preservationBlockers?{preservationBlockers}:{}),manualRecoveryRequired:true,recoveryLease:lease,updatedAt:this.now()};
+  await this.cas(operationKey(op.operationId),next,row.etag);await this.emit(next,'recovery.failure',{error:safe,sourceOperationId:op.sourceOperationId,...(preservationBlockers?{preservationBlockers}:{}),...(lease?{workerLeaseUntil:lease.until,mayStillBeFinishing:true}:{})},'FAILED');
  }
  async step(id:string) {
   let row=await this.read(operationKey(id));if(!row)return {operationId:id,done:true};
@@ -217,6 +238,8 @@ export class IacLifecycleService {
   try {
    await this.assertFence(op);
    if(!validRecoveryDigest(op.recoveryPlan)||op.recoveryApproval?.digest!==op.recoveryPlan.digest||op.recoveryPlan.prerequisites.length||op.recoveryPlan.approvedGuardrailDigest!==digest(platformDefinition(scopeFor(op,this.policy()))))refused('STALE_RECOVERY','Recovery approval or the approved platform definition is no longer valid.');
+   if(op.reviewInvalidatedAt||op.preservation!==op.recoveryPlan.preservation)refused('STALE_RECOVERY','The recovery preservation constraint no longer matches its approved plan.');
+   if(strict(op))refusePreservation(preservationActionProblems(op.recoveryPlan.actions));
    if(this.now()-op.recoveryApproval.at>5*3600000)refused('RECOVERY_TIMEOUT','Recovery exceeded its monitoring window. Inspect its actions before preparing another plan.');
    if(op.state==='recovery-requested'){
     const inspection=await this.deps.inspect!(op,{ownRecovery:true});

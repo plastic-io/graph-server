@@ -3,6 +3,8 @@ import {STS} from 'aws-sdk';
 import {StackScope,executionPolicy,runtimeBoundary} from './isolation';
 import {canonical} from './lifecycleModel';
 import {parseTemplate} from './validator';
+import {awsResourceAbsent} from './awsErrors';
+import {Preservation,preservationMode,preservationStateProblems,refusePreservation} from './preservation';
 /** Only the trusted platform builds this template. Graph content cannot supply any part of it. */
 export function guardrailTemplate(s:StackScope,workerArn:string){
  const workload=`arn:aws:cloudformation:${s.region}:${s.account}:stack/${s.namespace}stack/*`;
@@ -22,18 +24,31 @@ export function guardrailTemplate(s:StackScope,workerArn:string){
 export class Guardrails {
  private client:CloudFormationClient;
  constructor(private region:string,private roleArn:string,private workerArn:string){this.client=new CloudFormationClient({region});}
- async ensure(s:StackScope):Promise<boolean>{
+ async ensure(s:StackScope,preservation?:Preservation):Promise<boolean>{
+  preservationMode(preservation);
   if(!this.roleArn||!this.workerArn)throw new Error('Isolated deployment guardrails are not configured');
+  if(preservation==='strict'){
+   // Read the application state with platform inspection authority before creating
+   // guardrails. Missing application roles must not force a credential fallback.
+   let app:any;
+   try{app=(await this.client.send(new DescribeStacksCommand({StackName:s.namespace+'stack'}))).Stacks?.[0];}
+   catch(e){if(!awsResourceAbsent(e,'cloudformation:DescribeStacks'))throw e;}
+   if(app){const tags=Object.fromEntries((app.Tags||[]).map(t=>[t.Key,t.Value]));
+    if(tags.GraphId!==s.graphId||tags.NodeId!==s.nodeId||tags.GraphStack!==s.namespace||app.RoleARN!==s.roleArn)throw Object.assign(new Error('Application ownership changed before guardrail preparation.'),{code:'OWNERSHIP_UNVERIFIED',status:403});
+   }
+   refusePreservation(preservationStateProblems({application:{name:s.namespace+'stack',stackId:app?.StackId,status:app?.StackStatus||'NOT_CREATED'}}));
+  }
   let stack:any;
   try{stack=(await this.client.send(new DescribeStacksCommand({StackName:s.guardrailStack}))).Stacks?.[0];}
-  catch(e){if(!/does not exist/.test(e.message))throw e;}
+  catch(e){if(!awsResourceAbsent(e,'cloudformation:DescribeStacks'))throw e;}
   if(!stack){
-   try{await this.client.send(new CreateStackCommand({StackName:s.guardrailStack,RoleARN:this.roleArn,Capabilities:['CAPABILITY_NAMED_IAM'],TemplateBody:JSON.stringify(guardrailTemplate(s,this.workerArn)),Tags:[{Key:'GraphId',Value:s.graphId},{Key:'NodeId',Value:s.nodeId},{Key:'IsolationVersion',Value:s.version}]}));}
+   try{await this.client.send(new CreateStackCommand({StackName:s.guardrailStack,RoleARN:this.roleArn,Capabilities:['CAPABILITY_NAMED_IAM'],TemplateBody:JSON.stringify(guardrailTemplate(s,this.workerArn)),Tags:[{Key:'GraphId',Value:s.graphId},{Key:'NodeId',Value:s.nodeId},{Key:'IsolationVersion',Value:s.version}],...(preservation==='strict'?{DisableRollback:true,RetainExceptOnCreate:false}:{})}));}
    catch(e){if(!/AlreadyExists/.test(e.name||e.message))throw e;}return false;
   }
   const tags=Object.fromEntries((stack.Tags||[]).map(t=>[t.Key,t.Value]));
   if(tags.GraphId!==s.graphId||tags.NodeId!==s.nodeId||tags.IsolationVersion!==s.version||stack.RoleARN!==this.roleArn)throw new Error('Guardrail ownership or version does not match this graph stack');
   if(/IN_PROGRESS$/.test(stack.StackStatus))return false;
+  if(preservation==='strict')refusePreservation(preservationStateProblems({guardrail:{name:s.guardrailStack,stackId:stack.StackId,status:stack.StackStatus}}));
   if(stack.StackStatus!=='CREATE_COMPLETE'&&stack.StackStatus!=='UPDATE_COMPLETE')throw new Error('Platform guardrail provisioning failed: '+stack.StackStatus);
   const template=await this.client.send(new GetTemplateCommand({StackName:stack.StackId,TemplateStage:'Original'}));
   if(canonical(parseTemplate(template.TemplateBody,'yaml').doc)!==canonical(guardrailTemplate(s,this.workerArn)))throw new Error('The platform guardrail definition changed. Prepare and approve graph-native guardrail reconciliation with iac.recovery.plan.');
