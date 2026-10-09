@@ -2,8 +2,8 @@
 
 Updated October 8, 2026 (PDT). This is the current review for graph-server and
 its paired graph-editor. This change implements server discovery **2.4.3** and
-lifecycle contract **1.2.1**. The missing-role, retained-import and editor changes
-are released. The bounded inspection retry fix awaits release and the live gates below. Previous release instructions are superseded; their evidence remains in
+lifecycle contract **1.2.1**. The missing-role, retained-import, editor and bounded
+inspection retry changes are released. Live acceptance remains at the human review gates below. Previous release instructions are superseded; their evidence remains in
 git history. No Chess application source, graph node, or template was changed.
 
 ## Confirmed regression
@@ -250,8 +250,23 @@ inspection after a delay, without claiming a permission change is needed.
 Deployment/recovery mutations are not automatically retried. See AWS's
 [SDK retry guidance](https://docs.aws.amazon.com/sdk-for-javascript/v2/developer-guide/retry-strategy.html).
 
-The bounded retry release, fresh **non-deleting** recovery approval/import and corrected
-disposable deployment remain pending. The user's latest instruction prohibits
+Server `6b1f921` then released successfully with no IAM policy changes. The eight
+Lambda hashes, editor manifest, 72 protected REST methods, WebSocket authorizer,
+28 authentication rejection checks and deployment smoke check passed again.
+A fresh MCP recovery plan completed all 14 IAM reads on their first attempt;
+its 22 AWS checks reported successful reads or the expected absent application
+stack/workflow. There were no current verification prerequisites.
+
+Recovery `01M4F8X2X5BSWVSND41Z8VK56G`, digest
+`5fb160b188269c09fa727105bf168f66562008222b95bed82793dddf61329b68`, is
+`recovery-ready`. It reconciles the graph/node's approved guardrails, prepares an
+empty owned application stack, imports the same retained queue, and releases the
+old operation. It contains **no delete-stack action and no data-loss action**.
+All 16 review events matched `observations.watch` by ID and content, excluding
+the observation journal's additional `arrival` cursor position. The not-yet-started
+workflow and absent operation log tail are explicitly reported as unavailable.
+Its fresh human approval/import and the corrected disposable deployment remain
+pending. The user's latest instruction prohibits
 further stack deletion. Retained resources are left in place. Live missing-role
 recreation is not established by the disposable queue test; the exact missing-role
 case is covered by MCP SDK tests with simulated AWS and read-only live inspection.
@@ -275,10 +290,11 @@ Generic limits remain explicit:
   process is separate from application operations; no application credential or
   CLI fallback is introduced.
 
-Last released pair: server `66558dc8c1b764994c71629c007815464eb4ce47`, editor
+Last released pair: server `6b1f921a71fe61252c5dae6ccc5db4d9d1cf4785`, editor
 `b8d8b72f1f614223a0bef4c06fa355b2f6b7921f`, account **230639770018 / us-west-1**.
-Release evidence is retained at `/private/tmp/graph-import-release-66558dc/` and
-the prior `/private/tmp/graph-guardrail-release-44f9760/`; the public
+Release evidence is retained at `/private/tmp/graph-inspection-release-6b1f921/`,
+`/private/tmp/graph-import-release-66558dc/` and the prior
+`/private/tmp/graph-guardrail-release-44f9760/`; the public
 [release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json)
 identifies the deployed pair. This document does not instruct or authorize
 shipping the Chess application.
