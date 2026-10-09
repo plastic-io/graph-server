@@ -144,8 +144,56 @@ References: [IAM GetRole](https://docs.aws.amazon.com/IAM/latest/APIReference/AP
   Cognito production Lambda bundles build.
 - Policy matrix and lifecycle fixtures are **local/simulated evidence**. AWS
   CloudTrail/IAM reads and IAM simulation above are separate evidence.
-- Platform release: pending packaging/diff review and deployment.
-- Disposable graph deployment: pending editor sign-in, graph-content acceptance,
+- Platform release **completed**: commit `b6dbb00b7ebb3a3a5a7e8483466366ee13d9c727`
+  is pushed and deployed. Platform stack `pio-auth-test-230639770018` reached
+  `UPDATE_COMPLETE`. The reviewed diff changed 75 Lambda code references and the
+  API deployment snapshot; no shared IAM, environment or persistent-resource
+  changes. Verification at **07:43:55Z** matched eight critical function package
+  hashes, 72 protected REST methods, authenticated WebSocket connection handling,
+  and 30 anonymous/invalid-token rejection checks. Standard deployment smoke
+  checks passed. Editor build and assets remain unchanged.
+- Post-release MCP inspection confirms MemoryRole `exists:false`, its historical
+  `DELETE_FAILED` record, and the old installed execution policy's probe denies.
+  New strict recovery assessment **`01M4FSY6WXT10FX54VJB9J19HB`**, digest
+  `10a2026a60d8ff3e3fef2edfa13e54388c54cfe33c6734feca7a33ddb52cb9ac`,
+  is **recovery-blocked** by application `ROLLBACK_FAILED`. It proposes only fixed
+  guardrail reconciliation and operation release, with no destructive actions.
+  Nothing was approved or executed. Its review is durable in `iac.events` and
+  `observations.watch` with the same event ID and digest.
+- Disposable deployment verification remains pending graph-content acceptance,
   exact-digest human deployment approval, and actual CloudFormation outcome.
 - Jolly Fish: inspection only; no recovery or application deployment approved or
   executed by this change. Successful runtime operation is not claimed.
+
+## Overnight handoff — user requested stop
+
+The user is signed in to the editor in Chrome. The pending proposal is open in
+the existing disposable graph `e76298c1-3d45-47ed-be95-19e1104ebab2`:
+
+- Proposal **`01M4FSQB86BE20KCPBXJ5JT20E`**:
+  “Platform IAM regression: retained role creation and inline policy”.
+- New node `platform-role-path-test`, assigned stack
+  `gapp-c2f4ae64f32eb41ea695c9f1-stack` and separate guardrails
+  `graph-guardrails-c2f4ae64f32eb41ea695c9f1`.
+- One retained `/graph-app/` role with the assigned boundary and an inline
+  `s3:ListBucket` policy limited to its own unused bucket name. No Lambda,
+  application code, bucket, data or deletion is part of the fixture.
+- Proposal is validated; **not accepted at the last check**. No infrastructure
+  review or fixture deployment has been started. Auto-approve is off.
+- Resume by checking the proposal's current acceptance/revision through MCP.
+  If accepted, run `iac.review` for this node with `preservation:"strict"` and
+  agent session `platform-role-permissions-20261009`, then obtain the human's
+  exact-digest deployment approval in the graph. Do not click approval as the
+  human, reuse old approvals, or use AWS credentials to deploy the fixture.
+- Monitor `iac.status`, `iac.events`, and `observations.watch`; inspect physical
+  role readiness. Actual creation/inline-policy verification is still required.
+  Cleanup operations currently have local policy/fixture coverage only.
+- Do not execute the Jolly Fish recovery assessment or change its application.
+  No stack deletion or data removal is authorized, including test stacks.
+
+Release package, diff, smoke results, verification and scoped MCP evidence:
+`/private/tmp/graph-role-permissions-release-b6dbb00/`. Incident audit and IAM
+simulation: `/private/tmp/jolly-platform-incident-evidence.json` and
+`/private/tmp/jolly-policy-simulation.json`. These are verification artifacts;
+the source and this durable handoff are in the repository. No release or
+deployment process remains running at this stop point.
