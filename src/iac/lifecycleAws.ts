@@ -3,6 +3,7 @@ import {scopeFor,digest,blocker,platformDefinition,inspectionFingerprint,refused
 import {diagnosticError} from './diagnosticSafety';
 import {parseTemplate,policyFromEnv} from './validator';
 import {awsResourceAbsent} from './awsErrors';
+import {inspectionRead,transientInspectionError} from './inspectionRead';
 
 type Call=(method:string,args:any)=>Promise<any>;
 export interface LifecycleClients {cloud:Call;iam:Call;states:Call;assume:(scope:any)=>Promise<any>;application:(scope:any)=>Promise<Call>;repair?:(op:any)=>Promise<any>;}
@@ -30,12 +31,19 @@ export class LifecycleAws {
  async inspect(op:any,options:{ownRecovery?:boolean}={}) {
   const s=scopeFor(op,this.policy()),approved=platformDefinition(s),blockers:any[]=[],actualChecks:any[]=[];
   const deadline=Date.now()+18000;
-  const check=async(component:string,action:string,resource:string,call:()=>Promise<any>,missingOkay=false)=>{
-   if(Date.now()>deadline){if(!blockers.some(b=>b.code==='INSPECTION_INCOMPLETE'))blockers.push(blocker('INSPECTION_INCOMPLETE','platform-maintenance','AWS verification exceeded its bounded time budget. These partial reads do not establish readiness. Retry inspection; persistent timeouts require platform maintenance.',{component,action,resource}));return undefined;}
-   try {const value=await call();actualChecks.push({component,action,resource,result:'succeeded'});return value;}
-   catch(e){if(missingOkay&&awsResourceAbsent(e,action)){actualChecks.push({component,action,resource,result:'absent',code:e.code||e.name});return null;}
-    const error=diagnosticError(e,op);actualChecks.push({component,action,resource,result:'failed',error});
-    blockers.push(blocker('AWS_CHECK_FAILED',/AccessDenied|Unauthorized|not authorized/i.test(error.code+' '+error.message)?'platform-permission':'platform-maintenance',error.message,{component,action,resource,error,verification:'Repeat iac.inspect after the approved platform prerequisite has been restored.'}));return undefined;}
+  let iamTail:Promise<any>=Promise.resolve();
+  const check=(component:string,action:string,resource:string,call:()=>Promise<any>,missingOkay=false)=>{
+   const read=async()=>{
+   if(Date.now()>deadline){if(!blockers.some(b=>b.code==='INSPECTION_INCOMPLETE'))blockers.push(blocker('INSPECTION_INCOMPLETE','transient','AWS verification exceeded its bounded time budget. These partial reads do not establish readiness. Retry inspection after a short delay; no permission change is established by a timeout.',{component,action,resource,retryable:true,retryAfterMs:5000}));return undefined;}
+   try {const {value,attempts}=await inspectionRead(call,deadline);actualChecks.push({component,action,resource,result:'succeeded',attempts});return value;}
+   catch(e){if(missingOkay&&awsResourceAbsent(e,action)){actualChecks.push({component,action,resource,result:'absent',code:e.code||e.name,attempts:e.inspectionAttempts});return null;}
+    const error=diagnosticError(e,op);actualChecks.push({component,action,resource,result:'failed',error,attempts:e.inspectionAttempts});
+    const transient=transientInspectionError(e);
+    blockers.push(blocker(transient?'AWS_CHECK_RETRYABLE':'AWS_CHECK_FAILED',transient?'transient':/AccessDenied|Unauthorized|not authorized/i.test(error.code+' '+error.message)?'platform-permission':'platform-maintenance',error.message,{component,action,resource,error,attempts:e.inspectionAttempts,...(transient?{retryable:true,retryAfterMs:5000}:{}),verification:transient?'Wait briefly, then repeat iac.inspect or prepare a fresh recovery plan. Temporary AWS throttling or transport failure does not establish a missing permission.':'Repeat iac.inspect after the approved platform prerequisite has been restored.'}));return undefined;}
+   };
+   // IAM's account-level limits are low; do not burst parallel role inventories.
+   if(!action.startsWith('iam:'))return read();
+   const pending=iamTail.then(read,read);iamTail=pending.then(()=>undefined,()=>undefined);return pending;
   };
   const readStack=async(target:string)=>{
    const guardrail=target==='guardrail',name=guardrail?s.guardrailStack:op.input.stack.name;
@@ -60,7 +68,7 @@ export class LifecycleAws {
    if(listed?.NextToken)blockers.push(blocker('INVENTORY_TRUNCATED','platform-maintenance','Resource inventory exceeds the supported single-stack resource limit. Recovery is blocked until the full inventory can be proven.',{component:target}));
    let doc:any;
    try{doc=typeof template?.TemplateBody==='string'?parseTemplate(template.TemplateBody,'yaml').doc:template?.TemplateBody;}catch{}
-   if(!doc?.Resources){blockers.push(blocker('TEMPLATE_UNAVAILABLE','platform-maintenance','The deployed resource retention policies could not be verified.',{component:target}));return value;}
+   if(!doc?.Resources){if(template!==undefined)blockers.push(blocker('TEMPLATE_UNAVAILABLE','platform-maintenance','The deployed resource retention policies could not be verified.',{component:target}));return value;}
    value.templateDigest=digest(doc);
    value.resources=(listed?.StackResourceSummaries||[]).slice(0,100).map(r=>({logicalId:r.LogicalResourceId,physicalId:r.PhysicalResourceId,resourceType:r.ResourceType,status:r.ResourceStatus,
     deletionPolicy:doc.Resources[r.LogicalResourceId]?.DeletionPolicy||'Delete',definitionDigest:digest(doc.Resources[r.LogicalResourceId]||null),

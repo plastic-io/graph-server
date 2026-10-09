@@ -1,9 +1,9 @@
 # Graph MCP lifecycle — current platform review
 
 Updated October 8, 2026 (PDT). This is the current review for graph-server and
-its paired graph-editor. This change implements server discovery **2.4.2** and
-lifecycle contract **1.2.0**. The missing-role classification fix is released; the follow-up import and editor
-changes are ready for the platform release and live gates below. Previous release instructions are superseded; their evidence remains in
+its paired graph-editor. This change implements server discovery **2.4.3** and
+lifecycle contract **1.2.1**. The missing-role, retained-import and editor changes
+are released. The bounded inspection retry fix awaits release and the live gates below. Previous release instructions are superseded; their evidence remains in
 git history. No Chess application source, graph node, or template was changed.
 
 ## Confirmed regression
@@ -188,7 +188,7 @@ Automated evidence uses **disposable in-memory graphs and simulated AWS**:
   UI evidence, not real AWS or real human approval. The deployment CI now includes
   `deployment-lifecycle.spec.ts` alongside existing browser regressions.
 
-Passing checks: **744 server tests in 45 suites**, **119 editor integration tests
+Passing checks: **752 server tests in 46 suites**, **119 editor integration tests
 in 13 files**, **125 CRDT tests in 12 files**, the updated recovery/resize/warning browser test and prior deployment review test, both
 TypeScript checks, 5 deployment-configuration tests, and both Auth0/Cognito
 server and editor bundles. The result-schema assertions were rerun after the
@@ -232,7 +232,25 @@ an application template edit. AWS references:
 and [public resource provider schemas](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/resource-type-schemas.html).
 The fixture now reproduces the real import-settings rejection.
 
-The follow-up release, fresh **non-deleting** recovery approval/import and corrected
+The follow-up server `66558dc` / editor `b8d8b72` release passed deployed package
+hash, authorizer and all 28 authentication rejection checks. Its editor has the
+lower-system-bar Recovery and opt-in Auto-approve controls, plus persisted CF-node
+resizing. A fresh MCP plan for the disposable graph contained only guardrail
+reconciliation, retained import and operation release, but its inspection was
+blocked by actual IAM `Throttling: Rate exceeded` responses. That inspection made
+19 AWS checks, 11 of them IAM reads. No infrastructure was created by inspection
+or planning. The response did not identify a numeric quota or account-wide load.
+
+The inspector previously burst parallel IAM reads with retries disabled and
+misclassified temporary failures as administrator prerequisites. The follow-up
+serializes IAM inspection reads and retries transient checks at most three times
+with jitter and an 18-second inspection budget. Exhausted reads remain unknown
+and block approval; `AWS_CHECK_RETRYABLE` / `kind: transient` directs a fresh
+inspection after a delay, without claiming a permission change is needed.
+Deployment/recovery mutations are not automatically retried. See AWS's
+[SDK retry guidance](https://docs.aws.amazon.com/sdk-for-javascript/v2/developer-guide/retry-strategy.html).
+
+The bounded retry release, fresh **non-deleting** recovery approval/import and corrected
 disposable deployment remain pending. The user's latest instruction prohibits
 further stack deletion. Retained resources are left in place. Live missing-role
 recreation is not established by the disposable queue test; the exact missing-role
@@ -257,10 +275,10 @@ Generic limits remain explicit:
   process is separate from application operations; no application credential or
   CLI fallback is introduced.
 
-Last released pair: server `44f976064db0f0fc6d5f9b1a0bc4b36c2032b7b0`, editor
-`39c84424f9ed2660b911f5ed87e3aaa809b2e0b3`, account **230639770018 / us-west-1**.
-The prior release evidence is retained at
-`/private/tmp/graph-guardrail-release-44f9760/`; the public
+Last released pair: server `66558dc8c1b764994c71629c007815464eb4ce47`, editor
+`b8d8b72f1f614223a0bef4c06fa355b2f6b7921f`, account **230639770018 / us-west-1**.
+Release evidence is retained at `/private/tmp/graph-import-release-66558dc/` and
+the prior `/private/tmp/graph-guardrail-release-44f9760/`; the public
 [release manifest](https://d2fqgid0yzbc85.cloudfront.net/graph-editor/release.json)
 identifies the deployed pair. This document does not instruct or authorize
 shipping the Chess application.

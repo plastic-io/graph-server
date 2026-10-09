@@ -3,7 +3,7 @@ import {stackScope} from './isolation';
 import {guardrailTemplate} from './guardrails';
 import {policyFromEnv,parseTemplate} from './validator';
 
-export const LIFECYCLE_VERSION='1.2.0';
+export const LIFECYCLE_VERSION='1.2.1';
 export const terminalStates=new Set(['succeeded','failed','rolled-back','rollback-failed','cancelled','expired','stale','no-changes','destroyed','recovered','recovery-blocked','inspected']);
 export function canonical(value:any):string {
  if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';

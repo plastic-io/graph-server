@@ -48,8 +48,25 @@ test.each(['AccessDenied','NetworkingError','Throttling','UnknownEndpoint'])('%s
  f.clients.iam.mockImplementation((m,a)=>m==='getRole'&&a.RoleName===f.approved.Resources.WorkerRole.Properties.RoleName?Promise.reject(Object.assign(new Error('The role cannot be found.'),{code})):original(m,a));
  const op=await f.plan();expect(op.state).toBe('recovery-blocked');
  expect(op.inspection.roles.find(r=>r.logicalId==='WorkerRole').exists).toBe('unknown');
- expect(op.recoveryPlan.prerequisites.some(p=>p.code==='AWS_CHECK_FAILED'&&p.error.code===code)).toBe(true);
+ const transient=['NetworkingError','Throttling'].includes(code);
+ expect(op.recoveryPlan.prerequisites).toEqual(expect.arrayContaining([expect.objectContaining({code:transient?'AWS_CHECK_RETRYABLE':'AWS_CHECK_FAILED',kind:transient?'transient':code==='AccessDenied'?'platform-permission':'platform-maintenance',error:expect.objectContaining({code})})]));
+ if(transient){expect(op.inspection.recoveryReadiness.requiresPlatformAdmin).toBe(false);expect(op.nextActions.actions.find(a=>a.tool==='iac.maintenance.request').allowed).toBe(false);}
  await expect(f.approve(op)).rejects.toMatchObject({code:'STALE_RECOVERY'});
+ expect(f.calls.some(c=>['deleteStack','createStack','updateStack','executeChangeSet'].includes(c.method))).toBe(false);
+});
+
+test('IAM inspection serializes reads and recovers a temporary throttle without inventing a maintenance prerequisite',async()=>{
+ const f=await fixture();f.installRoles();let active=0,maxActive=0,fail=true;
+ const original=f.clients.iam.getMockImplementation();
+ f.clients.iam.mockImplementation(async(m,a)=>{
+  active++;maxActive=Math.max(maxActive,active);
+  try{await Promise.resolve();if(m==='getRole'&&fail){fail=false;throw Object.assign(new Error('Rate exceeded'),{code:'Throttling'});}return await original(m,a);}
+  finally{active--;}
+ });
+ const op=await f.plan();expect(op.state).toBe('recovery-ready');expect(maxActive).toBe(1);
+ expect(op.inspection.awsVerification.checks).toEqual(expect.arrayContaining([expect.objectContaining({action:'iam:GetRole',result:'succeeded',attempts:2})]));
+ expect(op.inspection.recoveryReadiness.requiresPlatformAdmin).toBe(false);
+ expect(op.recoveryPlan.prerequisites).toEqual([]);
  expect(f.calls.some(c=>['deleteStack','createStack','updateStack','executeChangeSet'].includes(c.method))).toBe(false);
 });
 
