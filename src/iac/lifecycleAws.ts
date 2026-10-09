@@ -5,6 +5,7 @@ import {parseTemplate,policyFromEnv} from './validator';
 import {awsResourceAbsent} from './awsErrors';
 import {inspectionRead,transientInspectionError} from './inspectionRead';
 import {strict,preservationActionProblems,preservationStateProblems,assertGuardrailPreservation,refusePreservation} from './preservation';
+import {ROLE_EXISTENCE_READS} from './isolation';
 
 type Call=(method:string,args:any)=>Promise<any>;
 export interface LifecycleClients {cloud:Call;iam:Call;states:Call;assume:(scope:any)=>Promise<any>;application:(scope:any)=>Promise<Call>;repair?:(op:any)=>Promise<any>;}
@@ -21,8 +22,10 @@ const tags=(items:any[])=>Object.fromEntries((items||[]).map(t=>[t.Key,t.Value])
 const match=(pattern:string,value:string)=>new RegExp('^'+pattern.replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.')+'$','i').test(value);
 /** Structural evidence only. Conditions, SCPs, session policies and resource policies can still deny a real call. */
 export function policyCoverage(doc:any,action:string,resource:string) {
- const statements=[].concat(doc?.Statement||[]).filter(s=>[].concat(s.Action||[]).some(a=>match(a,action))&&[].concat(s.Resource||[]).some(r=>match(r,resource)));
+ const any=(patterns:any,value:string)=>[].concat(patterns||[]).some(p=>match(p,value));
+ const statements=[].concat(doc?.Statement||[]).filter(s=>(s.Action?any(s.Action,action):s.NotAction&&!any(s.NotAction,action))&&(s.Resource?any(s.Resource,resource):s.NotResource&&!any(s.NotResource,resource)));
  if(statements.some(s=>s.Effect==='Deny'&&!s.Condition))return 'explicit-deny';
+ if(statements.some(s=>s.Effect==='Deny'&&s.Condition))return 'conditional-or-unknown';
  if(statements.some(s=>s.Effect==='Allow'&&!s.Condition))return 'allowed-by-document';
  return statements.length?'conditional-or-unknown':'not-granted';
 }
@@ -117,6 +120,7 @@ export class LifecycleAws {
    return value;
   };
   const [application,guardrail]=await Promise.all([readStack('application'),readStack('guardrail')]);
+  let installedExecutionPolicy:any;
   const roles=await Promise.all(['WorkerRole','ExecutionRole'].map(async logicalId=>{
    const definition=approved.Resources[logicalId].Properties,arn=logicalId==='WorkerRole'?s.workerRoleArn:s.roleArn,name=definition.RoleName;
    const got=await check('guardrail','iam:GetRole',arn,()=>this.clients.iam('getRole',{RoleName:name}),true);
@@ -132,6 +136,7 @@ export class LifecycleAws {
    if(inline?.IsTruncated||attached?.IsTruncated||attached?.AttachedPolicies?.length||inline?.PolicyNames?.some(n=>n!==definition.Policies[0].PolicyName)||role.PermissionsBoundary)
     blockers.push(blocker('UNAPPROVED_ROLE_POLICY','platform-maintenance','The guardrail role has extra policies or a boundary outside the approved definition. A platform administrator must review them; graph recovery cannot grant or detach arbitrary permissions.',{resource:arn}));
    const policyDigest=digest(policy?document(policy.PolicyDocument):null),trustDigest=digest(document(role.AssumeRolePolicyDocument));
+   if(logicalId==='ExecutionRole'&&policy)installedExecutionPolicy=document(policy.PolicyDocument);
    const row=guardrail.resources.find(r=>r.logicalId===logicalId);
    if(!row?.ownershipVerified||row.physicalId!==name)blockers.push(blocker('ORPHAN_OWNERSHIP_UNVERIFIED','ownership','Role exists but no verified CloudFormation ownership record was found. Prefix alone does not prove ownership.',{resource:arn}));
    if(row){row.exists=true;row.physicalIdentity=role.RoleId;}
@@ -139,6 +144,25 @@ export class LifecycleAws {
     matches:policyDigest===digest(definition.Policies[0].PolicyDocument)&&trustDigest===digest(definition.AssumeRolePolicyDocument)};
   }));
   for(const r of roles)if(r.exists===false){const item=guardrail.resources.find(x=>x.logicalId===r.logicalId);if(item)item.exists=false;}
+  // A DELETE_FAILED CloudFormation record does not prove a physical role exists.
+  // Read only names proven by this graph's owned resource inventory. Unknown or
+  // denied reads must never be treated as absence or authority for cleanup.
+  const applicationRoles:any[]=[];
+  for(const r of application.resources.filter(r=>r.resourceType==='AWS::IAM::Role'&&r.physicalId&&r.status!=='DELETE_COMPLETE')){
+   const name=r.physicalId,expectedArn=`arn:aws:iam::${s.account}:role/graph-app/${name}`;
+   if(!r.ownershipVerified||!name.startsWith(s.namespace)||!/^[\w+=,.@-]{1,64}$/.test(name)){
+    blockers.push(blocker('APPLICATION_ROLE_OWNERSHIP_UNVERIFIED','ownership','Application role inventory is outside the assigned namespace.',{component:'application',logicalId:r.logicalId}));continue;
+   }
+   const got=await check('application-role','iam:GetRole',expectedArn,()=>this.clients.iam('getRole',{RoleName:name}),true);
+   r.exists=got===undefined?'unknown':!!got?.Role;
+   if(got?.Role){r.physicalIdentity=got.Role.RoleId;if(got.Role.Arn!==expectedArn||got.Role.PermissionsBoundary?.PermissionsBoundaryArn!==s.boundaryArn){
+    r.ownershipVerified=false;blockers.push(blocker('APPLICATION_ROLE_OWNERSHIP_UNVERIFIED','ownership','The actual role path or boundary does not match this graph namespace. No role mutation is authorized.',{component:'application',logicalId:r.logicalId,resource:got.Role.Arn}));
+   }}
+   const rootArn=`arn:aws:iam::${s.account}:role/${name}`;
+   const checks=[...ROLE_EXISTENCE_READS.map(action=>({phase:'before-creation',action,resource:rootArn})),...['iam:CreateRole','iam:GetRole','iam:GetRolePolicy','iam:PutRolePolicy','iam:DeleteRolePolicy','iam:DeleteRole'].map(action=>({phase:'path-scoped-lifecycle',action,resource:expectedArn}))];
+   applicationRoles.push({logicalId:r.logicalId,name,expectedArn,actualArn:got?.Role?.Arn||null,exists:r.exists,cloudFormationStatus:r.status,
+    checks:checks.map(c=>({...c,result:installedExecutionPolicy?policyCoverage(installedExecutionPolicy,c.action,c.resource):'unavailable'}))});
+  }
   let boundary:any={arn:s.boundaryArn,exists:false,matches:false};
   const got=await check('guardrail','iam:GetPolicy',s.boundaryArn,()=>this.clients.iam('getPolicy',{PolicyArn:s.boundaryArn}),true);
   if(got?.Policy){
@@ -204,6 +228,8 @@ export class LifecycleAws {
   if(needsRecovery)blockers.push(blocker('RECOVERY_REQUIRED','recovery','Prepare a recovery plan for the current failed, retained or drifted resources.'));
   const result:any={version:1,checkedAt:new Date().toISOString(),graphId:op.graphId,nodeId:op.nodeId,sourceOperationId:sourceId,scope:s,
    application,guardrail,roles,boundary,guardrailsMatch,assumption,workflow,
+   applicationRoleLifecycle:{kind:'document-analysis-and-physical-role-reads',executionRoleArn:s.roleArn,roles:applicationRoles,
+    deploymentTested:false,limitations:'Role reads run as the platform inspector, not as CloudFormation. Document checks include NotResource/NotAction but do not evaluate conditions, SCPs or session policies. Name-only reads are allowed solely within this namespace; writes and PassRole still require /graph-app/. Cleanup of a never-created role is not authorized on the root-path ARN.'},
    policyAnalysis:{kind:'document-analysis',verifiedDeployment:false,checks:policyAnalysis,platformRole:{arn:platformArn,trustDigest:digest(platformTrust),boundary:platformRole?.Role.PermissionsBoundary?.PermissionsBoundaryArn||null},limitations:'This is not IAM simulation or a deployment test. SCPs, session policies, service checks and eventual consistency can still deny operations.'},
    awsVerification:{kind:'actual-read-and-assume-calls',checks:actualChecks,deploymentTested:false},
    approvedGuardrailTemplate:approved,approvedGuardrailDigest:digest(approved),blockers,canReview:!blockers.length};

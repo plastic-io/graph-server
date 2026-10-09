@@ -97,6 +97,24 @@ function allowed(doc,action,resource,context={},resourcePolicyAllow=false){
  });
  return !matches.some(s=>s.Effect==='Deny')&&(resourcePolicyAllow||matches.some(s=>s.Effect==='Allow'));
 }
+test('application IAM creation probes work before a path exists without granting root-path mutation',()=>{
+ const s=stackScope('disposable-role-lifecycle','stack',policy),other=stackScope('another-graph','stack',policy),doc=executionPolicy(s);
+ const root=`arn:aws:iam::${s.account}:role/${s.namespace}runtime`,owned=`arn:aws:iam::${s.account}:role/graph-app/${s.namespace}runtime`;
+ for(const action of ['iam:GetRole','iam:GetRolePolicy'])expect(allowed(doc,action,root)).toBe(true);
+ for(const action of ['iam:GetRole','iam:GetRolePolicy','iam:PutRolePolicy','iam:DeleteRolePolicy','iam:ListRolePolicies','iam:DeleteRole','iam:TagRole','iam:UntagRole'])expect(allowed(doc,action,owned)).toBe(true);
+ expect(allowed(doc,'iam:CreateRole',owned,{'iam:PermissionsBoundary':s.boundaryArn})).toBe(true);
+ for(const target of [root,`arn:aws:iam::${s.account}:role/unrelated-path/${s.namespace}runtime`,s.roleArn,s.workerRoleArn,
+  `arn:aws:iam::${s.account}:role/graph-app/${other.namespace}runtime`,`arn:aws:iam::${s.account}:role/${other.namespace}runtime`]){
+  for(const action of ['iam:CreateRole','iam:PutRolePolicy','iam:DeleteRolePolicy','iam:DeleteRole','iam:UpdateAssumeRolePolicy','iam:PassRole','iam:PutRolePermissionsBoundary']){
+   expect(allowed(doc,action,target,{'iam:PermissionsBoundary':s.boundaryArn,'iam:PassedToService':'lambda.amazonaws.com'},true)).toBe(false);
+  }
+ }
+ for(const target of [`arn:aws:iam::${s.account}:role/graph-app/${other.namespace}runtime`,`arn:aws:iam::${s.account}:role/${other.namespace}runtime`,`arn:aws:iam::${s.account}:role/unrelated-path/${s.namespace}runtime`])
+  for(const action of ['iam:GetRole','iam:GetRolePolicy'])expect(allowed(doc,action,target,{},true)).toBe(false);
+ for(const action of ['iam:CreateRole','iam:PutRolePermissionsBoundary'])for(const boundary of [undefined,other.boundaryArn])expect(allowed(doc,action,owned,{'iam:PermissionsBoundary':boundary},true)).toBe(false);
+ expect(allowed(doc,'iam:PassRole',owned,{'iam:PassedToService':'lambda.amazonaws.com'})).toBe(true);
+ expect(allowed(doc,'iam:PassRole',owned,{'iam:PassedToService':'cloudformation.amazonaws.com'})).toBe(false);
+});
 test('AWS policy matrix: stack A cannot mutate B, server resources, deployment roles, or its guardrails',()=>{
  const a=stackScope('g','a',policy),b=stackScope('g','b',policy),deploy=executionPolicy(a),app=runtimeBoundary(a);
  const table=s=>'arn:aws:dynamodb:us-west-1:230639770018:table/'+s;

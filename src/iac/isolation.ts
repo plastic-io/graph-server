@@ -30,6 +30,11 @@ export function resourceArns(s:StackScope):Record<string,string[]> {
  const p=s.namespace,r=s.region,a=s.account;
  return {s3:[`arn:aws:s3:::${p}*`,`arn:aws:s3:::${p}*/*`],dynamodb:[`arn:aws:dynamodb:${r}:${a}:table/${p}*`],sqs:[`arn:aws:sqs:${r}:${a}:${p}*`],sns:[`arn:aws:sns:${r}:${a}:${p}*`],logs:[`arn:aws:logs:${r}:${a}:log-group:/aws/lambda/${p}*`,`arn:aws:logs:${r}:${a}:log-group:${p}*`],lambda:[`arn:aws:lambda:${r}:${a}:function:${p}*`],iam:[`arn:aws:iam::${a}:role/graph-app/${p}*`]};
 }
+// IAM resolves name-only reads of an absent role against role/<RoleName>,
+// before there is a stored Path. Do not extend write or PassRole permissions to
+// that ARN: an existing root-path role with the same prefix is not graph-owned.
+export const ROLE_EXISTENCE_READS=['iam:GetRole','iam:GetRolePolicy'];
+export const roleNameProbeArn=(s:StackScope)=>`arn:aws:iam::${s.account}:role/${s.namespace}*`;
 const statements=(s:StackScope,actions:Record<string,string[]>)=>Object.entries(actions).map(([service,Action])=>({Effect:'Allow',Action,Resource:resourceArns(s)[service]}));
 export function runtimeBoundary(s:StackScope){
  const own=Object.entries(resourceArns(s)).filter(([k])=>k!=='iam'&&k!=='lambda').flatMap(([,v])=>v);
@@ -46,6 +51,7 @@ export function executionPolicy(s:StackScope){
   {Effect:'Allow',Action:'lambda:AddPermission',Resource:r.lambda,Condition:{StringEquals:{'lambda:Principal':'apigateway.amazonaws.com'}}},
   {Effect:'Allow',Action:['iam:CreateRole','iam:PutRolePermissionsBoundary'],Resource:r.iam,Condition:{StringEquals:{'iam:PermissionsBoundary':s.boundaryArn}}},
   {Effect:'Allow',Action:['iam:GetRole','iam:DeleteRole','iam:PutRolePolicy','iam:GetRolePolicy','iam:DeleteRolePolicy','iam:ListRolePolicies','iam:ListAttachedRolePolicies','iam:ListInstanceProfilesForRole','iam:TagRole','iam:UntagRole','iam:UpdateAssumeRolePolicy','iam:UpdateRole','iam:UpdateRoleDescription','iam:ListRoleTags'],Resource:r.iam},
+  {Sid:'ReadAssignedRoleExistence',Effect:'Allow',Action:ROLE_EXISTENCE_READS,Resource:roleNameProbeArn(s)},
   {Effect:'Allow',Action:'iam:PassRole',Resource:r.iam,Condition:{StringEquals:{'iam:PassedToService':'lambda.amazonaws.com'}}},
   // API IDs are assigned by AWS, not chosen by the graph. REST API child resources inherit tags for ABAC.
   {Effect:'Allow',Action:'apigateway:POST',Resource:api+'/restapis',Condition:{StringEquals:{'aws:RequestTag/GraphStack':s.namespace},StringLike:{'apigateway:Request/ApiName':s.namespace+'*'}}},
@@ -61,7 +67,8 @@ export function executionPolicy(s:StackScope){
   {Effect:'Deny',Action:['iam:CreateRole','iam:PutRolePermissionsBoundary'],Resource:'*',Condition:{StringNotEquals:{'iam:PermissionsBoundary':s.boundaryArn}}},
   {Effect:'Deny',Action:'apigateway:*',Resource:api+'/tags/*',Condition:{'ForAnyValue:StringEquals':{'aws:TagKeys':'GraphStack'}}},
   {Effect:'Deny',Action:'apigateway:*',Resource:api+'/restapis/*',Condition:{StringNotEquals:{'aws:ResourceTag/GraphStack':s.namespace}}},
-  {Effect:'Deny',Action:['iam:*'],NotResource:r.iam},
+  {Sid:'DenyIamOutsideAssignedRoles',Effect:'Deny',Action:['iam:*'],NotResource:[...r.iam,roleNameProbeArn(s)]},
+  {Sid:'DenyNameOnlyRoleMutation',Effect:'Deny',NotAction:ROLE_EXISTENCE_READS,Resource:roleNameProbeArn(s)},
   // Explicit denies still apply when a foreign resource policy grants a role session direct access.
   ...Object.entries(r).filter(([service])=>service!=='iam'&&service!=='logs').map(([service,Resource])=>({Effect:'Deny',Action:service+':*',NotResource:Resource})),
   {Effect:'Allow',Action:'logs:DescribeLogGroups',Resource:'*'},

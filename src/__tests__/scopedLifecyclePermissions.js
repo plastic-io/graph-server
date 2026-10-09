@@ -35,14 +35,14 @@ test('platform worker and one-stack worker cover their actual CF calls without g
  for(const action of ['CreateStack','UpdateStack','DescribeStacks','GetTemplate','ListStackResources','CreateChangeSet','DescribeChangeSet','ExecuteChangeSet','ContinueUpdateRollback','RollbackStack','DeleteStack'])expect(policyCoverage(platform,'cloudformation:'+action,guardArn)).toBe('allowed-by-document');
  for(const action of ['CreateChangeSet','DescribeChangeSet','ExecuteChangeSet','DeleteChangeSet','DescribeStacks','DescribeStackResources','ListStackResources','GetTemplate','DeleteStack','ContinueUpdateRollback','RollbackStack']){
   expect(policyCoverage(worker,'cloudformation:'+action,appArn)).toBe('allowed-by-document');
-  expect(policyCoverage(worker,'cloudformation:'+action,guardArn)).toBe('not-granted');
-  expect(policyCoverage(worker,'cloudformation:'+action,'arn:aws:cloudformation:us-west-1:230639770018:stack/unrelated-project/id')).toBe('not-granted');
+  expect(policyCoverage(worker,'cloudformation:'+action,guardArn)).toBe('explicit-deny');
+  expect(policyCoverage(worker,'cloudformation:'+action,'arn:aws:cloudformation:us-west-1:230639770018:stack/unrelated-project/id')).toBe('explicit-deny');
  }
  expect(worker.Statement.find(s=>s.Effect==='Allow'&&s.Action==='iam:PassRole')).toEqual({Effect:'Allow',Action:'iam:PassRole',Resource:f.s.roleArn,Condition:{StringEquals:{'iam:PassedToService':'cloudformation.amazonaws.com'}}});
  const deploy=executionPolicy(f.s),role='arn:aws:iam::230639770018:role/graph-app/'+f.s.namespace+'runtime';
  for(const action of ['iam:GetRole','iam:GetRolePolicy','iam:DeleteRolePolicy','iam:DeleteRole','iam:ListRolePolicies','iam:ListAttachedRolePolicies','iam:PutRolePolicy','iam:UpdateAssumeRolePolicy']){
   expect(policyCoverage(deploy,action,role)).toBe('allowed-by-document');
-  expect(policyCoverage(deploy,action,f.s.workerRoleArn)).toBe('not-granted');
+  expect(policyCoverage(deploy,action,f.s.workerRoleArn)).toBe('explicit-deny');
  }
  expect(policyCoverage(deploy,'iam:DeleteRolePermissionsBoundary',role)).toBe('explicit-deny');
  expect(policyCoverage(deploy,'iam:CreatePolicyVersion',f.s.boundaryArn)).toBe('explicit-deny');

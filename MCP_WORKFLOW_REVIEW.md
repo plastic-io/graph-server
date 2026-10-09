@@ -1,218 +1,151 @@
-# Graph MCP lifecycle — current platform review
+# Application-role deployment permissions — current platform review
 
-Updated October 8, 2026 (PDT). This is the current review artifact for server
-**2.5.0**, lifecycle contract **1.3.0**. It supersedes the previous recovery
-instructions. The application agent owns Chess. This change does not edit its
-code/template, approve or cancel its recovery, deploy it, delete stacks, empty
-buckets, or delete application data.
+Updated October 9, 2026. Server **2.5.1**, lifecycle contract **1.3.0**.
+This replaces the previous current review; cancellation/preservation release
+history remains in commit `040f2c3`. Jolly Fish application code and its template,
+Chess, and GLM-5/Nova integration are outside this platform change.
 
-## Confirmed state and evidence
+## Incident and evidence
 
-Read-only MCP inspection at **2026-10-09T05:32:26.961Z** checked graph
-`f1963a3b-7e9a-43b3-87ee-068d56431374`, node `node-chess-storage-stack`, pending
-recovery `01M4FHYTX8V4JNANJC61P6BK68`:
+Graph `3fe65c37-01f3-43fd-b87b-4cab45c002cb`, node `npc-room-stack`, deployment
+`01M4FR3PG8QYHTEFQVYACNJ6TB`, assessment `01M4FRB7CSMGVRDDPV11A267V1`, account
+`230639770018`, region `us-west-1`.
 
-- Recovery was unapproved; its workflow had **not started**. The pending review
-  held the fence that prevented an ordinary deployment review.
-- Guardrail `graph-guardrails-15688bf738201d31d8fb7d29` was `ROLLBACK_FAILED`.
-  The application was `NOT_CREATED`. Both assigned roles were absent, with actual
-  IAM `NoSuchEntity` results, rather than access-denied/unknown results.
-- The retained runtime boundary existed and matched its approved definition.
-- The 20 then-published policy-document checks allowed the checked operations.
-  Actual role assumption was **not tested**, because the role was absent.
-- Historical `GetRole`, `GetRolePolicy` and `DeleteRolePolicy` denials remain
-  historical evidence, not a new assertion of missing current permissions.
+MCP events and a read-only platform CloudTrail audit identify these calls by
+`arn:aws:iam::230639770018:role/graph-deploy/gapp-d6e18e224997c1afa946d739-execution`:
 
-A separate read-only **platform** audit at **2026-10-09T06:01:58.998Z** read the
-currently deployed worker and guardrail role trust and inline policies in
-`230639770018 / us-west-1`. The historical grants are already present. No new
-IAM grant was justified, and this release changes no platform IAM policy.
-Policy hashes: worker `4b0b6a7ea0b2268d4cc52b06658a9f99efb46cd3b9787d1389eb53102b2919c9`;
-guardrail `680f48aad3d6ca0491f2994f56e8441daf913d7289d5c832559b077b6b110617`.
-These are actual **reads**, not proof of successful deployment execution.
+| UTC time, October 9 | Action | AWS request ID |
+| --- | --- | --- |
+| 07:14:28 | `iam:GetRolePolicy` | `11af2fdf-9042-4c4b-8f1e-bdc0d2e129df` |
+| 07:14:29 | `iam:GetRole` | `3058ca0d-2215-4d53-ae96-796c92257e07` |
+| 07:14:32 | `iam:ListRolePolicies` | `42459f34-7929-4ced-9a52-c3427a9f1ec2` |
+| 07:14:32 | `iam:DeleteRolePolicy` | `9daf01b4-68a0-4305-8413-9a5b04d07364` |
 
-## Implemented MCP contract
+All four report an explicit identity-policy deny on role
+`gapp-d6e18e224997c1afa946d739-memory-role`. No `CreateRole` call by this execution
+role appears in the incident window. The installed role has only the inline
+`isolated-stack` policy and no attached managed policies. Its only deny matching
+these actions is `Deny iam:* NotResource role/graph-app/<namespace>*`.
 
-`server.discover({"schemaVersion":1,"topic":"lifecycle"})` publishes the actual
-input schemas, result schemas, examples, permissions, state transitions,
-cancellation semantics and preservation limits. The `iac.review` discovery
-schema is shared with its registered tool schema.
+AWS IAM simulation at **07:35:59Z** identifies that statement in
+`role_gapp-d6e18e224997c1afa946d739-execution_isolated-stack`, document columns
+4254–4382. For each of the four actions it reports:
 
-| Tool | Behavior |
-| --- | --- |
-| `iac.cancel` | Requires graph-scoped `graph:read` and `iac:propose`, exact graph/node/current operation ID, optional bounded reason. Cancels an unapproved deployment or recovery review. No AWS resource call occurs. |
-| `iac.inspect` | Optional `preservation:"strict"` reports current state limitations without changing AWS. Static template validation, current document analysis, actual AWS reads/assumption and historical failures remain distinct. |
-| `iac.review` | Optional `preservation:"strict"` prepares a separately approved deployment review. After cancellation, `retryOf` can link to the cancelled operation. Fresh AWS readiness can still block it. |
-| `iac.recovery.plan` | Optional `preservation:"strict"` binds preservation into the immutable recovery digest. Unsupported in-place states return prerequisites without destructive actions. Required idempotency key remains unchanged. |
-| `iac.status`, `iac.events`, `iac.history`, `observations.watch` | Expose cancellation, invalidated digests, constraints, blockers and allowed next actions, through the same durable envelopes published on the graph bus. |
-| `iac.maintenance.request` | Still record-and-verify-only. It cannot modify IAM or trigger a release, recovery or deployment. Platform-admin configuration is not needed to cancel an unapproved review. |
+- `arn:aws:iam::230639770018:role/gapp-d6e18e224997c1afa946d739-memory-role`:
+  **explicitDeny**.
+- `arn:aws:iam::230639770018:role/graph-app/gapp-d6e18e224997c1afa946d739-memory-role`:
+  **allowed** by the existing lifecycle statement, columns 2013–2436.
 
-Example for an application agent, using the operation returned by status:
+This establishes the generated-policy defect for name-only existence probes.
+The historical denied CloudTrail entries omit request parameters and full
+resource ARNs; the root-name ARN is reconstructed from the named resource and
+verified in IAM simulation, not falsely presented as a CloudTrail ARN field.
+Simulation is policy evidence, not proof of successful CloudFormation execution.
+
+A fresh IAM `GetRole` at **07:31:19Z** returned `NoSuchEntity` for the memory role.
+CloudFormation's `DELETE_FAILED` record therefore does **not** establish that a
+physical role survived. MCP still reports the application `ROLLBACK_FAILED`,
+guardrails `CREATE_COMPLETE`, memory bucket `DELETE_SKIPPED`, and log group
+`DELETE_COMPLETE`. No stack/resource deletion, data access, application repair,
+or Jolly Fish recovery execution occurred during this investigation.
+
+## Correction and security boundary
+
+`executionPolicy` permits only `GetRole` and `GetRolePolicy` on the assigned
+namespace's name-only ARN for pre-creation reads. The explicit isolation deny
+is retained, split into named statements:
+
+- `DenyIamOutsideAssignedRoles`: deny IAM outside the assigned application path
+  and the assigned name-probe namespace.
+- `DenyNameOnlyRoleMutation`: deny every action except the two existence reads
+  on name-only role resources, including `CreateRole`, `PutRolePolicy`,
+  `DeleteRolePolicy`, `DeleteRole`, boundary changes and `PassRole`.
+
+Normal creation, inline-policy management/cleanup and role deletion remain
+limited to `/graph-app/<assigned namespace>*`. Required immutable permissions
+boundary and Lambda-only role passing are unchanged. Another graph, another
+path, platform deployment roles and guardrail policies remain protected.
+No shared platform IAM grant is added.
+
+The cleanup denial was downstream of the pre-creation failure. This correction
+prevents that initial failure; it does **not** grant root-path inline-policy
+deletion as a shortcut. IAM authorization cannot prove that a role is absent
+from its name alone. Granting that write would also permit modifying an existing
+root-path role. Cleanup of never-created role records remains a disclosed
+limitation, especially when another independent policy prevents creation.
+
+## MCP contract and diagnostics
+
+Existing `iac.inspect` now includes `applicationRoleLifecycle`:
 
 ```json
-{"tool":"iac.cancel","arguments":{"schemaVersion":1,"graphId":"example","nodeId":"stack","operationId":"01M4C000000000000000000000","reason":"Discard the unapproved recovery; preserve all existing stacks and resources."}}
-{"tool":"iac.inspect","arguments":{"schemaVersion":1,"graphId":"example","nodeId":"stack","preservation":"strict"}}
-{"tool":"iac.review","arguments":{"schemaVersion":1,"graphId":"example","nodeId":"stack","retryOf":"01M4C000000000000000000000","preservation":"strict"}}
+{
+  "kind": "document-analysis-and-physical-role-reads",
+  "executionRoleArn": "arn:aws:iam::<account>:role/graph-deploy/<namespace>execution",
+  "deploymentTested": false,
+  "roles": [{
+    "logicalId": "Role", "name": "<namespace>runtime",
+    "expectedArn": "arn:aws:iam::<account>:role/graph-app/<namespace>runtime",
+    "actualArn": null, "exists": false, "cloudFormationStatus": "DELETE_FAILED",
+    "checks": [{"phase":"before-creation","action":"iam:GetRole",
+      "resource":"arn:aws:iam::<account>:role/<namespace>runtime",
+      "result":"explicit-deny"}]
+  }]
+}
 ```
 
-Cancelling requires no deployment approval. A successful review still needs its
-own exact-digest human deployment approval. Inspecting, monitoring, cancelling,
-or approving recovery never grants application deployment approval.
+The example describes the **old installed policy**. A corrected installed policy
+reports `allowed-by-document` for that read. `checks` analyze the installed
+execution policy, now including `NotResource` and `NotAction` denies. Conditions
+remain `conditional-or-unknown`; SCPs and session policies are not evaluated.
+`exists` can be true, false or `unknown`. Access denial is never absence. Actual
+application-role reads run under the platform inspector; they are not claims of
+successful execution under the CloudFormation role. Foreign role path/boundary
+or unverified inventory blocks recovery.
 
-### Cancellation and concurrency
+`iac.preflight.effectivePermissions` explicitly reports `status:unverified`,
+explains that static `deployable:true` is not effective AWS authorization, and
+points to inspection and separately approved deployment verification.
+`server.discover` publishes these schemas and explanations. Inspection continues
+through the existing durable events/bus, `iac.events` and `observations.watch`;
+no private UI-only diagnostics are introduced.
 
-Eligible states: `awaiting-review`, `recovery-ready`, `recovery-blocked`,
-`expired`, `stale`, with no approval, execution start or recovery dispatch.
-Planning, approved and executing work is refused with `REVIEW_NOT_CANCELLABLE`.
-`execution.cancel` remains a separate graph-runtime operation.
+## Preservation and safe next step
 
-A conditional operation write is the linearization point shared with approval:
-state becomes `cancelled`, `reviewInvalidatedAt` is set, deployment/recovery
-approval digests become null, and the owned fence is logically free. S3 has no
-multi-object transaction. Physical fence cleanup is conditional on the same
-operation ID; a retry or `iac.status` completes it and the durable event outbox
-after interruption. It cannot clear a newer operation's lock. The old worker
-cannot execute cancelled work, even when its delivery is delayed.
+A platform release changes the **definition for future guardrails**. It does not
+rewrite Jolly Fish's installed execution policy or authorize recovery/deployment.
+Existing guardrails require a fresh, exact-digest human recovery approval.
 
-Duplicate cancellation returns the original result. Old digests remain in the
-cancellation audit record as **invalidated** evidence. Expiry does not require a
-live worker to release the fence. Unexecuted change sets remain inert metadata;
-cancellation does not call DeleteChangeSet or any other AWS resource API.
+After release, inspect Jolly Fish again and prepare a new recovery assessment
+from the current operation with `preservation:"strict"`. That node already has
+strict preservation, which is inherited if omitted. The application stack is
+`ROLLBACK_FAILED`: ordinary CloudFormation updates are unsupported in this state.
+The current generic strict recovery path must remain blocked, with **no stack
+deletion, replacement, import, bucket emptying or destructive fallback**.
 
-The bus event is `deployment.review.cancelled`, correlated by graph/node/operation,
-revision and input digest, with `reviewDigest:null`, terminal state and
-`lifecycle:{approvalValid:false,lockReleased:true,cancellation:{...}}`. Stable
-IDs, cursor replay, deduplication and outbox recovery are unchanged.
+If that state persists, leave the original stack and retained bucket intact.
+A platform administrator can ask AWS Support whether a non-destructive
+service-side repair exists. Alternatively the application owner can separately
+review a new stack node/namespace; adopting or migrating the retained bucket is
+not currently supported by the isolated application subset and requires its own
+preservation design and approval. Neither alternative is executed here.
 
-### Strict preservation
+References: [IAM GetRole](https://docs.aws.amazon.com/IAM/latest/APIReference/API_GetRole.html),
+[IAM paths and account-unique role names](https://aws.amazon.com/blogs/security/optimize-aws-administration-with-iam-paths/),
+[CloudFormation stack states](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/view-stack-events.html).
 
-The constraint is part of the approval digest and inherited by subsequent
-reviews on that node. Omitting it cannot silently downgrade a strict review.
-The option on `iac.inspect` is advisory; specify it on the review itself.
+## Verification and release state
 
-- Require `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain` on application
-  resources. Reject removals, replacements and uncertain replacement analysis.
-- Reject deployment-induced deletion through S3 lifecycle expiration, enabled
-  DynamoDB TTL, reduced queue retention, introduced/reduced log retention,
-  removed indexes or reduced point-in-time recovery history.
-- Check current stack state before preparatory guardrails, and recheck the
-  actual change set/current template before application execution.
-- Set CloudFormation `DisableRollback:true` for strict guardrail creation,
-  supported in-place reconciliation and application change-set execution.
-  Failed work remains for inspection; there is no automatic destructive rollback.
-- Fixed role-policy/trust updates and additions can reconcile stable guardrails
-  in place. Boundary document/version changes, deletion, import and unverified
-  rollback paths are blocked. Strict operations retain change-set metadata.
-
-CloudFormation does not permit an ordinary in-place update of `ROLLBACK_FAILED`,
-`ROLLBACK_COMPLETE` or `DELETE_FAILED`. Strict requests return
-`PRESERVATION_BLOCKED`, with a `PRESERVATION_IN_PLACE_UNSUPPORTED` problem,
-component/status/resource, `limitation:"aws-stack-state"`, and non-executing
-alternatives: leave the stack intact; independently review a separate stack
-node/namespace without adopting existing resources; or ask AWS Support about a
-possible service-side repair. No such repair is promised or performed.
-
-`CREATE_FAILED`, `UPDATE_FAILED`, `UPDATE_ROLLBACK_FAILED` and import/rollback
-paths currently return `PRESERVATION_STATE_UNVERIFIED`. AWS has retry/rollback
-APIs, but the platform does not yet prove that every resource survives them.
-This is a platform verification limit, separate from an AWS state restriction.
-Finite log-retention introduction is incompatible with strict preservation;
-the existing cost policy also rejects unbounded log groups. A generic retention
-capability would need its own review. No application-specific exception is added.
-
-Preservation governs deployment/recovery effects. It does not suspend application
-traffic, existing retention/TTL processing, independent administrator actions,
-or deliberately invoked application code. It is not a backup guarantee or
-indefinite SQS retention.
-
-AWS references: [stack states](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/view-stack-events.html),
-[ExecuteChangeSet](https://docs.aws.amazon.com/AWSCloudFormation/latest/APIReference/API_ExecuteChangeSet.html),
-[UpdateStack](https://docs.aws.amazon.com/AWSCloudFormation/latest/APIReference/API_UpdateStack.html).
-
-## Scoped permission audit
-
-The inspector now checks 30 current guardrail-policy action/resource pairs,
-covering fixed-definition creation, inspection, policy/trust updates and legacy
-rollback/cleanup. This expansion adds no AWS calls or IAM grants. Absence probes
-use the existing restricted root-name read/inline-policy-cleanup grants; creation
-and mutation remain restricted to `/graph-deploy/gapp-*`. Boundaries remain
-restricted to `/graph-guardrails/gapp-*`.
-
-Tests pin AWS IAM resource-provider handler requirements and distinguish optional
-properties the fixed definition cannot request (managed-policy attachments,
-role-boundary changes, description/session-duration edits) from operations it
-actually uses. Account-wide IAM list authority is not added. The platform worker's
-CF calls target guardrail namespaces; application workers operate only their
-assigned stack/change sets and can pass only their own CF execution role. The
-application execution policy retains boundary enforcement, restricted Lambda
-role passing and explicit foreign-resource/shared-IAM denials. Read-only
-`logs:DescribeLogGroups` remains the documented unscoped exception.
-
-The installed SDK v2 does not accept `RetainExceptOnCreate`; its strict CF requests
-omit that field (AWS default false) and set supported `DisableRollback:true`.
-SDK v3 application/guardrail requests explicitly set the deletion override false.
-No application role receives platform IAM repair authority.
-
-## Verification and release status
-
-Passing: **793 server tests in 49 suites**, TypeScript, five deployment-config
-tests, both Auth0/Cognito Lambda builds and MCP schema assertions. After the
-final error/discovery changes, 103 affected tests passed again. Jest uses the
-repository's existing `--forceExit` workaround for a test-harness handle.
-New coverage uses disposable in-memory graphs, the real MCP SDK/handler and
-simulated AWS adapters. It proves:
-
-- Pending recovery/deployment cancellation, expiry, duplicate requests, interrupted
-  fence cleanup, newer-lock protection, and both approval/cancellation race winners.
-- Delayed workers and stale digests cannot execute cancelled work. Cross-graph,
-  wrong-node, unauthenticated and executing-operation cancellation are rejected.
-- Fresh review after cancellation reaches current-state checks instead of the old
-  recovery lock error. Unsupported in-place recovery never offers destructive actions.
-- SDK request flags preserve failed creations; in-place role-policy reconciliation
-  completes in a fixture without deleting its stack or boundary. Application
-  deployment remains separately approved.
-- Strict review and worker checks reject delete/replacement/uncertain/import
-  actions and deployment-induced data removal. Existing cross-stack/shared-IAM
-  denial tests pass.
-- The MCP cancellation event, durable history, reconnect/cursor replay and graph
-  bus carry consistent data.
-
-These tests are not live AWS execution or a human approval. Prior live disposable
-fixture evidence remains in git history: graph `e76298c1-3d45-47ed-be95-19e1104ebab2`
-created guardrails/queue and encountered an intentional table failure. Its
-historically approved delete/import attempt is not authorization to repeat it.
-The current task performs no stack or data deletion. Its old destructive
-instructions are retired by this artifact.
-
-Released server commit **`156fbfb7cab51fd85f3c14e2b1de81eca31d2d2c`** to platform
-stack `pio-auth-test-230639770018`, account **230639770018**, region **us-west-1**.
-The editor remains **`fbad254cfea0d5b41422841f995203f5bbb7eed1`**; only its public
-release manifest was updated. CloudFormation reached `UPDATE_COMPLETE`.
-The packaged template changed 75 Lambda code references and an ephemeral API
-deployment snapshot, with **no IAM changes, function-environment changes, stack
-deletions or persistent-resource removals**. CloudFormation lint passed. The
-production dependency audit reported zero advisories.
-
-Verification at **2026-10-09T06:15:28.748Z** matched eight deployed Lambda package
-hashes, the editor index hash and manifest. All **72 protected REST methods** and
-the WebSocket authorizer remained enabled. **30 anonymous/invalid-token requests**,
-including the discard route, were rejected. Private deployment/repair/application
-workers still have no public function URLs. Platform-admin configuration was
-preserved, not expanded. The deployment smoke check also passed OAuth discovery,
-provider selection and unauthenticated REST/MCP/WebSocket rejection.
-
-Post-release **read-only MCP** inspection at **2026-10-09T06:15:32.719Z** confirmed
-that the referenced recovery is still unapproved, its application is still
-`NOT_CREATED`, and the guardrail remains `ROLLBACK_FAILED` with both roles absent.
-The live status now advertises `iac.cancel` with `allowed:true` and no approval
-requirement. All **30** current document checks allowed their checked actions;
-actual role assumption remains untested because the role is absent. The operation
-was not cancelled or otherwise acted on.
-
-Live mutation acceptance under the new strict constraint still requires a fresh
-disposable graph review and its exact human approval. The current MCP connection
-caches an older callable tool catalogue; reconnect/refresh it to discover
-`iac.cancel` and the new constraint arguments. The live cancellation/strict
-execution cycle is therefore **not claimed as verified**. No AWS CLI, direct
-authenticated HTTP or browser-token fallback was used to run application
-acceptance. No Chess deployment readiness is claimed.
+- **801 tests / 50 suites pass**, including policy-deny precedence, pre-creation
+  existence probes, legitimate path-scoped lifecycle operations, foreign paths,
+  cross-graph resources, boundary enforcement, PassRole, absent versus denied
+  physical-role inspection, ownership mismatches, cancellation and preservation.
+- TypeScript passes; five release-configuration tests pass; both Auth0 and
+  Cognito production Lambda bundles build.
+- Policy matrix and lifecycle fixtures are **local/simulated evidence**. AWS
+  CloudTrail/IAM reads and IAM simulation above are separate evidence.
+- Platform release: pending packaging/diff review and deployment.
+- Disposable graph deployment: pending editor sign-in, graph-content acceptance,
+  exact-digest human deployment approval, and actual CloudFormation outcome.
+- Jolly Fish: inspection only; no recovery or application deployment approved or
+  executed by this change. Successful runtime operation is not claimed.
