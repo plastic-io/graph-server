@@ -1,4 +1,4 @@
-import {automaticApproval,checkApprovalMode} from './automaticApproval';
+import {automaticApprovalOptions,checkApprovalMode} from './automaticApproval';
 import {ulid} from 'ulid';
 import {DelegationStore} from '../policy/delegation';
 import {decide} from '../policy/decide';
@@ -56,7 +56,7 @@ export class IacLifecycleService {
   if(!row||row.value.graphId!==g||row.value.nodeId!==n)refused('NOT_FOUND','Operation not found in this graph and node.',404);
   scopeFor(row.value,this.policy());return row;
  }
- private public(op:any){const {input,policyDigest,recoveryLease,...visible}=op;return {...visible,automaticApproval:automaticApproval(op),recoveryPlan:publicRecoveryPlan(op.recoveryPlan),stack:input.stack,nextActions:nextActions(op)};}
+ private public(op:any){const {input,policyDigest,recoveryLease,...visible}=op;return {...visible,automaticApproval:automaticApprovalOptions(op),recoveryPlan:publicRecoveryPlan(op.recoveryPlan),stack:input.stack,nextActions:nextActions(op)};}
  private async historicalFailure(op:any) {
   const seen=new Set<string>();
   for(let depth=0;op&&depth<20&&!seen.has(op.operationId);depth++){
@@ -194,7 +194,7 @@ export class IacLifecycleService {
   if(op.state!=='recovery-ready')return this.approve(g,n,p,body);
   if(op.supersededBy||this.now()>op.expiresAt)refused('STALE_RECOVERY','The recovery review changed or expired during verification.');
   await this.assertFence(op);
-  const next={...op,state:'recovery-requested',updatedAt:this.now(),recoveryApproval:{sub:p.sub,at:this.now(),digest:body.recoveryDigest,confirmDataLoss:body.confirmDataLoss===true,mode:body.approvalMode||'manual'}};
+  const next={...op,state:'recovery-requested',updatedAt:this.now(),recoveryApproval:{sub:p.sub,at:this.now(),digest:body.recoveryDigest,confirmDataLoss:body.confirmDataLoss===true,mode:body.approvalMode||'manual',aiPermissionMode:body.aiPermissionMode||(body.approvalMode==='automatic'?'fully-automatic':'manual')}};
   if(!await this.cas(operationKey(op.operationId),next,row.etag))refused('CONFLICT','Recovery changed while approving. Refresh its status.');
   await this.emit(next,'recovery.approval',{approval:next.recoveryApproval,planDigest:op.recoveryPlan.digest});
   await this.dispatchRecovery(next);

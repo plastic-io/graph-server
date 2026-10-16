@@ -83,6 +83,7 @@ export class DelegationStore {
      * scopes at all when nobody delegated to it.
      */
     async resolve(principal: Principal | undefined, graphId: string | undefined): Promise<Principal | undefined> {
+        if (principal) {const builtIn = resolveAssistant(principal, graphId); if (builtIn) return builtIn;}
         if (!principal || principal.kind !== "agent") {
             return principal;
         }
@@ -95,3 +96,4 @@ export class DelegationStore {
         return { ...principal, scopes: effective, delegatedBy: delegation.delegatedBy, delegation: { graphId: delegation.graphId, expiresAt: delegation.expiresAt } } as any;
     }
 }
+import {resolveAssistant} from '../assistant/identity';

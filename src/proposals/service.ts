@@ -12,6 +12,7 @@ import { RevisionService } from "../revisions/service";
 import { SummaryService, revRef, revId, digestRef } from "../summary/service";
 import CrdtStore from "../crdtStore";
 import { Autonomy, AutonomyStore } from "../policy/autonomy";
+import { proposalApprovalOptions, proposalAutomaticApproval } from './automaticApproval';
 
 /**
  * Proposals (plan §4.7.2, §5.3 proposal.create/validate): an agent's change,
@@ -49,7 +50,7 @@ export interface Proposal {
     createdAt: string;
     updatedAt: string;
     expiresAt: string;
-    decisions: { by: string; decision: "approve" | "reject" | "commit"; rationale?: string; at: string; proposalDigest: string }[];
+    decisions: { by: string; decision: "approve" | "reject" | "commit"; rationale?: string; at: string; proposalDigest: string; aiPermissionMode?: string }[];
     resultRevision?: string;
     mutationId?: string;
     warnings?: string[];
@@ -124,7 +125,7 @@ export class ProposalService {
             if (p) {
                 const { update, ...rest } = p;
                 if ((rest.state === "validated" || rest.state === "awaiting-review") && Date.parse(rest.expiresAt) < Date.now()) rest.state = "expired";
-                out.push(rest);
+                out.push({...rest,automaticApproval:proposalApprovalOptions(rest)});
             }
         }
         return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -395,9 +396,19 @@ export class ProposalService {
      * bytes that were validated, audited like any edit, fanned out to every
      * replica, and a revision cut for the result.
      */
-    async commit(graphId: string, proposalId: string, principal: Principal | undefined): Promise<{ proposal: Proposal; result: AdmissionResult } | ProposalError> {
+    async commit(graphId: string, proposalId: string, principal: Principal | undefined, approval: {aiPermissionMode?:string;proposalDigest?:string} = {}): Promise<{ proposal: Proposal; result: AdmissionResult } | ProposalError> {
         const proposal = await this.get(graphId, proposalId);
         if (!proposal) return { error: "no such proposal", code: "NOT_FOUND" };
+        const mode=approval.aiPermissionMode??'manual';
+        if(!['manual','safe-actions','fully-automatic'].includes(mode))return {error:'aiPermissionMode must be manual, safe-actions or fully-automatic.',code:'SCHEMA_INVALID'};
+        if(mode!=='manual'){
+            if(principal?.kind!=='human')return {error:'Automatic editor approval requires an authenticated human session. Agents cannot enable AI Permissions.',code:'ADMISSION_DENIED'};
+            if(!approval.proposalDigest||approval.proposalDigest!==proposal.proposalDigest)return {error:'Approve the exact current proposal digest. Refresh this proposal.',code:'CONFLICT'};
+            if(proposal.state!=='committed'){
+                const eligibility=proposalAutomaticApproval(proposal,mode as 'safe-actions'|'fully-automatic');
+                if(!eligibility.allowed)return {error:eligibility.reason,code:'APPROVAL_REQUIRED'};
+            }
+        }
         if (proposal.state === "committed") {
             return { proposal, result: { mutationId: proposal.mutationId || "", decision: "accepted", policyVersion: POLICY_VERSION, replayed: true } as AdmissionResult };
         }
@@ -441,11 +452,12 @@ export class ProposalService {
         proposal.resultRevision = "error" in cut ? undefined : revRef(cut.revision.revisionId);
         if(!("error" in cut))await this.putJson(`proposals/by-revision/${graphId}/${cut.revision.revisionId}.json`,{proposalId,revisionId:cut.revision.revisionId,proposalDigest:proposal.proposalDigest});
         proposal.warnings = result.warnings;
-        proposal.decisions.push({ by: principal ? principal.sub : "?", decision: "commit", at: new Date().toISOString(), proposalDigest: proposal.proposalDigest });
+        const editorMode=principal?.kind==='human'?mode:undefined;
+        proposal.decisions.push({ by: principal ? principal.sub : "?", decision: "commit", at: new Date().toISOString(), proposalDigest: proposal.proposalDigest, aiPermissionMode:editorMode });
         proposal.updatedAt = new Date().toISOString();
         await this.putJson(ProposalService.key(graphId, proposalId), proposal);
-        await this.admission.chain.append(graphId, { kind: "proposal.committed", at: proposal.updatedAt, graphId, proposalId, mutationId: result.mutationId, resultRevision: proposal.resultRevision, principal: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant } : null, proposer: proposal.principal });
-        if (this.hooks.notify) await this.hooks.notify(graphId, { eventType: "proposal", action: "committed", proposalId, by: principal && principal.sub, mutationId: result.mutationId, resultRevision: proposal.resultRevision });
+        await this.admission.chain.append(graphId, { kind: "proposal.committed", at: proposal.updatedAt, graphId, proposalId, mutationId: result.mutationId, resultRevision: proposal.resultRevision, principal: principal ? { sub: principal.sub, kind: principal.kind, tenant: principal.tenant } : null, proposer: proposal.principal, aiPermissionMode:editorMode });
+        if (this.hooks.notify) await this.hooks.notify(graphId, { eventType: "proposal", action: "committed", proposalId, by: principal && principal.sub, mutationId: result.mutationId, resultRevision: proposal.resultRevision, aiPermissionMode:editorMode });
         return { proposal, result };
     }
 
@@ -483,7 +495,7 @@ export class ProposalService {
             .then(([proposal, projection]) => {
                 if (!proposal) return this.reply(callback, 404, { error: "no such proposal", code: "NOT_FOUND" });
                 const { update, ...rest } = proposal;
-                return this.reply(callback, 200, { proposal: rest, projection });
+                return this.reply(callback, 200, { proposal: {...rest,automaticApproval:proposalApprovalOptions(rest)}, projection });
             })
             .catch((err) => { console.error("Cannot read a proposal.", err); callback(null, { statusCode: 500, headers: corsHeaders }); });
     }
@@ -504,7 +516,9 @@ export class ProposalService {
     }
     commitRoute(event: any, context: any, callback: (err: any, r: any) => void) {
         const { id: graphId, proposalId } = event.pathParameters;
-        this.commit(graphId, proposalId, event.principal)
+        let body:any={};
+        try {body=event.body?JSON.parse(event.body):{};} catch (_) {return this.reply(callback,400,{error:'Invalid approval JSON.',code:'SCHEMA_INVALID'});}
+        this.commit(graphId, proposalId, event.principal, body || {})
             .then((r: any) => r.error ? this.reply(callback, this.statusFor(r.code), r) : this.reply(callback, 200, { proposal: { ...r.proposal, update: undefined }, result: r.result }))
             .catch((err) => { console.error("Cannot commit a proposal.", err); callback(null, { statusCode: 500, headers: corsHeaders }); });
     }

@@ -7,6 +7,19 @@ const {configuration, authEnvironment, serverEnvironment, appendEnvironment} = r
 const stack = values => ({Stacks:[{Outputs:Object.entries(values).map(([OutputKey,OutputValue])=>({OutputKey,OutputValue}))}]});
 const env = {AWS_ACCOUNT_ID:'230639770018',AWS_DEPLOY_ROLE_ARN:'arn:aws:iam::230639770018:role/graph-deploy',EDITOR_REF:'a'.repeat(40),
   AUTH0_DOMAIN:'tenant.auth0.com',AUTH0_AUDIENCE:'graphs'};
+test('Bedrock defaults off and only permits explicit US Opus profiles with matching IAM resources',()=>{
+  assert.equal(configuration(env).BEDROCK_AGENT_ENABLED,'false');
+  const c=configuration({...env,BEDROCK_AGENT_ENABLED:'true'});assert.equal(c.BEDROCK_FOUNDATION_MODEL_ID,'anthropic.claude-opus-5-5');
+  assert.throws(()=>configuration({...env,BEDROCK_AGENT_ENABLED:'yes'}));
+  assert.throws(()=>configuration({...env,BEDROCK_MODEL_ID:'global.anthropic.claude-opus-5-5'}));
+  assert.throws(()=>configuration({...env,BEDROCK_MODEL_ID:'us.anthropic.claude-opus-*'}));
+  const {verify}=require('./check-bedrock.cjs'),cfg={...env,AWS_REGION:'us-west-1'};
+  const profile={status:'ACTIVE',inferenceProfileArn:'arn:aws:bedrock:us-west-1:230639770018:inference-profile/us.anthropic.claude-opus-5-5',models:[{modelArn:'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-5-5'}]};
+  const availability={authorizationStatus:'AUTHORIZED',entitlementAvailability:'AVAILABLE',agreementAvailability:{status:'AVAILABLE'},regionAvailability:'AVAILABLE'};
+  assert.match(verify(profile,availability,cfg).verification,/only/);
+  assert.throws(()=>verify({...profile,models:[{modelArn:'arn:aws:bedrock:eu-west-1::foundation-model/anthropic.claude-opus-5-5'}]},availability,cfg));
+  assert.throws(()=>verify(profile,{...availability,authorizationStatus:'NOT_AUTHORIZED'},cfg));
+});
 test('legacy deployments keep Auth0; Cognito requires managed editor configuration', () => {
   assert.equal(configuration(env).AUTH_PROVIDER, 'auth0');
   assert.equal(configuration(env).DEPLOY_EDITOR, 'false');

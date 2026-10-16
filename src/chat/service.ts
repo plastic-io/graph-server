@@ -2,6 +2,7 @@ import {Principal, connectionIsCurrent} from "../auth/principal";
 import {DelegationStore} from "../policy/delegation";
 import {decide} from "../policy/decide";
 import {ChatStore, ChatStorage, ChatMessage, ChatError, digest, conflict} from "./store";
+import {assistantBinding} from '../assistant/identity';
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const GRAPH = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -11,13 +12,18 @@ export const graphRoom = (graphId: string) => `graph-${graphId}`;
 export const personalChannel = (principal: Principal) => `chat-user-${userIdOf(principal)}`;
 export const graphChannel = (graphId: string) => `graph-chat-${graphId}`;
 const directRoom = (a: string, b: string) => `direct-${digest([a, b].sort().join(":"))}`;
-interface Person {id: string; name: string; handle: string}
+export interface Person {id: string; name: string; handle: string; assistant?: {graphId: string; ownerId: string}}
+export interface ChatAssistant {
+    peer(principal: Principal, graphId?: string): Promise<Person | undefined>;
+    posted(principal: Principal, peer: Person, message: ChatMessage, room: string): Promise<void>;
+}
 interface Session {id: string; sub: string; graphId: string; name: string; joinedSeq: number; joinedAt: string; directCursors: Record<string, number>}
 interface Broadcast {
     _sendToChannel(channel: string, value: any, cb: (err?: any) => void): void;
     postToClient(domain: string, connection: string, value: any, cb: (err?: any) => void): void;
 }
 export class ChatService {
+    assistant?: ChatAssistant;
     readonly log: ChatStore;
     readonly delegations: DelegationStore;
     constructor(storage: ChatStorage, private broadcast: Broadcast, private exists: (graphId: string) => Promise<boolean>) {
@@ -36,13 +42,16 @@ export class ChatService {
         const id = userIdOf(principal);
         const name = String(principal.name || (principal.kind === "agent" ? "Agent" : "User")).slice(0, 80);
         const slug = name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "user";
-        const person = {id, name, handle: `${slug}-${id.slice(0, 8)}`};
+        const builtIn = assistantBinding(principal);
+        const person: Person = {id, name, handle: builtIn ? 'opus' : `${slug}-${id.slice(0, 8)}`,
+            ...(builtIn ? {assistant: {graphId: builtIn.graphId, ownerId: digest(builtIn.ownerSub)}} : {})};
         await this.log.put(`chat/people/${id}.json`, person);
         return person;
     }
     async directory(principal: Principal, graphId?: string) {
         await this.authorize(principal, graphId);
         const me = await this.person(principal);
+        const assistant = await this.assistant?.peer(principal, graphId);
         const online = new Set<string>();
         const connections = await this.log.keys("connections/");
         for (const key of connections) {
@@ -52,7 +61,8 @@ export class ChatService {
         // Directory contains only accounts which have opened messaging. History
         // and message bodies are never exposed by presence or directory lookup.
         const people = await Promise.all((await this.log.keys("chat/people/")).map(key => this.log.get(key)));
-        return {me, people: people.filter(Boolean).map(p => ({...p, online: online.has(p.id)})).sort((a, b) => a.handle.localeCompare(b.handle))};
+        return {me, people: people.filter(p => p && (!p.assistant || (p.id === assistant?.id && p.assistant.ownerId === me.id && p.assistant.graphId === graphId)))
+            .map(p => ({...p, online: p.assistant ? process.env.BEDROCK_AGENT_ENABLED === 'true' : online.has(p.id)})).sort((a, b) => a.handle.localeCompare(b.handle))};
     }
     async inbox(principal: Principal, graphId?: string) {
         await this.authorize(principal, graphId);
@@ -88,11 +98,17 @@ export class ChatService {
         return session;
     }
     private async room(principal: Principal, args: {graphId?: string; peerId?: string}) {
-        await this.authorize(principal, args.graphId);
         if (args.peerId) {
-            if (!USER.test(args.peerId) || !await this.log.get(`chat/people/${args.peerId}.json`)) throw new ChatError("NOT_FOUND", "That messaging account was not found.");
+            if (!USER.test(args.peerId)) throw new ChatError('NOT_FOUND', 'That messaging account was not found.');
+            const peer = await this.log.get(`chat/people/${args.peerId}.json`);
+            if (!peer) throw new ChatError('NOT_FOUND', 'That messaging account was not found.');
+            if (peer.assistant && (peer.assistant.ownerId !== userIdOf(principal) || (args.graphId && args.graphId !== peer.assistant.graphId))) throw new ChatError('ADMISSION_DENIED', 'Opus conversations belong to one user and graph.');
+            const builtIn = assistantBinding(principal);
+            if (builtIn && (args.peerId !== digest(builtIn.ownerSub) || args.graphId !== builtIn.graphId)) throw new ChatError('ADMISSION_DENIED', 'Opus can reply only to the requesting user.');
+            await this.authorize(principal, peer.assistant?.graphId || args.graphId);
             return directRoom(userIdOf(principal), args.peerId);
         }
+        await this.authorize(principal, args.graphId);
         if (!args.graphId) throw new ChatError("SCHEMA_INVALID", "Choose a graph or a direct-message recipient.");
         return graphRoom(args.graphId);
     }
@@ -105,14 +121,15 @@ export class ChatService {
     async post(principal: Principal, args: {graphId?: string; peerId?: string; agentSessionId?: string; messageId: string; text: string; phase?: ChatMessage["phase"]; interrupt?: boolean; acknowledges?: string[]}, agent = false) {
         // A named mention is always private, including when an MCP caller
         // forgets peerId. Reject ambiguous/unknown mentions instead of leaking.
-        if (typeof args.text === "string") {
+        if (typeof args.text === "string" && !assistantBinding(principal)) {
             const mentions = [...args.text.matchAll(/(?:^|[^\w@])@([a-zA-Z0-9][a-zA-Z0-9_-]*)\b/g)].map(m => m[1].toLowerCase());
             const handles = [...new Set(mentions.filter(h => h !== "here"))];
             if (handles.length > 1 || ((handles.length || args.peerId) && mentions.includes("here"))) throw new ChatError("SCHEMA_INVALID", "Choose @here or one private @handle.");
             if (handles.length) {
                 await this.authorize(principal, args.graphId);
+                const builtIn = handles[0] === 'opus' ? await this.assistant?.peer(principal, args.graphId) : undefined;
                 const people = await Promise.all((await this.log.keys("chat/people/")).map(key => this.log.get(key)));
-                const found = people.filter(p => p && (p.handle === handles[0] || p.name.toLowerCase() === handles[0]));
+                const found = builtIn ? [builtIn] : people.filter(p => p && !p.assistant && (p.handle === handles[0] || p.name.toLowerCase() === handles[0]));
                 if (found.length !== 1 || (args.peerId && args.peerId !== found[0].id)) throw new ChatError("SCHEMA_INVALID", "Choose an exact @handle from chat.directory.");
                 args = {...args, peerId: found[0].id};
             }
@@ -152,6 +169,7 @@ export class ChatService {
             ]);
             await this.publish(`chat-user-${person.id}`, {...event, peer});
             if (peer.id !== person.id) await this.publish(`chat-user-${peer.id}`, {...event, peer: person});
+            if (peer.assistant && principal.kind === 'human') await this.assistant?.posted(principal, peer, message, room);
         } else await this.publish(graphChannel(args.graphId!), event);
         return {message, room, ...update};
     }

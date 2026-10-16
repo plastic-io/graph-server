@@ -11,7 +11,7 @@
     // is no reason to downlevel at all.
     "target": "es2019",
     "lib": [
-      "es2019",
+      "es2022",
       "esnext.asynciterable",
       "dom"
     ]

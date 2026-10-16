@@ -12,6 +12,25 @@ Lambda calls are not application deployment fallbacks. Platform deployment,
 graph acceptance, infrastructure approval and live runtime verification are
 separate steps.
 
+The editor's **AI Permissions** menu coordinates graph proposal acceptance and
+infrastructure approval for the open graph. **Manual** is the default.
+**Safe Actions** automatically accepts names, descriptions and layout, plus
+new retained buckets, tables, queues and log groups without access-policy
+changes. Other resource types, updates and resource-changing recovery stay
+manual. **Fully Automatic** also accepts validated code, connections and
+infrastructure definitions, and approves eligible non-destructive deployment
+and recovery reviews. It cannot automatically remove nodes, change approval
+policy or budgets, delete stacks, remove or replace resources, or approve
+rollback/data-loss recovery.
+
+Both automatic modes require an explicit warning confirmation and reset on
+reload or graph change. Exact digests, graph authority and admission checks
+still apply on the server; failures return the editor to Manual. Existing
+agent delegations and autonomy policies are separate. No mode creates a
+deployment review or silently rebases stale proposals. The versioned lifecycle
+contract in `server.discover` documents mode eligibility, editor request fields
+and audit records. Older servers without mode eligibility remain manual.
+
 # Plastic-IO Graph Server
 
 * Plastic-IO Graph Scheduler Service
@@ -190,3 +209,6 @@ Until the admission service from the polymorphic-application plan lands
   in every other graph sees `this.openai === undefined`.
 - The S3 bucket is versioned; overwritten or deleted objects (including a poisoned CRDT update
   log) can be restored for 30 days.
+The server includes an optional [Bedrock Opus conversational agent](BEDROCK_AGENT.md).
+Enable it through deployment configuration, then use **Ask Opus** or `@opus` in
+graph chat. Its graph proposals remain subject to the editor's AI Permissions mode.

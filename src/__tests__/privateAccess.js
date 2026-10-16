@@ -9,6 +9,22 @@ const handlers = read('src/handler.ts');
 // These checks protect the deployment boundary, where forgetting an authorizer
 // on just one new route would bypass otherwise-correct token verification.
 describe('private deployment access boundaries', () => {
+  test('Opus worker has no application, deployment or request-identity write authority', () => {
+    const worker=service.functions.assistantWorker;
+    expect(worker.reservedConcurrency).toBe(2);expect(worker.timeout).toBe(300);
+    expect(worker.events).toBeUndefined();
+    const queue=service.resources.Resources.AssistantEventSourceMapping.Properties;
+    expect(queue.BatchSize).toBe(1);expect(queue.ScalingConfig.MaximumConcurrency).toBe(2);
+    expect(service.functions.assistantBridge.events).toBeUndefined();
+    const statements=service.resources.Resources.AssistantWorkerRole.Properties.Policies[0].PolicyDocument.Statement;
+    const model=statements.find(s=>s.Action==='bedrock:InvokeModel');
+    expect(model.Resource).toHaveLength(5);expect(JSON.stringify(model.Resource)).not.toContain('*');
+    expect(JSON.stringify(statements)).not.toMatch(/iam:|sts:|cloudformation:|states:|s3:DeleteObject/);
+    expect(statements.find(s=>s.Action==='s3:PutObject').Resource).toBe('arn:aws:s3:::${self:custom.s3Bucket}/assistant/jobs/*');
+    expect(JSON.stringify(statements.find(s=>s.Action==='lambda:InvokeFunction').Resource)).toContain('-assistantBridge');
+    expect(service.resources.Resources.AssistantQueue.Properties.FifoQueue).toBe(true);
+    expect(service.resources.Resources.AssistantQueue.DeletionPolicy).toBe('Retain');
+  });
   test('every HTTP data or execution route has the JWT authorizer; only authentication routes are public', () => {
     const publicRoutes = [];
     for (const [name, fn] of Object.entries(service.functions)) {

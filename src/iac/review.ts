@@ -1,4 +1,4 @@
-import {automaticApproval,checkApprovalMode} from './automaticApproval';
+import {automaticApprovalOptions,checkApprovalMode} from './automaticApproval';
 import {deploymentCapabilities, isolationEnabled, LEGACY_APPLY_TYPES} from './capabilities';
 import {scopedPolicy,stackScope, ISOLATED_TYPES} from './isolation';
 import {DeploymentProgress,phaseFor} from './progress';
@@ -167,7 +167,7 @@ export class IacReviewService {
     private publicRecord(record: any) {
         if (!record) return null;
         const {input, policyDigest,recoveryLease, ...visible} = record;
-        return {...visible,automaticApproval:automaticApproval(record),...(record.recoveryPlan?{recoveryPlan:publicRecoveryPlan(record.recoveryPlan)}:{}),...(record.reason?{reason:diagnosticText(record.reason,record)}:{}),...(record.originalError?{originalError:diagnosticError(record.originalError,record)}:{}),template:{text:input.text, format:input.format, source:input.source}, stack:input.stack,preflight:input.preflight,readinessChecks:input.readiness||[]};
+        return {...visible,automaticApproval:automaticApprovalOptions(record),...(record.recoveryPlan?{recoveryPlan:publicRecoveryPlan(record.recoveryPlan)}:{}),...(record.reason?{reason:diagnosticText(record.reason,record)}:{}),...(record.originalError?{originalError:diagnosticError(record.originalError,record)}:{}),template:{text:input.text, format:input.format, source:input.source}, stack:input.stack,preflight:input.preflight,readinessChecks:input.readiness||[]};
     }
     private progress(){return new DeploymentProgress(this.store,this.deps.notify);}
     async current(graphId: string, nodeId: string, principal: any, operationId?:string, refresh=true) {
@@ -295,7 +295,7 @@ export class IacReviewService {
         const current=await this.reviewInput(graphId,nodeId,principal,op.action);
         if (current.inputDigest!==op.inputDigest || current.policyDigest!==op.policyDigest || current.deploymentOperationId!==op.input.deploymentOperationId || !current.validation.ok) problem('The template, deployed stack, or deployment policy changed after this review. Create a new review.','STALE_REVIEW',409);
         if (op.plan.destructive && body.confirmDestructive!==true) problem('Confirm resource removal or replacement before applying this review.','APPROVAL_REQUIRED',409);
-        const next={...op,state:'apply-requested',updatedAt:this.now(),approval:{sub:principal.sub,at:this.now(),reviewDigest:op.reviewDigest,mode:body.approvalMode||'manual'},
+        const next={...op,state:'apply-requested',updatedAt:this.now(),approval:{sub:principal.sub,at:this.now(),reviewDigest:op.reviewDigest,mode:body.approvalMode||'manual',aiPermissionMode:body.aiPermissionMode||(body.approvalMode==='automatic'?'fully-automatic':'manual')},
             history:[...op.history,{state:'apply-requested',at:this.now(),by:principal.sub}]};
         if (!await this.cas(IacReviewService.key(op.operationId),next,row.etag)) problem('The review changed. Refresh before approving.','CONFLICT',409);
         await this.observe(next);

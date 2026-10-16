@@ -1,6 +1,7 @@
 service: ${env:SERVICE_NAME, 'plastic-io-graph-server'}
 plugins:
   - serverless-webpack
+  - ./build/assistant-stack.cjs
 provider:
   name: aws
   # nodejs22.x: the MCP SDK v2 needs Node 20+ and isolated-vm (M3) needs 22+ (plan Q-5)
@@ -10,6 +11,9 @@ provider:
   stage: ${opt:stage, 'dev'}
   region: ${opt:region, 'us-west-1'}
   iamRoleStatements:
+    - Effect: Allow
+      Action: sqs:SendMessage
+      Resource: !Sub 'arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${self:service}-${self:provider.stage}-opus.fifo'
     - Effect: Allow
       Action: lambda:InvokeFunction
       Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-iacDiagnostics'
@@ -89,6 +93,10 @@ provider:
   # WebSocket messages are attributed by the connection record written at $connect.
   # WebSocket execution stays off unless explicitly enabled.
   environment:
+    BEDROCK_AGENT_ENABLED: ${env:BEDROCK_AGENT_ENABLED, 'false'}
+    BEDROCK_MODEL_ID: ${env:BEDROCK_MODEL_ID, 'us.anthropic.claude-opus-5-5'}
+    ASSISTANT_QUEUE_URL: !Sub 'https://sqs.${AWS::Region}.${AWS::URLSuffix}/${AWS::AccountId}/${self:service}-${self:provider.stage}-opus.fifo'
+    ASSISTANT_BRIDGE_FUNCTION: ${self:service}-${self:provider.stage}-assistantBridge
     AUTH_PROVIDER: ${env:AUTH_PROVIDER, 'auth0'}
     COGNITO_ISSUER: ${env:COGNITO_ISSUER, ''}
     COGNITO_CLIENT_IDS: ${env:COGNITO_CLIENT_IDS, ''}
@@ -752,6 +760,21 @@ functions:
     timeout: 300
     memorySize: 1024
 
+  assistantBridge:
+    handler: src/handler.assistantBridge
+    # Private IAM invocation only. Uses the same guarded MCP services as users.
+    timeout: 60
+    memorySize: 1024
+    layers:
+      - !Ref IsolatedVmLambdaLayer
+
+  assistantWorker:
+    handler: src/assistant/worker.handler
+    role: !GetAtt AssistantWorkerRole.Arn
+    timeout: 300
+    memorySize: 512
+    reservedConcurrency: 2
+
   observationsQuery:
     handler: src/handler.observationsQuery
     # what crossed one wire, across the executions this graph kept (PB-114)
@@ -1367,11 +1390,91 @@ functions:
 
 resources:
   Conditions:
+    AssistantEnabled: !Equals ['${env:BEDROCK_AGENT_ENABLED, "false"}', 'true']
     IacReviewEnabled: !Equals ['${env:IAC_REVIEW_ENABLED, "true"}', 'true']
     CognitoMcpEnabled: !And
       - !Equals ['${env:AUTH_PROVIDER, "auth0"}', cognito]
       - !Equals ['${env:COGNITO_MCP_REGISTRATION, "false"}', 'true']
   Resources:
+    AssistantEventSourceMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName: !GetAtt AssistantWorkerLambdaFunction.Arn
+        EventSourceArn: !GetAtt AssistantQueue.Arn
+        Enabled: !If [AssistantEnabled, true, false]
+        BatchSize: 1
+        ScalingConfig: {MaximumConcurrency: 2}
+    AssistantQueue:
+      Type: AWS::SQS::Queue
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        FifoQueue: true
+        QueueName: ${self:service}-${self:provider.stage}-opus.fifo
+        VisibilityTimeout: 1800
+        MessageRetentionPeriod: 86400
+        SqsManagedSseEnabled: true
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt AssistantDeadLetterQueue.Arn
+          maxReceiveCount: 3
+    AssistantDeadLetterQueue:
+      Type: AWS::SQS::Queue
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        FifoQueue: true
+        QueueName: ${self:service}-${self:provider.stage}-opus-failed.fifo
+        MessageRetentionPeriod: 1209600
+        SqsManagedSseEnabled: true
+    AssistantQueueAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Opus worker requests need platform inspection; graph messages and assistant request records are retained.
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Dimensions: [{Name: QueueName, Value: !GetAtt AssistantDeadLetterQueue.QueueName}]
+        Statistic: Maximum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    AssistantWorkerRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: 'sts:AssumeRole'}]
+        Policies:
+          - PolicyName: bounded-bedrock-chat
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: bedrock:InvokeModel
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${env:BEDROCK_MODEL_ID, "us.anthropic.claude-opus-5-5"}'
+                    - !Sub 'arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/${env:BEDROCK_FOUNDATION_MODEL_ID, "anthropic.claude-opus-5-5"}'
+                    - !Sub 'arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/${env:BEDROCK_FOUNDATION_MODEL_ID, "anthropic.claude-opus-5-5"}'
+                    - !Sub 'arn:${AWS::Partition}:bedrock:us-west-1::foundation-model/${env:BEDROCK_FOUNDATION_MODEL_ID, "anthropic.claude-opus-5-5"}'
+                    - !Sub 'arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/${env:BEDROCK_FOUNDATION_MODEL_ID, "anthropic.claude-opus-5-5"}'
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${self:service}-${self:provider.stage}-assistantBridge'
+                - Effect: Allow
+                  Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+                  Resource: !GetAtt AssistantQueue.Arn
+                - Effect: Allow
+                  Action: s3:GetObject
+                  Resource:
+                    - 'arn:aws:s3:::${self:custom.s3Bucket}/assistant/requests/*'
+                    - 'arn:aws:s3:::${self:custom.s3Bucket}/assistant/jobs/*'
+                - Effect: Allow
+                  Action: s3:PutObject
+                  Resource: 'arn:aws:s3:::${self:custom.s3Bucket}/assistant/jobs/*'
+                - Effect: Allow
+                  Action: [logs:CreateLogStream, logs:PutLogEvents]
+                  Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${self:service}-${self:provider.stage}-assistantWorker:*'
     IacGuardrailRepairRole:
       Type: AWS::IAM::Role
       Properties:

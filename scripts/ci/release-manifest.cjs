@@ -17,6 +17,7 @@ const configuration = Object.fromEntries([
   'COGNITO_SCOPES', 'COGNITO_REQUIRED_SCOPES', 'COGNITO_SCOPE_MAP',
   'AUTH0_DOMAIN', 'AUTH0_CLIENT_ID', 'AUTH0_AUDIENCE',
   'IAC_REVIEW_ENABLED', 'IAC_STACK_ISOLATION',
+  'BEDROCK_AGENT_ENABLED', 'BEDROCK_MODEL_ID',
 ].filter(key => env[key]).map(key => [key, env[key]]));
 console.log(JSON.stringify({serverRevision:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
   editorRevision:execFileSync('git',['-C','../graph-editor','rev-parse','HEAD'],{encoding:'utf8'}).trim(),

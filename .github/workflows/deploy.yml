@@ -51,6 +51,8 @@ jobs:
       PLATFORM_ADMIN_SUBS: ${{ vars.PLATFORM_ADMIN_SUBS }}
       IAC_REVIEW_ENABLED: ${{ vars.IAC_REVIEW_ENABLED || 'true' }}
       IAC_STACK_ISOLATION: ${{ vars.IAC_STACK_ISOLATION || 'true' }}
+      BEDROCK_AGENT_ENABLED: ${{ vars.BEDROCK_AGENT_ENABLED || 'false' }}
+      BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID || 'us.anthropic.claude-opus-5-5' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -118,6 +120,8 @@ jobs:
           role-session-name: graph-${{ github.run_id }}
       - name: Verify target account before any AWS writes
         run: test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+      - name: Verify Opus access and US routing when enabled
+        run: node scripts/ci/check-bedrock.cjs
       - name: Provision authentication and editor hosting
         if: steps.config.outputs.deploy_editor == 'true'
         run: bash scripts/ci/deploy-auth-stack.sh
@@ -130,7 +134,7 @@ jobs:
           test -s .serverless/chromium.zip
           test -s .serverless/isolatedVm.zip
           unzip -p ".serverless/$SERVICE_NAME.zip" auth-provider.json | jq -e --arg provider "$AUTH_PROVIDER" '.provider == $provider'
-          cfn-lint -r "$AWS_REGION" -t .serverless/cloudformation-template-update-stack.json --non-zero-exit-code error
+          cfn-lint -r "$AWS_REGION" -t .serverless/cloudformation-template-update-stack.json .serverless/assistant-template.json --non-zero-exit-code error
           # Serverless removes .serverless after deploy --package, even when it
           # is the input directory. Retain the exact package outside that path.
           cp -R .serverless "$RUNNER_TEMP/server-package"

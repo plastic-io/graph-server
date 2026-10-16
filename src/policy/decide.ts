@@ -1,4 +1,5 @@
 import { Principal } from "../auth/principal";
+import {assistantBinding, ASSISTANT_SCOPES} from '../assistant/identity';
 import { DiffSummary, PRIVILEGE_NAMESPACES, SERVER_OWNED_NAMESPACES } from "@plastic-io/graph-crdt";
 
 /** The authorities of plan §4.4.5. */
@@ -77,7 +78,10 @@ export function decide(principal: Principal | undefined, required: Authority[]):
         return { allow: true, policyVersion: POLICY_VERSION };
     }
     const owners = (process.env.OWNER_SUBS || "").split(",").map((s) => s.trim()).filter(Boolean);
-    if (owners.length && !owners.includes(principal.sub)) {
+    const builtIn = assistantBinding(principal);
+    if (builtIn && builtIn.expiresAt <= Date.now()) return {allow: false, reason: 'Assistant delegation expired', policyVersion: POLICY_VERSION};
+    if (builtIn && required.some(a => !ASSISTANT_SCOPES.includes(a))) return {allow: false, reason: 'That authority is not available to the built-in assistant', policyVersion: POLICY_VERSION};
+    if (owners.length && !owners.includes(builtIn?.ownerSub || principal.sub)) {
         return { allow: false, reason: `${principal.sub} is not an owner of this instance`, policyVersion: POLICY_VERSION };
     }
     if (principal.kind === "agent" || principal.kind === "synthetic") {

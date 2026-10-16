@@ -72,7 +72,7 @@ export interface McpDeps {
     rate?: { reads: RateLimiter; writes: RateLimiter; chat?: RateLimiter };
 }
 
-export const SERVER_INFO = { name: "plastic-io-graph-server", version: "2.5.2" };
+export const SERVER_INFO = { name: "plastic-io-graph-server", version: "2.7.0" };
 const ID = z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/);
 const ULID = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/);
 const REV = z.string().regex(/^rev_[0-9A-HJKMNP-TV-Z]{26}$/);
@@ -219,10 +219,10 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
 
     /* ------------------------------------------------------------ tools */
 
-    const contracts:any={operations:operationCatalogue,runtime:runtimeContract,identity:identityContract,bus:busContract,workflow:workflowContract,progress:deploymentProgressContract,lifecycle:lifecycleContract};
+    const contracts:any={operations:operationCatalogue,runtime:runtimeContract,identity:identityContract,bus:busContract,workflow:workflowContract,progress:deploymentProgressContract,lifecycle:lifecycleContract,assistant:assistantContract()};
     server.registerTool('server.discover',{
         title:'Discover the deployed graph platform contract',description:'Start here. Versioned semantic operations with full argument schemas and examples, real runtime helpers, identity, bus, deployment preflight, and precise workflow states. Missing capabilities must not be bypassed outside MCP.',
-        inputSchema:z.object({schemaVersion:z.literal(1),topic:z.enum(['all','operations','runtime','identity','bus','workflow','deployment','example','progress','lifecycle']).optional(),graphId:ID.optional(),nodeId:ID.optional()}).strict(),annotations:{readOnlyHint:true},
+        inputSchema:z.object({schemaVersion:z.literal(1),topic:z.enum(['all','operations','runtime','identity','bus','workflow','deployment','example','progress','lifecycle','assistant']).optional(),graphId:ID.optional(),nodeId:ID.optional()}).strict(),annotations:{readOnlyHint:true},
     },guarded('server.discover','read',a=>a.graphId,['graph:read'],async(args,p)=>ok(p,{server:SERVER_INFO,contractVersion:'1.0.0',runtimeConfiguration:{requireContainment:process.env.REQUIRE_CONTAINMENT==='true',containmentAvailable:isolationAvailable(),applicationBridgeConfigured:!!process.env.APPLICATION_BRIDGE_FUNCTION},exampleTool:{name:'server.discover',arguments:{schemaVersion:1,topic:'example',graphId:args.graphId||'<graphId>',nodeId:args.nodeId||'stack'}},contracts:args.topic&&args.topic!=='all'?{[args.topic]:args.topic==='deployment'?deploymentCapabilities(args.graphId||'discovery',args.nodeId||'stack'):args.topic==='example'?authenticatedApplicationExample(stackScope(args.graphId||'discovery',args.nodeId||'stack',policyFromEnv())):contracts[args.topic]}:{...contracts,deployment:deploymentCapabilities(args.graphId||'discovery',args.nodeId||'stack')},streamUrl:options.streamUrl||null})));
     server.registerTool('iac.preflight',{
         title:'Check actual deployment capabilities before implementation',description:'Returns accepted versus deployable resource types, assigned per-stack namespace, target account/region, role, boundary, isolation requirements and exact missing prerequisites. Read-only; does not provision anything.',
@@ -950,3 +950,4 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
 
     return server;
 }
+import {assistantContract} from '../assistant/contract';

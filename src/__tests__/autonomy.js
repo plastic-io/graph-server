@@ -58,6 +58,35 @@ const agentWith = async (ctx, scopes) => {
     return ctx.delegations.resolve({ sub: "agent|a1", kind: "agent", tenant: "personal:auth0|u1", scopes: [] }, "g1");
 };
 
+describe('AI Permissions editor approval',()=>{
+ test('human automatic acceptance binds the exact digest, uses admission, and records the mode',async()=>{
+  const ctx=await setup(),agent=await agentWith(ctx,['graph:read','graph:propose']);
+  const {proposal:p}=await propose(ctx,agent);
+  const listed=(await ctx.proposals.list('g1'))[0];
+  expect(listed.automaticApproval.modes['safe-actions'].allowed).toBe(true);
+  const approval={aiPermissionMode:'safe-actions',proposalDigest:p.proposalDigest};
+  expect(await ctx.proposals.commit('g1',p.proposalId,agent,approval)).toMatchObject({code:'ADMISSION_DENIED'});
+  expect(await ctx.proposals.commit('g1',p.proposalId,owner,{...approval,proposalDigest:'stale'})).toMatchObject({code:'CONFLICT'});
+  const committed=await ctx.proposals.commit('g1',p.proposalId,owner,approval);
+  expect(committed.proposal.state).toBe('committed');
+  expect(committed.proposal.decisions.pop()).toMatchObject({aiPermissionMode:'safe-actions',proposalDigest:p.proposalDigest});
+  expect((await ctx.store.projectGraph('g1')).nodes[0].properties.description).toBe('Trim');
+  expect(await ctx.proposals.commit('g1',p.proposalId,owner,approval)).toMatchObject({result:{replayed:true}});
+  expect(await ctx.autonomy.resolve(graphOf(),owner.sub)).toEqual({autonomy:'supervised',from:'default'});
+ });
+ test('code needs Fully Automatic; neither mode can change approval policy',async()=>{
+  for(const [op,allowFull] of [[{op:'set-node-code',nodeId:'a',template:'set',text:'edges.out = {ok:true};'},true],[{op:'set-graph-props',patch:{autonomy:'auto'}},false]]){
+   const ctx=await setup();const agent=await agentWith(ctx,['graph:read','graph:propose']);
+   const base=await ctx.revisions.cut('g1',owner,'base');
+   const {proposal:p}=await ctx.proposals.create('g1',agent,{baseRevision:'rev_'+base.revision.revisionId,ops:[op],description:'Change',idempotencyKey:'mode-test'});
+   const body={proposalDigest:p.proposalDigest,aiPermissionMode:'safe-actions'};
+   expect(await ctx.proposals.commit('g1',p.proposalId,owner,body)).toMatchObject({code:'APPROVAL_REQUIRED'});
+   const result=await ctx.proposals.commit('g1',p.proposalId,owner,{...body,aiPermissionMode:'fully-automatic'});
+   expect(allowFull?result.proposal.state:result.code).toBe(allowFull?'committed':'APPROVAL_REQUIRED');
+  }
+ });
+});
+
 describe("autonomy", () => {
     test("supervised is what happens when nobody has said otherwise", async () => {
         const ctx = await setup();

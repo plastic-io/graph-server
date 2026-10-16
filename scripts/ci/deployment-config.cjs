@@ -15,6 +15,10 @@ function configuration(env) {
   const editor = required('EDITOR_REF');
   if (!/^[a-f0-9]{40}$/.test(editor)) throw new Error('EDITOR_REF must be a full commit SHA');
   const provider = env.AUTH_PROVIDER || 'auth0';
+  const assistant = env.BEDROCK_AGENT_ENABLED || 'false';
+  if (!['true', 'false'].includes(assistant)) throw new Error('BEDROCK_AGENT_ENABLED must be true or false');
+  const model = env.BEDROCK_MODEL_ID || 'us.anthropic.claude-opus-5-5';
+  if (!/^us\.anthropic\.claude-opus-[a-z0-9:-]+$/.test(model)) throw new Error('BEDROCK_MODEL_ID must be a US Anthropic Opus inference profile');
   if (!['auth0', 'cognito'].includes(provider)) throw new Error('Unknown AUTH_PROVIDER');
   const service = env.SERVICE_NAME || 'plastic-io-graph-server';
   const stage = env.STAGE || 'dev';
@@ -27,6 +31,7 @@ function configuration(env) {
     if (managed && !env.AUTH0_CLIENT_ID) throw new Error('AUTH0_CLIENT_ID is required to deploy the editor');
   }
   return {AUTH_PROVIDER: provider, SERVICE_NAME: service, STAGE: stage, API_PREFIX: prefix,
+    BEDROCK_AGENT_ENABLED: assistant, BEDROCK_MODEL_ID: model, BEDROCK_FOUNDATION_MODEL_ID: model.slice(3),
     EDITOR_REF: editor, DEPLOY_EDITOR: String(managed), AUTH_STACK_NAME: `${service}-auth`,
     // Cognito reserves words such as "cognito" and "aws" in prefix domains.
     COGNITO_DOMAIN_PREFIX: `graphs-${account}-${createHash('sha256').update(service).digest('hex').slice(0,12)}`};

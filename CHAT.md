@@ -1,5 +1,9 @@
 # Graph chat and private messaging
 
+The optional [built-in Opus assistant](BEDROCK_AGENT.md) joins a private,
+graph-bound conversation when a human selects **Ask Opus** or sends `@opus`.
+It uses this same chat history and bus and the graph's existing proposal reviews.
+
 The editor's chat bubble opens a graph room while viewing a graph and a private
 inbox from the table of contents. `@here` addresses the graph room. A named
 `@handle` selects a **private, two-account conversation**, even when entered in

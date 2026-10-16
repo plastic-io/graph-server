@@ -1,4 +1,85 @@
-# Application-role deployment permissions — current platform review
+# Current review: Bedrock Opus and AI Permissions
+
+October 15, 2026. Source server **2.7.0**, assistant contract **1.0.0**,
+lifecycle contract **1.4.0**. Implementation and tests are complete; release
+verification is in progress. The deployed baseline is still `fcb0326` until the
+packaged release completes.
+
+The [Opus contract](BEDROCK_AGENT.md) documents private `@opus` conversations,
+real MCP tool schemas, graph-scoped delegation, approval separation, strict
+preservation, usage limits, interruption behavior and CI configuration.
+
+Release scope includes the previously completed AI Permissions feature below.
+New infrastructure is one retained assistant nested stack containing the private
+worker and bridge, queue, retained dead-letter queue, alarm and dedicated worker
+role. This keeps the existing 498-resource platform below the 500-resource limit.
+Packaging/upload happen in the standard Serverless lifecycle and CI.
+The shared server role gains only SendMessage to that queue. Existing application
+roles, stacks, buckets and stored application data are outside this release.
+API Gateway deployment snapshots rotate as part of the existing release process.
+
+Evidence so far: 832 server tests passed, including interruption and private-IAM
+checks. After upgrading the production MCP client to 2.3.1, all 56 affected MCP
+and assistant tests passed again. Editor chat
+integration (8), browser chat/AI Permissions (2), and CI configuration (6) passed.
+Actual Opus 5.5 inference in account `230639770018` created an uncommitted rename
+proposal on a synthetic in-memory graph (37,508 input / 473 output tokens). This
+is model/tool integration evidence, not deployed worker IAM verification.
+
+The production dependency audit now reports **zero vulnerabilities**. A writable
+cache resolved the audit failures; the MCP client was upgraded for its published
+OAuth security fix. Current platform configuration was read without modification.
+CloudFormation validation passes for the 499-resource parent and 9-resource
+assistant child. Both authentication-provider bundle checks pass. The child
+template is digest-bound and uploaded by the normal deployment hook; packaging
+regressions reject dangling references and modified artifacts.
+No application or data resource has been changed.
+
+---
+
+## Included feature: AI Permissions
+
+The following implementation notes were recorded October 9 and are included in
+the current 2.7.0 paired release. They are not a separate active release review.
+
+The lower system bar replaces infrastructure Auto-approve with **AI Permissions**:
+Manual, Safe Actions and Fully Automatic. Both automatic modes require a warning
+confirmation and are scoped to the current graph/editor session. Reload, graph
+change or an approval refusal returns the editor to Manual. Mode changes fence
+pending reads; duplicate digest attempts are suppressed. Existing agent
+permissions and autonomy settings are unchanged.
+
+Safe Actions accepts names, descriptions and layout. It approves only retained
+S3 bucket, DynamoDB table, SQS queue and log group additions without application
+access-policy changes; resource-changing recovery stays manual. Fully Automatic
+also accepts validated code/wiring/infrastructure proposals and eligible
+non-destructive deployments and bounded recovery. Neither mode auto-approves
+stack deletion, resource removal/replacement, rollback/data loss, node removal,
+approval-policy changes or budget changes. Graph acceptance and deployment
+approval remain distinct audited operations with their own exact digests.
+
+The server advertises mode-specific `{allowed,reason}` decisions and repeats
+eligibility at approval. Human sessions are required; MCP cannot select a mode
+or gain approval authority. Editor requests carry `aiPermissionMode` and the
+current digest. Durable infrastructure approvals and proposal commit records /
+bus events record the selected mode. New editors fail closed on older servers.
+Legacy `approvalMode=automatic` retains its existing non-destructive limits.
+
+Validation: the full 823-test server suite passed; the changed approval/discovery
+suites passed again after final edits. All 27 focused editor integration tests,
+server/editor TypeScript checks, production editor build and both local Playwright
+tests passed. The browser tests cover mode selection, the warning, exact proposal
+and deployment request bodies, Safe/Full separation, Manual switching and reload
+reset. Final menu appearance was inspected. These are local/mocked checks, not AWS
+deployment evidence. No application templates, resources or data were changed.
+
+Release requires the normal paired server/editor release with a pinned editor
+revision; there are no new IAM grants or platform bootstrap requirements. Modes
+remain Manual until a person explicitly enables one in the editor.
+
+---
+
+# Application-role deployment permissions — released baseline
 
 Updated October 9, 2026. Server **2.5.2** deployed at `fcb0326`, lifecycle contract
 **1.3.0**. Live retained-role creation verification completed through MCP and

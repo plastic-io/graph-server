@@ -6,6 +6,9 @@ import {executionRevision} from './runtime/source';
 // The BroadcastService/EventSourceService methods remain for internal use and tests.
 import EventSourceService from './eventSourceService';
 import {ChatService} from './chat/service';
+import {AssistantService} from './assistant/service';
+import {makeAssistantBridge} from './assistant/bridge';
+import {SQS} from 'aws-sdk';
 import BroadcastService from './broadcastService';
 import CrdtService from './crdtService';
 import { RevisionService } from './revisions/service';
@@ -92,6 +95,12 @@ async function cancelExecution(graphId: string, principal: any, executionId: str
 }
 
 const chatService = new ChatService(broadcastService.store, broadcastService, id => eventSourceService.crdtStore.exists(id));
+const assistantService = new AssistantService(chatService, async (id, room) => {
+    if (!process.env.ASSISTANT_QUEUE_URL) throw new Error('The Opus worker queue is not configured.');
+    await new SQS().sendMessage({QueueUrl: process.env.ASSISTANT_QUEUE_URL, MessageBody: JSON.stringify({id}),
+        MessageGroupId: room, MessageDeduplicationId: id}).promise();
+});
+chatService.assistant = assistantService;
 const chat = withPrincipal(broadcastService.store, (event, context, callback) => chatService.route(event, context, callback));
 
 eventSourceService.iacReviews.runtimeInvoker=invokeForAgent;
@@ -117,6 +126,7 @@ const mcpDeps = {
     capture: eventSourceService.capture,
 };
 const mcp = makeMcpHandler(mcpDeps);
+export const assistantBridge = makeAssistantBridge(assistantService, mcpDeps);
 // The one endpoint that can hold a stream open (plan PB-085): a Lambda
 // Function URL, invoked with response streaming, verifying the bearer itself
 // because no authorizer stands in front of a Function URL.
