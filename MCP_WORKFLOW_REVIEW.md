@@ -1,7 +1,9 @@
 # Current review: consistent native containment across execution routes
 
-October 16, 2026. Server **2.8.1**. Implementation and release verification are
-in progress; the deployed baseline is the template release recorded below.
+October 16, 2026. Server **2.8.1** is released to account `230639770018`,
+region `us-west-1`. Server commit `ceaea450c259cdbbc422ae925d72602f63ce88dc`
+and unchanged editor commit `ec5735661fdf1f3284c5f578275ddb454724d840` are
+pushed and deployed. Authenticated editor and MCP verification passed.
 
 Agreeable Dove's failed readiness run `01M51XS0PDJARWC0BB8FG5F8AD`, execution
 `01M51XS1M8QHYGQKQ3V2WAJR1B`, reached the editor's
@@ -61,7 +63,74 @@ The actual packaged layer ZIP passed in the official Lambda image: Node
 `/opt/nodejs/node_modules/isolated-vm/isolated-vm.js`. Its isolate executed and
 could not access require, process or fetch. Both packaged templates together
 passed layer attachment verification for **70 shared-runtime functions**.
-Release and authenticated editor/MCP application checks are pending.
+
+The platform stack is `UPDATE_COMPLETE`. Read-only inspection of all 70 deployed
+shared-runtime functions confirmed the native layer, Node 22, x86_64, active
+state, successful updates and the exact released code SHA-256
+`0rcvN+SpzHxoaYiz2wbfPj/JM0J3aZFikobW8GoO/DU=`. The published editor manifest
+and entry point match the paired artifacts; CloudFront invalidation completed.
+Discovery/provider selection and unauthenticated REST, WebSocket and MCP
+rejection checks passed. No application stack was updated by this release.
+
+## Authenticated acceptance evidence
+
+Agreeable Dove graph `50dcee50-1b0b-42b6-80a0-6b64881a5cb5`, stack node
+`lens-event-storage`, server node `lens-event-logger`, check `write-lens-event`.
+Its existing successful deployment remains operation
+`01M51XMTDPZ4EZXWF4WSJY0W7C`. The checks ran graph revision
+`01M51Y6Y3FPE53001XP4G5ZJNV` without modifying graph content or its template.
+
+| Entry point | Readiness run | Execution | Result |
+| --- | --- | --- | --- |
+| Actual editor readiness button, 09:10 UTC | `01M51ZKPDRCER44SHR7114FYTP` | `01M51ZKQE78TC5ZXDXCZBNHCW7` | Verified, zero errors/denials |
+| MCP `iac.readiness`, 09:13 UTC | `01M51ZSGR6YA53SFMVNYGAC8B3` | `01M51ZSHP0EK40BYER8HY991JM` | Verified, zero errors/denials |
+| MCP authenticated fresh event, 09:15 UTC | — | `01M51ZXABNST0FW444RR3ZYR89` | Completed, zero errors/denials |
+| MCP exact duplicate, 09:19 UTC | — | `01M5203TEC8XK9MQQHM4E6JTSC` | Completed, zero errors/denials |
+
+Each execution has a successful, correlated `deployment.runtime-invocation`
+for `EventWriter` in `iac.events` and the existing observation bus. The editor
+and MCP readiness calls reached application request IDs
+`84f962c0-673b-41b3-b5c6-259ee1324bc7` and
+`57347a14-c216-45c7-9931-45f4171d80e2`, respectively. Their graph node explicitly
+asserts the returned storage confirmation and matching event ID; readiness
+errors propagate rather than becoming a successful false receipt.
+
+Fresh event `c9609cdd-807e-4dcd-889e-0eb78a5afb6f` and its exact retry used the
+application's authenticated path, reaching EventWriter requests
+`6afe4fe8-4dc0-4ee3-9460-746567bde932` and
+`559f5d3c-c4e8-4e85-bbd2-ddd69dcc5883`. S3 persistence evidence comes from the
+unchanged application's conditional `PutObject` followed on duplicate by
+`HeadObject` and comparison with the stored digest metadata. A mismatch would
+throw and fail these checks. This is application-path verification, not an
+independent object-body dump; graph observations intentionally capture receipt
+metadata rather than its payload. MCP runtime logs also expose the correlated
+duplicate Lambda START/END/REPORT records. One diagnostic event was written;
+no stored data was deleted or replaced.
+
+Both readiness paths used their first graph execution in newly initialized
+post-release instances. `iacReview` instance
+`cd90afae-4cac-482f-bc66-9a8467f683ed` initialized at `09:08:00.066Z`;
+`mcpRoute` instance `65ae513d-2d74-4603-90d9-4665e4839d37` initialized at
+`09:10:30.540Z`. Both reported Node `v22.23.2`, ABI 127, Linux x64 and
+isolated-vm 6.2.0 loaded from `/opt/nodejs/node_modules/isolated-vm/isolated-vm.js`.
+Their CloudWatch streams independently include INIT_START and cold-init REPORT
+records. Status/discovery requests initialized the functions before the graph
+checks: these are fresh-instance checks, not claims that each readiness request
+itself was a cold Lambda invocation. The Docker probe used Node `v22.23.3` with
+the same ABI; the managed-runtime patch version was verified separately live.
+
+After a full browser reload and reopening the CF readiness panel, the editor
+displayed `Deployment completed. Runtime readiness: verified.` and the
+`write-lens-event` check as verified. A fresh MCP status read identifies the
+latest run as `01M51ZSGR6YA53SFMVNYGAC8B3`. The historical containment failure
+is still retrievable in `iac.events`; it does not replace the current readiness
+result. The intentional 08:38:44 UTC identifier-conflict test was not rerun.
+
+Application invocations and application diagnostics used the editor/MCP only.
+AWS profile access was limited to the authorized platform release and read-only
+platform route, configuration and initialization diagnostics. Containment and
+graph isolation remain enabled. No application code, template, IAM authority,
+stack, bucket or surviving resource was deleted or recreated.
 
 ---
 
