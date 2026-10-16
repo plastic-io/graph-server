@@ -52,9 +52,11 @@ export function assertGuardrailPreservation(before:any,after:any){
   const desired=after?.Resources?.[logicalId];
   if(!desired||r.Type!==desired.Type){problems.push(issue('PRESERVATION_GUARDRAIL_CHANGE',`Guardrail ${logicalId} would be removed or replaced.`,{logicalId}));continue;}
   if(r.Condition!==desired.Condition)problems.push(issue('PRESERVATION_GUARDRAIL_CHANGE',`Guardrail ${logicalId} has a changed resource condition.`,{logicalId}));
-  // A managed-policy update can remove historical policy versions. Until that
-  // lifecycle is verified without deletion, preserve the exact boundary document.
-  const mutable=r.Type==='AWS::IAM::Role'?['Policies','AssumeRolePolicyDocument']:[];
+  // PolicyDocument is a CloudFormation no-interruption update. The worker also
+  // verifies IAM version capacity before submission; strict repair never prunes
+  // policy versions. Names, paths, attachments and retention remain immutable.
+  const mutable=r.Type==='AWS::IAM::Role'?['Policies','AssumeRolePolicyDocument']:r.Type==='AWS::IAM::ManagedPolicy'?['PolicyDocument']:[];
+  for(const field of ['DeletionPolicy','UpdateReplacePolicy'])if(r[field]!==desired[field])problems.push(issue('PRESERVATION_GUARDRAIL_CHANGE',`Guardrail ${logicalId}.${field} changed.`,{logicalId,path:field}));
   const fields=new Set([...Object.keys(r.Properties||{}),...Object.keys(desired.Properties||{})]);
   for(const field of fields)if(!mutable.includes(field)&&JSON.stringify(r.Properties?.[field])!==JSON.stringify(desired.Properties?.[field]))problems.push(issue('PRESERVATION_GUARDRAIL_CHANGE',`Guardrail ${logicalId}.${field} is not a verified in-place policy update.`,{logicalId,path:field}));
  }

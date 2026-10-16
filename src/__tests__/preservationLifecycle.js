@@ -176,11 +176,13 @@ test('privileged recovery refuses destructive actions even with a forged strict 
  expect(f.calls.some(mutation)).toBe(false);
 });
 
-test('strict guardrail reconciliation permits fixed in-place role policies but blocks replacement, removal and boundary-version deletion',async()=>{
+test('strict guardrail reconciliation permits fixed in-place IAM documents but blocks replacement, removal and retention changes',async()=>{
  const f=await healthyFixture(),before=JSON.parse(JSON.stringify(f.approved));
  before.Resources.WorkerRole.Properties.Policies[0].PolicyDocument.Statement=[];
  expect(()=>assertGuardrailPreservation(before,f.approved)).not.toThrow();
- for(const edit of [d=>delete d.Resources.WorkerRole,d=>d.Resources.WorkerRole.Properties.RoleName='other',d=>d.Resources.RuntimeBoundary.Properties.PolicyDocument.Statement=[]]){
+ before.Resources.RuntimeBoundary.Properties.PolicyDocument.Statement=[];
+ expect(()=>assertGuardrailPreservation(before,f.approved)).not.toThrow();
+ for(const edit of [d=>delete d.Resources.WorkerRole,d=>d.Resources.WorkerRole.Properties.RoleName='other',d=>d.Resources.RuntimeBoundary.Properties.Path='/foreign/',d=>d.Resources.RuntimeBoundary.DeletionPolicy='Delete',d=>d.Resources.RuntimeBoundary.Properties.Roles=['foreign']]){
   const after=JSON.parse(JSON.stringify(f.approved));edit(after);expect(()=>assertGuardrailPreservation(f.approved,after)).toThrow();
  }
 });

@@ -1,6 +1,7 @@
 import {createHash} from 'crypto';
 import {parseTemplate} from './validator';
 import {IacPolicy} from './types';
+import {lambdaEnvironmentAccess,lambdaEnvironmentStatements} from './lambdaEnvironment';
 
 export const ISOLATION_VERSION='stack-namespace-v1';
 export const ISOLATED_TYPES=[
@@ -38,9 +39,9 @@ export const roleNameProbeArn=(s:StackScope)=>`arn:aws:iam::${s.account}:role/${
 const statements=(s:StackScope,actions:Record<string,string[]>)=>Object.entries(actions).map(([service,Action])=>({Effect:'Allow',Action,Resource:resourceArns(s)[service]}));
 export function runtimeBoundary(s:StackScope){
  const own=Object.entries(resourceArns(s)).filter(([k])=>k!=='iam'&&k!=='lambda').flatMap(([,v])=>v);
- return {Version:'2012-10-17',Statement:[...statements(s,DATA_ACTIONS),
-  {Effect:'Deny',NotAction:Object.values(DATA_ACTIONS).flat(),Resource:'*'},
-  {Effect:'Deny',Action:'*',NotResource:own},
+ return {Version:'2012-10-17',Statement:[...statements(s,DATA_ACTIONS),...lambdaEnvironmentStatements(s),
+  {Sid:'DenyUnsupportedRuntimeActions',Effect:'Deny',NotAction:[...Object.values(DATA_ACTIONS).flat(),'kms:Decrypt'],Resource:'*'},
+  {Sid:'DenyOutsideRuntimeResources',Effect:'Deny',Action:'*',NotResource:[...own,lambdaEnvironmentAccess(s).keyResource]},
  ]};
 }
 /** Every AWS grant is either namespace-scoped, or a documented tag-gated API creation action. */
@@ -161,6 +162,7 @@ export function validateIsolation(text:string,format:'yaml'|'json',s:StackScope)
    if(logGroup!==undefined&&!localRef(logGroup,'AWS::Logs::LogGroup')&&(typeof logGroup!=='string'||!(logGroup.startsWith(s.namespace)||logGroup.startsWith('/aws/lambda/'+s.namespace))||/[*$?{}]/.test(logGroup)))issue(at+'.Properties.LoggingConfig.LogGroup','Use a log group in this stack namespace or Ref to a log group declared in this template.');
    if(!localArn(p.Role,'AWS::IAM::Role'))issue(at+'.Properties.Role','Function role must be an application role declared here.');
    if(!p.Code?.ZipFile||Object.keys(p.Code).length!==1||!['nodejs22.x','python3.12','python3.13'].includes(p.Runtime))issue(at+'.Properties.Code','Use inline ZipFile code and a supported runtime; external code and images are not approved by this review.');
+   if(p.KMSKeyArn!==undefined&&p.KMSKeyArn!=='')errors.push({code:'LAMBDA_ENCRYPTION_UNSUPPORTED',path:at+'.Properties.KMSKeyArn',message:'This boundary supports Lambda default environment encryption only. A customer KMS key requires a separately reviewed key/namespace capability; the platform will not rewrite KMSKeyArn or broaden KMS access.'});
    if(p.Layers||p.VpcConfig||p.FileSystemConfigs||p.KmsKeyArn||p.DeadLetterConfig||p.CodeSigningConfigArn)issue(at+'.Properties','Layers, VPC, filesystems, external keys, destinations and signing require additional scoped capabilities.');
   }
   if(['AWS::Lambda::Alias','AWS::Lambda::Version','AWS::Lambda::Permission'].includes(t)&&!localRef(p.FunctionName,'AWS::Lambda::Function'))issue(at+'.Properties.FunctionName','Use Ref to a function declared in this template.');

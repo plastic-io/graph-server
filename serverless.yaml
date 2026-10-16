@@ -1757,7 +1757,7 @@ resources:
                   Action: [iam:GetRole, iam:GetRolePolicy]
                   Resource: !GetAtt IacGuardrailRole.Arn
                 - Effect: Allow
-                  Action: [iam:GetPolicy, iam:GetPolicyVersion, iam:ListEntitiesForPolicy]
+                  Action: [iam:GetPolicy, iam:GetPolicyVersion, iam:ListPolicyVersions, iam:ListEntitiesForPolicy]
                   Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/graph-guardrails/gapp-*'
                 - Effect: Allow
                   Action: states:DescribeExecution

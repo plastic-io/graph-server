@@ -3,6 +3,8 @@ import {DeploymentProgress,phaseFor} from './progress';
 import {diagnosticError} from './diagnosticSafety';
 import {policyFromEnv} from './validator';
 import {stackScope} from './isolation';
+import {awsResourceAbsent} from './awsErrors';
+import {missingWorkflow} from './workflowVisibility';
 
 type Call=(method:string,args:any)=>Promise<any>;
 export interface DiagnosticClients { cloud:Call; states:Call; logs:Call; }
@@ -82,7 +84,16 @@ export class DeploymentDiagnostics {
     events.push({id:'changeset:'+op.changeSetId+':'+c.Status+':'+c.ExecutionStatus,source:'changeset',kind:'change-set',phase:'planning',status:c.Status,reason:c.StatusReason,physicalId:op.changeSetId,stackName:target.stack,at:now});
    }),
    protect('orchestration',async()=>{
-    const e=await call(this.clients.states,'describeExecution',{executionArn:target.executionArn});
+    let e:any;
+    try{e=await call(this.clients.states,'describeExecution',{executionArn:target.executionArn});}
+    catch(error){
+     if(!awsResourceAbsent(error,'states:DescribeExecution'))throw error;
+     const visibility=missingWorkflow(op,now,!!sources.workflowVisibility?.seen);
+     if(!visibility.expected)throw error;
+     events.push({id:'workflow:'+visibility.status,source:'orchestration',kind:'orchestration',phase:phaseFor(op.state),status:visibility.status,executionArn:target.executionArn,reason:visibility.reason,at:now});
+     return;
+    }
+    sources.workflowVisibility={seen:true};
     const original=e.error?diagnosticError({Error:e.error,Cause:e.cause},op):undefined;
     events.push({id:'workflow:'+e.status,source:'orchestration',kind:'orchestration',phase:phaseFor(op.state),status:e.status,executionArn:target.executionArn,reason:original?.message,...(original?{error:original}:{}),at:e.stopDate||now});
     if(!['FAILED','TIMED_OUT','ABORTED'].includes(e.status)&&!['failed','rollback-failed','rolled-back'].includes(op.state))return;
@@ -96,7 +107,7 @@ export class DeploymentDiagnostics {
     },'nextToken');
    }),
    protect('worker log tail',async()=>{
-    const end=Math.min(now,(['planning','awaiting-review','apply-requested','applying'].includes(op.state)?now:op.updatedAt+120000));
+    const end=Math.min(now,(['planning','awaiting-review','apply-requested','applying','recovery-requested','recovering'].includes(op.state)?now:op.updatedAt+120000));
     const start=Math.max(op.createdAt-1000,end-300000);
     // No application log-group access: only this platform worker, this operation/time window.
     let next:string|undefined;const collected:any[]=[];
@@ -112,7 +123,10 @@ export class DeploymentDiagnostics {
     }
     events.push(...collected.slice(-20));
     if(next||collected.length>20)events.push({id:'log-tail-bound',source:'diagnostics',kind:'diagnostic-warning',phase:phaseFor(op.state),status:'TRUNCATED',truncated:true,reason:'Worker logs are a redacted tail of at most 20 operation-correlated entries within five minutes. Application logs and uncorrelated legacy lines are not exposed.',at:now});
-    if(!collected.length)events.push({id:'log-tail-empty',source:'diagnostics',kind:'diagnostic-warning',phase:phaseFor(op.state),status:'UNAVAILABLE',reason:'No operation-correlated worker log lines are available. Legacy worker logs without an operation ID are excluded; stack and orchestration diagnostics remain available.',at:now});
+    if(collected.length)events.push({id:'log-tail-available',source:'cloudwatch',kind:'log-tail',phase:phaseFor(op.state),status:'AVAILABLE',reason:'Operation-correlated worker log metadata is available in iac.events and observations.watch.',at:now});
+    else if(op.action==='recover'&&!op.recoveryApproval||op.inspectionOnly)events.push({id:'log-tail-not-started',source:'cloudwatch',kind:'log-tail',phase:phaseFor(op.state),status:'NOT_STARTED',reason:'This inspection or unapproved recovery has not dispatched a worker.',at:now});
+    else if(now-(op.recoveryDispatchedAt||op.recoveryApproval?.at||op.createdAt)<60000)events.push({id:'log-tail-pending',source:'cloudwatch',kind:'log-tail',phase:phaseFor(op.state),status:'PENDING',reason:'Worker startup and CloudWatch log delivery may still be pending. Poll status again.',at:now});
+    else events.push({id:'log-tail-empty',source:'diagnostics',kind:'diagnostic-warning',phase:phaseFor(op.state),status:'UNAVAILABLE',code:'WORKER_LOGS_UNAVAILABLE',reason:'No operation-correlated worker log lines are available. Legacy worker logs without an operation ID are excluded; stack and orchestration diagnostics remain available.',at:now});
    }),
   ]);
   events.sort((a,b)=>new Date(a.at).getTime()-new Date(b.at).getTime());

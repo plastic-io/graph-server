@@ -1,4 +1,96 @@
-# Current review: consistent native containment across execution routes
+# Current review: scoped Lambda environment decryption
+
+October 16, 2026. Server **2.8.2**, lifecycle contract **1.6.0**, progress contract
+**1.2.0**. Implementation and artifact verification are complete. Platform release,
+separately approved boundary migrations, and real application readiness are still
+pending. This section supersedes earlier release instructions below.
+
+## Evidence and cause
+
+Read-only AWS inspection confirmed that Damp Robin and Plump Fox's EventWriter
+functions are Python 3.12, have two environment variables each, omit `KMSKeyArn`,
+and use AWS-managed key
+`arn:aws:kms:us-west-1:230639770018:key/c97a1b2d-4dfe-401c-829d-d7d918647a56`
+with reserved alias `alias/aws/lambda`. Neither role has a separate KMS grant.
+The actual key policy includes a Decrypt grant conditioned on caller account and
+`kms:EncryptionContext:aws:lambda:FunctionArn`. The bounded CloudTrail inspection
+found 19 Damp Robin Decrypt denials by the permissions boundary; those events
+omit request parameters, so they do not independently establish the request's
+context. The existing application and guardrail stacks are CREATE_COMPLETE.
+
+The old boundary denies Decrypt twice: its action ceiling omits `kms:Decrypt`,
+and its resource ceiling excludes KMS keys. Installed policies matching those
+old definitions does not establish runtime compatibility. Both ceilings are
+corrected together. A conditional allow and explicit negative conditions permit
+only Decrypt on keys in the assigned account/region with `alias/aws/lambda`, the
+assigned caller account, and this stack's function ARN encryption context. Missing
+context/alias/account is denied. KMS administration, grants, encryption and other
+graphs' ciphertext remain denied. No application identity policy is expanded.
+
+Lambda's automatic environment-decryption calls do not carry
+`lambda:SourceFunctionArn`; the implementation uses the key policy's supported
+function encryption context instead. References:
+[AWS Lambda environment encryption](https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars-encryption.html),
+[source-function condition limitations](https://docs.aws.amazon.com/lambda/latest/dg/permissions-source-function-arn.html),
+[KMS alias/context conditions](https://docs.aws.amazon.com/kms/latest/developerguide/conditions-kms.html),
+[boundary explicit denies](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html).
+
+## Migration and contract
+
+New guardrails receive the new definition. Existing boundaries require
+`iac.inspect` → `iac.recovery.plan` with `preservation: "strict"` → human
+approval of the exact recovery digest in the graph → status/events/watch →
+`iac.readiness`. Releasing source does not update existing policy versions.
+The reviewed action lists RuntimeBoundary as an in-place policy update, preserving
+its ARN, path, attachments, retention, application stacks and records. Approval
+binds the current ownership, document, version inventory and approved platform
+definition. Execution rechecks them. Strict repair never prunes policy versions;
+a full or incomplete inventory returns `BOUNDARY_VERSION_CAPACITY` for separate
+platform maintenance. PolicyDocument updates are
+[CloudFormation No interruption updates](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-iam-managedpolicy.html).
+
+Preflight and inspection expose `lambdaEnvironmentEncryption` and distinguish
+static compatibility, installed policy analysis, actual read/STS calls and runtime
+readiness. Customer KMS keys remain an explicitly unsupported isolated capability.
+The template is never rewritten. Existing graph ownership, authentication,
+namespace checks and exact-digest approval still apply. Recovery does not approve
+or redeploy an application template.
+
+DescribeExecution can race dispatch because initial graph progress is published
+before StartExecution. Initial absence now reports STARTING for at most 60 seconds;
+unapproved recovery reports NOT_STARTED. Absence after observation or outside
+that window, AccessDenied and dispatch failures remain errors. A later confirmed
+execution clears the current stale warning while retaining historical events.
+Worker steps now log allowlisted operation/request/phase/status metadata on success
+as well as failure. The collector publishes the same redacted records through
+MCP and the graph bus, with explicit pending/unavailable log states.
+
+## Verification before release
+
+- Full server suite: **887 passed**, 1 opt-in Bedrock test skipped, 57 suites.
+  TypeScript passed. Jest's existing open handles required process cleanup after
+  the completed run; no test failed.
+- Regression tests cover each independent deny, allowed default-key context,
+  foreign/missing aliases/context/account, unrelated resources and KMS actions,
+  strict in-place updates, full/unreadable version inventories, stale approvals,
+  foreign consumers, workflow visibility timing, redaction and bus/MCP parity.
+- AWS SimulateCustomPolicy: own default-key context allowed; customer alias,
+  foreign function, absent context, foreign account and absent alias explicitly
+  denied. This is simulation with supplied context, **not Lambda execution**.
+- Packaged native layer loads in Linux x86_64 Node 22 (ABI 127); all 70 shared
+  runtime functions have the layer. Paired editor production build passed.
+- Reviewed platform IAM diff: only `iam:ListPolicyVersions` added to the worker's
+  existing graph-guardrails policy ARN scope. Platform data resources unchanged.
+  No new application-role or platform KMS grants are added.
+
+Live migration targets: Damp Robin `nuclear-usage-stack` and Plump Fox
+`piano-analytics-stack`. Their application code/templates are unchanged. Real
+initialization, authenticated write/consistent-read checks, and retained-record
+verification remain pending their separately approved boundary updates.
+
+---
+
+# Previous verification: consistent native containment across execution routes
 
 October 16, 2026. Server **2.8.1** is released to account `230639770018`,
 region `us-west-1`. Server commit `ceaea450c259cdbbc422ae925d72602f63ce88dc`

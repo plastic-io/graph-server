@@ -4,6 +4,7 @@ import {IacPolicy,DEFAULT_POLICY} from './types';
 import {ISOLATED_TYPES,ISOLATION_VERSION,scopedPolicy,stackScope,validateIsolation} from './isolation';
 import {templateContract,templateConsequences} from './templateContract';
 import {readinessProblems} from './readiness';
+import {lambdaEnvironmentContract} from './lambdaEnvironment';
 export const LEGACY_APPLY_TYPES=['AWS::S3::Bucket','AWS::S3::BucketPolicy','AWS::DynamoDB::Table','AWS::SQS::Queue','AWS::SQS::QueuePolicy','AWS::SNS::Topic','AWS::SNS::TopicPolicy','AWS::Logs::LogGroup'];
 export function isolationEnabled(){return process.env.IAC_STACK_ISOLATION==='true';}
 /** Inline templates and graph-assembled templates must go through the same preflight. */
@@ -44,7 +45,8 @@ export function deploymentCapabilities(graphId:string,nodeId:string,configuratio
  }
  if(!configured)problems.push({code:'DEPLOYMENT_UNAVAILABLE',path:'environment',message:'Reviewed deployment requires a configured workflow, target account and region.'});
  if(isolated&&!process.env.IAC_GUARDRAIL_ROLE_ARN)problems.push({code:'GUARDRAILS_UNAVAILABLE',path:'environment',message:'The platform guardrail provisioning role has not been deployed.'});
- return {schemaVersion:1,templateContract,capabilityVersion:ISOLATION_VERSION,validationResourceTypes:policy.allowedResourceTypes,deployableResourceTypes:configured?supported.filter(t=>policy.allowedResourceTypes.includes(t)):[],
+ const lambdaEnvironmentEncryption=isolated?lambdaEnvironmentContract(scope,configuration?.template?.text?parseTemplate(configuration.template.text,configuration.template.format||'yaml').doc:undefined):undefined;
+ return {schemaVersion:1,templateContract,capabilityVersion:ISOLATION_VERSION,lambdaEnvironmentEncryption,validationResourceTypes:policy.allowedResourceTypes,deployableResourceTypes:configured?supported.filter(t=>policy.allowedResourceTypes.includes(t)):[],
   target:{account:scope.account,region:scope.region},targetAccounts:isolated?[scope.account].filter(Boolean):policy.accounts,targetRegions:isolated?[scope.region].filter(Boolean):policy.regions,
   isolation:isolated?{...scope,required:true}:{required:false,mode:'legacy-shared-prefix',namespace:policy.stackPrefix},
   deploymentRole:isolated?scope.roleArn:process.env.IAC_EXECUTION_ROLE_ARN||null,permissionsBoundary:isolated?scope.boundaryArn:policy.permissionsBoundaryArn||null,

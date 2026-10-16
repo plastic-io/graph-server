@@ -83,6 +83,16 @@ export class DeploymentProgress {
     if(e.source==='worker'&&e.kind==='deployment.phase')snapshot.workerPhase=e.phase;
     if(e.kind==='deployment.stack'&&e.stackName===op.input.stack.name&&(!snapshot.applicationStack||e.at>=snapshot.applicationStack.at))snapshot.applicationStack=e;
     if(e.kind==='deployment.cleanup')snapshot.cleanup=e;
+    if(e.source==='cloudwatch'&&e.kind==='deployment.log-tail'){
+     snapshot.workerLogs=e;
+     if(e.status==='AVAILABLE'&&(snapshot.collectionWarning?.code==='WORKER_LOGS_UNAVAILABLE'||snapshot.collectionWarning?.reason?.startsWith('No operation-correlated worker log lines')))delete snapshot.collectionWarning;
+    }
+    if(e.source==='orchestration'&&e.kind==='deployment.orchestration'){
+     snapshot.orchestration=e;
+     // A historical start-race warning remains in the journal, but is no longer
+     // the current collection warning after AWS has confirmed the execution.
+     if(['RUNNING','SUCCEEDED','FAILED','TIMED_OUT','ABORTED'].includes(e.status)&&snapshot.collectionWarning?.error?.code==='ExecutionDoesNotExist')delete snapshot.collectionWarning;
+    }
     if(e.logicalId){const rk=e.stackName+'/'+e.logicalId,previous=snapshot.resources[rk];if(!previous||e.at>=previous.at)snapshot.resources[rk]=e;}
     if(e.error||/FAILED|ROLLBACK_COMPLETE|TIMED_OUT|ABORTED/.test(e.status||'')||e.state==='failed'){
      snapshot.failures=[...snapshot.failures.filter(x=>x.id!==e.id),e].slice(-20);

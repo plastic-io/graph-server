@@ -6,6 +6,7 @@ import {LifecycleAws,lifecycleClients} from './iac/lifecycleAws';
 import {ApplicationDiagnostics} from './application/diagnostics';
 import {CloudWatchLogs} from 'aws-sdk';
 import {diagnosticError} from './iac/diagnosticSafety';
+import {workerDiagnostic} from './iac/workerLog';
 
 const store=new S3Service(process.env.S3_BUCKET);
 const refresh=diagnosticRefresh(store);
@@ -29,11 +30,14 @@ export async function handler(event: any,context?:any) {
             throw Object.assign(new Error('Unknown lifecycle read mode'),{code:'SCHEMA_INVALID',status:400});
         }catch(e){return {error:{...diagnosticError(e,op),status:e.status||409,problems:e.problems}};}
     }
+    console.log(JSON.stringify(workerDiagnostic(op,context?.awsRequestId,'STEP_STARTED')));
     try {
-        if(event.fatal){await reviews.fail(id,event.fatal);return {operationId:id,done:true};}
-        return op.action==='recover'?await reviews.lifecycle.step(id):await reviews.step(id);
+        if(event.fatal){await reviews.fail(id,event.fatal);console.error(JSON.stringify(workerDiagnostic(op,context?.awsRequestId,'ERROR',event.fatal)));return {operationId:id,done:true};}
+        const result=op.action==='recover'?await reviews.lifecycle.step(id):await reviews.step(id);
+        console.log(JSON.stringify(workerDiagnostic(op,context?.awsRequestId,'STEP_COMPLETED')));
+        return result;
     } catch(error) {
-        try{await reviews.recordException(id,error,context?.awsRequestId);}catch{/* Keep the deployment exception if its diagnostic store fails too. */}
+        try{await reviews.recordException(id,error,context?.awsRequestId);}catch{console.error(JSON.stringify(workerDiagnostic(op,context?.awsRequestId,'ERROR',error)));}
         throw error;
     } finally {
         try{await refresh(id);}catch(e){console.warn('Deployment diagnostics pending',id,String(e?.code||e?.name||'unavailable'));}

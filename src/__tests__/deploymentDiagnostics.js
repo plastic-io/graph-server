@@ -7,6 +7,8 @@ const {diagnosticText}=require('../iac/diagnosticSafety');
 const {deploymentProgressContract}=require('../discovery/deploymentProgress');
 const {stackScope}=require('../iac/isolation');
 const Store=require('../__testHelpers__/fakeS3');
+const {workerDiagnostic}=require('../iac/workerLog');
+const {missingWorkflow}=require('../iac/workflowVisibility');
 const id='01M4CSD7D7H7YM2HKY2Z5AJRHZ',human={sub:'owner',kind:'human',scopes:[]};
 const policy={accounts:['230639770018'],regions:['us-west-1'],stackPrefix:'pio-dev-',substrateStacks:['graph-server']};
 const save=(store,key,v)=>new Promise((resolve,reject)=>store.set(key,v,{},e=>e?reject(e):resolve()));
@@ -26,6 +28,42 @@ function fixture(over={}){
  return {op,store,sent,notify,progress,clients,collector,reviews,seed};
 }
 const resource=(status,reason,extra={})=>({EventId:status,LogicalResourceId:'WorkerRole',PhysicalResourceId:'gapp-example-worker',ResourceType:'AWS::IAM::Role',ResourceStatus:status,ResourceStatusReason:reason,Timestamp:new Date(time+10000),...extra});
+
+test('initial DescribeExecution absence is bounded STARTING, then success; no historical warning masquerades as a current failure',async()=>{
+ const f=fixture({state:'planning',createdAt:Date.now(),updatedAt:Date.now()});
+ f.clients.states.mockRejectedValueOnce(Object.assign(new Error('Execution not visible'),{code:'ExecutionDoesNotExist'}));
+ await f.collector.collect(f.op);
+ let events=(await f.progress.page(f.op,{limit:100})).events;
+ expect(events.some(e=>e.source==='orchestration'&&e.status==='STARTING')).toBe(true);
+ expect(events.some(e=>e.error?.code==='ExecutionDoesNotExist')).toBe(false);
+ expect((await f.progress.view(f.op)).workerLogs.status).toBe('PENDING');
+ // A warning persisted by an older platform remains historical after success.
+ await f.progress.append(f.op,[{source:'diagnostics',kind:'diagnostic-warning',error:{code:'ExecutionDoesNotExist',message:'old start race'},at:Date.now()}]);
+ f.clients.states.mockResolvedValue({status:'SUCCEEDED'});
+ await f.collector.collect(f.op);const view=await f.progress.view(f.op);
+ expect(view.orchestration.status).toBe('SUCCEEDED');expect(view.collectionWarning).toBeUndefined();
+ expect((await f.progress.page(f.op,{limit:100})).events.some(e=>e.error?.code==='ExecutionDoesNotExist')).toBe(true);
+ expect((await new ObservationJournal(f.store).read('g',{filter:{operationId:id}})).observations).toEqual(f.sent);
+});
+test.each(['expired','seen-before','access-denied','dispatch-failed'])('orchestration %s is a genuine diagnostic error, not hidden as startup',async which=>{
+ const f=fixture({state:'planning',createdAt:Date.now()-(which==='expired'?61000:0),updatedAt:Date.now(),...(which==='dispatch-failed'?{originalError:{code:'AccessDenied',message:'StartExecution failed'}}:{})});
+ if(which==='seen-before')await f.collector.collect(f.op);
+ f.clients.states.mockRejectedValue(Object.assign(new Error('workflow read failed'),{code:which==='access-denied'?'AccessDenied':'ExecutionDoesNotExist'}));
+ await f.collector.collect(f.op);
+ expect((await f.progress.page(f.op,{limit:100})).events).toContainEqual(expect.objectContaining({source:'diagnostics',error:expect.objectContaining({code:which==='access-denied'?'AccessDenied':'ExecutionDoesNotExist'})}));
+});
+test('unapproved recovery is explicitly not started and logs contain fixed metadata only',async()=>{
+ const f=fixture({action:'recover',state:'recovery-ready'});
+ expect(missingWorkflow(f.op)).toMatchObject({status:'NOT_STARTED',expected:true});
+ f.clients.states.mockRejectedValue(Object.assign(new Error('not dispatched'),{code:'ExecutionDoesNotExist'}));
+ await f.collector.collect(f.op);expect((await f.progress.view(f.op)).orchestration.status).toBe('NOT_STARTED');
+ const line=workerDiagnostic({...f.op,payload:'never-log-me'},'request','STEP_STARTED');
+ expect(line).toEqual({type:'deployment.diagnostic',operationId:id,requestId:'request',phase:'awaiting-recovery-approval',status:'STEP_STARTED',message:'Deployment worker step started.'});
+ expect(JSON.stringify(workerDiagnostic(f.op,'request','ERROR',new Error('environment-private')))).not.toContain('environment-private');
+ f.clients.logs.mockResolvedValue({events:[{eventId:'worker-start',message:JSON.stringify(line),timestamp:Date.now(),logStreamName:'scoped-worker'}]});
+ await f.collector.collect(f.op);expect((await f.progress.view(f.op)).workerLogs.status).toBe('AVAILABLE');
+ expect((await f.progress.page(f.op,{limit:100})).events).toContainEqual(expect.objectContaining({source:'cloudwatch',requestId:'request',status:'STEP_STARTED'}));
+});
 
 test('Chess regression: a guardrail failure before application creation retains IAM causes over secondary AssumeRole failure',async()=>{
  const f=fixture({reason:'The deployment workflow failed. Check the operation in AWS before retrying.'});await f.seed();
@@ -94,7 +132,7 @@ test('only bounded operation-correlated platform logs are published; secrets and
  f.clients.cloud.mockImplementation(async method=>method==='describeStacks'?{Stacks:[{StackStatus:'CREATE_FAILED',Outputs:[{OutputValue:'private-output'}]}]}:{StackEvents:[resource('CREATE_FAILED',secret,{ResourceProperties:'private-properties'})]});
  await f.collector.collect(f.op);const entries=(await f.progress.page(f.op,{limit:100})).events,serialized=JSON.stringify(entries);
  for(const value of ['parameter-private','environment-private','default-private','top-secret','signed-secret','private-body','private-output','private-properties','abcdefghijklmnop'])expect(serialized).not.toContain(value);
- expect(entries.filter(e=>e.source==='cloudwatch')).toHaveLength(20);
+ expect(entries.filter(e=>e.source==='cloudwatch'&&e.kind==='deployment.log')).toHaveLength(20);
  expect(entries.some(e=>e.truncated)).toBe(true);expect(entries.every(e=>!e.error||e.error.trace.length<=6)).toBe(true);
  for(const [,args]of f.clients.logs.mock.calls){expect(args.logGroupName).toBe('/aws/lambda/platform-iacWorker');expect(args.filterPattern).toBe('"'+id+'"');expect(args.endTime-args.startTime).toBeLessThanOrEqual(300000);expect(args.unmask).toBeUndefined();}
  expect(diagnosticText('password="hello" -----BEGIN PRIVATE KEY-----\nprivate-key-material\n-----END PRIVATE KEY-----',f.op)).not.toMatch(/hello|private-key-material/);

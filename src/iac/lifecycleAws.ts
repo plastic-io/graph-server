@@ -7,6 +7,9 @@ import {inspectionRead,transientInspectionError} from './inspectionRead';
 import {strict,preservationActionProblems,preservationStateProblems,assertGuardrailPreservation,refusePreservation} from './preservation';
 import {ROLE_EXISTENCE_READS} from './isolation';
 import {verifyReviewStack} from './reviewStack';
+import {boundaryVersions,boundaryVersionProblem} from './boundaryVersions';
+import {lambdaEnvironmentContract,lambdaEnvironmentAccess} from './lambdaEnvironment';
+import {missingWorkflow} from './workflowVisibility';
 
 type Call=(method:string,args:any)=>Promise<any>;
 export interface LifecycleClients {cloud:Call;iam:Call;states:Call;assume:(scope:any)=>Promise<any>;application:(scope:any)=>Promise<Call>;repair?:(op:any)=>Promise<any>;}
@@ -35,6 +38,7 @@ export class LifecycleAws {
  constructor(private clients:LifecycleClients,private policy=policyFromEnv){}
  async inspect(op:any,options:{ownRecovery?:boolean}={}) {
   const s=scopeFor(op,this.policy()),approved=platformDefinition(s),blockers:any[]=[],actualChecks:any[]=[];
+  let applicationTemplate:any,boundaryDocument:any;
   const deadline=Date.now()+18000;
   let iamTail:Promise<any>=Promise.resolve();
   const check=(component:string,action:string,resource:string,call:()=>Promise<any>,missingOkay=false)=>{
@@ -81,6 +85,7 @@ export class LifecycleAws {
    try{doc=typeof template?.TemplateBody==='string'?parseTemplate(template.TemplateBody,'yaml').doc:template?.TemplateBody;}catch{}
    if(!doc?.Resources){if(template!==undefined)blockers.push(blocker('TEMPLATE_UNAVAILABLE','platform-maintenance','The deployed resource retention policies could not be verified.',{component:target}));return value;}
    value.templateDigest=digest(doc);
+   if(!guardrail&&!archived)applicationTemplate=doc;
    value.resources=(listed?.StackResourceSummaries||[]).slice(0,100).map(r=>({logicalId:r.LogicalResourceId,physicalId:r.PhysicalResourceId,resourceType:r.ResourceType,status:r.ResourceStatus,
     deletionPolicy:doc.Resources[r.LogicalResourceId]?.DeletionPolicy||'Delete',definitionDigest:digest(doc.Resources[r.LogicalResourceId]||null),
     ownershipVerified:true,...(archived?{orphaned:r.ResourceStatus==='DELETE_SKIPPED'}:{})})).sort((a,b)=>a.logicalId.localeCompare(b.logicalId));
@@ -175,7 +180,12 @@ export class LifecycleAws {
   if(got?.Policy){
    const version=await check('guardrail','iam:GetPolicyVersion',s.boundaryArn,()=>this.clients.iam('getPolicyVersion',{PolicyArn:s.boundaryArn,VersionId:got.Policy.DefaultVersionId}));
    boundary={arn:s.boundaryArn,exists:true,physicalIdentity:got.Policy.PolicyId,versionId:got.Policy.DefaultVersionId,policyDigest:version?digest(document(version.PolicyVersion.Document)):null};
+   boundaryDocument=version?document(version.PolicyVersion.Document):null;
    boundary.matches=boundary.policyDigest===digest(approved.Resources.RuntimeBoundary.Properties.PolicyDocument);
+   if(!boundary.matches){
+    boundary.versionInventory=boundaryVersions(await check('guardrail','iam:ListPolicyVersions',s.boundaryArn,()=>this.clients.iam('listPolicyVersions',{PolicyArn:s.boundaryArn})));
+    const problem=boundaryVersionProblem(boundary.versionInventory,s.boundaryArn);if(problem)blockers.push(problem);
+   }
    for(const usage of ['PermissionsBoundary','PermissionsPolicy']){
     const entities=await check('guardrail','iam:ListEntitiesForPolicy',s.boundaryArn,()=>this.clients.iam('listEntitiesForPolicy',{PolicyArn:s.boundaryArn,PolicyUsageFilter:usage,MaxItems:100}));
     if(entities?.IsTruncated||entities?.PolicyGroups?.length||entities?.PolicyUsers?.length||entities?.PolicyRoles?.some(r=>usage==='PermissionsPolicy'||!r.RoleName.startsWith(s.namespace)))
@@ -219,7 +229,9 @@ export class LifecycleAws {
    if(!machine?.startsWith(`arn:aws:states:${s.region}:${s.account}:stateMachine:`))blockers.push(blocker('WORKFLOW_VERIFICATION_UNAVAILABLE','capability','The platform worker lacks the configured workflow address; current execution ownership cannot be verified.'));
    else {const arn=machine.replace(':stateMachine:',':execution:')+':'+sourceId;
     const state=await check('workflow','states:DescribeExecution',arn,()=>this.clients.states('describeExecution',{executionArn:arn}),true);
-    workflow={executionArn:arn,status:state?.status||(state===null?'NOT_STARTED':'UNKNOWN')};
+    const visibility=state===null?missingWorkflow(op):undefined;
+    workflow={executionArn:arn,status:state?.status||visibility?.status||'UNKNOWN',...(visibility?{reason:visibility.reason}:{})};
+    if(visibility&&!visibility.expected)blockers.push(blocker('WORKFLOW_EXECUTION_MISSING','platform-maintenance',visibility.reason,{resource:arn,action:'states:DescribeExecution'}));
     if(workflow.status==='RUNNING'&&!(options.ownRecovery&&op.action==='recover'&&op.recoveryLease?.until>Date.now()))blockers.push(blocker('WORKFLOW_ACTIVE','busy','This operation’s workflow is still active. Wait or discard its pending deployment review before recovering.',{resource:arn}));
    }
   }
@@ -236,6 +248,11 @@ export class LifecycleAws {
   if(needsRecovery)blockers.push(blocker('RECOVERY_REQUIRED','recovery','Prepare a recovery plan for the current failed, retained or drifted resources.'));
   const result:any={version:1,checkedAt:new Date().toISOString(),graphId:op.graphId,nodeId:op.nodeId,sourceOperationId:sourceId,scope:s,
    application,guardrail,roles,boundary,guardrailsMatch,assumption,workflow,
+   lambdaEnvironmentEncryption:{...lambdaEnvironmentContract(s,applicationTemplate),evidence:'deployed-template-and-current-boundary-document',
+    installedBoundaryMatches:boundary.matches,
+    installedDecryptAnalysis:boundaryDocument?policyCoverage(boundaryDocument,'kms:Decrypt',lambdaEnvironmentAccess(s).keyResource):'unavailable',
+    effectivePermissionsVerified:false,actualLambdaConfigurationVerified:false,
+    nextAction:boundary.matches?'Run the declared authenticated readiness check; policy analysis does not prove Lambda initialization.':'Prepare iac.recovery.plan with preservation=strict and approve its exact digest in the graph. Releasing the platform does not migrate this boundary.'},
    applicationRoleLifecycle:{kind:'document-analysis-and-physical-role-reads',executionRoleArn:s.roleArn,roles:applicationRoles,
     deploymentTested:false,limitations:'Role reads run as the platform inspector, not as CloudFormation. Document checks include NotResource/NotAction but do not evaluate conditions, SCPs or session policies. Name-only reads are allowed solely within this namespace; writes and PassRole still require /graph-app/. Cleanup of a never-created role is not authorized on the root-path ARN.'},
    policyAnalysis:{kind:'document-analysis',verifiedDeployment:false,checks:policyAnalysis,platformRole:{arn:platformArn,trustDigest:digest(platformTrust),boundary:platformRole?.Role.PermissionsBoundary?.PermissionsBoundaryArn||null},limitations:'This is not IAM simulation or a deployment test. SCPs, session policies, service checks and eventual consistency can still deny operations.'},
@@ -279,6 +296,11 @@ export class LifecycleAws {
    if(boundary){
     const version=await this.clients.iam('getPolicyVersion',{PolicyArn:s.boundaryArn,VersionId:current.DefaultVersionId});
     if(digest(document(version.PolicyVersion.Document))!==op.inspection.boundary.policyDigest)refused('STALE_RECOVERY','The retained boundary changed after review. Prepare a fresh recovery plan.');
+    if(op.inspection.boundary.versionInventory){
+     const versions=boundaryVersions(await this.clients.iam('listPolicyVersions',{PolicyArn:s.boundaryArn}));
+     if(digest(versions)!==digest(op.inspection.boundary.versionInventory))refused('STALE_RECOVERY','The boundary policy version inventory changed after review.');
+     const problem=boundaryVersionProblem(versions,s.boundaryArn);if(problem)refused(problem.code,problem.message);
+    }
     await Promise.all(['PermissionsBoundary','PermissionsPolicy'].map(async usage=>{
      const entities=await this.clients.iam('listEntitiesForPolicy',{PolicyArn:s.boundaryArn,PolicyUsageFilter:usage,MaxItems:100});
      if(entities.IsTruncated||entities.PolicyGroups?.length||entities.PolicyUsers?.length||entities.PolicyRoles?.some(r=>usage==='PermissionsPolicy'||!r.RoleName.startsWith(s.namespace)))refused('OWNERSHIP_UNVERIFIED','Boundary consumers changed. Recovery will preserve it and stop.',403);
@@ -355,6 +377,10 @@ export class LifecycleAws {
    if(/IN_PROGRESS$/.test(status))return {done:false,status};
    if(action.submitted){if(!['CREATE_COMPLETE','UPDATE_COMPLETE'].includes(status))throw new Error('Guardrail reconciliation failed: '+status);if(!this.clients.repair)refused('CAPABILITY_UNAVAILABLE','Approved guardrail repair is not configured.');await this.clients.repair(op);return {done:true,status};}
    const definition=platformDefinition(s);
+   if(status!=='NOT_CREATED'&&!plan.actions.slice(0,index).some(a=>a.kind==='import-retained'||a.kind==='delete-stack')){
+    await verifyReviewedInventory();
+    await verifyGuardrailIdentity('RuntimeBoundary');
+   }
    if(strict(op)&&status!=='NOT_CREATED'){
     const current=await cloud('getTemplate',{StackName:stack.StackId,TemplateStage:'Original'});
     assertGuardrailPreservation(parseTemplate(current.TemplateBody,'yaml').doc,definition);

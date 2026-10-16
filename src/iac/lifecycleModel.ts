@@ -4,7 +4,7 @@ import {guardrailTemplate} from './guardrails';
 import {policyFromEnv,parseTemplate} from './validator';
 import {preservationMode,preservationStateProblems,preservationActionProblems} from './preservation';
 
-export const LIFECYCLE_VERSION='1.5.0';
+export const LIFECYCLE_VERSION='1.6.0';
 export const terminalStates=new Set(['succeeded','failed','rolled-back','rollback-failed','cancelled','expired','stale','no-changes','destroyed','recovered','recovery-blocked','inspected']);
 export function pendingReview(op:any){return !!op&&!op.approval&&!op.recoveryApproval&&!op.startedAt&&!op.recoveryDispatchedAt&&
  !op.reviewInvalidatedAt&&['awaiting-review','recovery-ready','recovery-blocked','expired','stale'].includes(op.state);}
@@ -103,7 +103,10 @@ export function recoveryPlan(op:any,inspection:any,options:any={}) {
     action('import-retained',target,{resources:imports,dataLoss:[],preparation:{kind:'owned-empty-stack',templateDigest:digest(importPreparationTemplate()),createsResources:false,roleArn:guardrail?process.env.IAC_GUARDRAIL_ROLE_ARN:inspection.scope.roleArn},reason:'Establish an empty owned stack with its assigned service role and ownership tags, then import the retained resources without changing stack settings. No application resource is created or deleted.'});
    }
   }
-  if(guardrail&&(rebuild||!inspection.guardrailsMatch||stack.status==='UPDATE_ROLLBACK_FAILED'||stack.status==='UPDATE_FAILED'))action('reconcile-guardrails',target,{definitionDigest:inspection.approvedGuardrailDigest,dataLoss:[],resources:(inspection.roles||[]).filter((r:any)=>r.exists===false).map((r:any)=>({logicalId:r.logicalId,physicalId:r.arn,outcome:'Create from approved platform definition'})),reason:'Restore only the platform-approved definition for this graph/node namespace. Uses the platform guardrail service role; absent per-stack roles are created before any application role is assumed.'});
+  if(guardrail&&(rebuild||!inspection.guardrailsMatch||stack.status==='UPDATE_ROLLBACK_FAILED'||stack.status==='UPDATE_FAILED'))action('reconcile-guardrails',target,{definitionDigest:inspection.approvedGuardrailDigest,dataLoss:[],resources:[
+   ...(inspection.roles||[]).filter((r:any)=>!r.matches).map((r:any)=>({logicalId:r.logicalId,physicalId:r.arn,resourceType:'AWS::IAM::Role',outcome:r.exists===false?'Create from approved platform definition':'Update approved policy in place'})),
+   ...(!inspection.boundary?.matches?[{logicalId:'RuntimeBoundary',physicalId:inspection.scope.boundaryArn,resourceType:'AWS::IAM::ManagedPolicy',outcome:inspection.boundary?.exists===false?'Create from approved platform definition':'Update approved policy in place',retention:'Retain',definitionDigest:digest(inspection.approvedGuardrailTemplate?.Resources.RuntimeBoundary),versionInventory:inspection.boundary?.versionInventory}]:[]),
+  ],reason:'Restore only the platform-approved definition for this graph/node namespace. Existing boundary names, paths, attachments and retention stay fixed; a policy-document update requires a free IAM version slot and never prunes versions. Default Lambda environment decryption is limited to alias/aws/lambda in the assigned account/region and this namespace’s function encryption context. Application resources and records are not changed. Absent per-stack roles are created before any application role is assumed.'});
  }
  action('release-operation','operation',{dataLoss:[],reason:'Retire stale reviews and release the operation lock. A new application deployment requires a fresh review and human approval.'});
  if(preservation){

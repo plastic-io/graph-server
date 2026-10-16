@@ -45,7 +45,7 @@ async function fixture(graphId='g',nodeId='stack',options={}) {
   }
   if(method==='executeChangeSet'){const cs=changes.get(args.ChangeSetName);cs.ExecutionStatus='EXECUTE_COMPLETE';st.StackStatus='IMPORT_COMPLETE';st.template=cs.template;st.resources=cs.args.ResourcesToImport.map(r=>({LogicalResourceId:r.LogicalResourceId,PhysicalResourceId:Object.values(r.ResourceIdentifier)[0],ResourceType:r.ResourceType,ResourceStatus:'IMPORT_COMPLETE'}));return {};}
   if(method==='createStack'&&JSON.parse(args.TemplateBody).Resources.GraphRecoveryPlaceholder){if(st)throw new Error('Stack already exists');stack(args.StackName,'CREATE_COMPLETE',JSON.parse(args.TemplateBody),[]);return {};}
-  if(method==='updateStack'||method==='createStack'){const template=JSON.parse(args.TemplateBody);installRoles();stack(args.StackName,method==='createStack'?'CREATE_COMPLETE':'UPDATE_COMPLETE',template,guardResources.map(r=>({...r,ResourceStatus:'CREATE_COMPLETE'})));return {};}
+  if(method==='updateStack'||method==='createStack'){const template=JSON.parse(args.TemplateBody);installRoles();policies.set(s.boundaryArn,template.Resources.RuntimeBoundary.Properties.PolicyDocument);stack(args.StackName,method==='createStack'?'CREATE_COMPLETE':'UPDATE_COMPLETE',template,guardResources.map(r=>({...r,ResourceStatus:'CREATE_COMPLETE'})));return {};}
   if(method==='continueUpdateRollback'||method==='rollbackStack'){st.StackStatus='UPDATE_ROLLBACK_COMPLETE';return {};}
   throw new Error('Unexpected CloudFormation call '+method);
  });
@@ -57,6 +57,7 @@ async function fixture(graphId='g',nodeId='stack',options={}) {
   if(method==='listAttachedRolePolicies')return {AttachedPolicies:[]};
   if(method==='getPolicy'){if(!policies.has(args.PolicyArn))throw Object.assign(new Error(`Policy ${args.PolicyArn} was not found.`),{code:'NoSuchEntity'});return {Policy:{Arn:args.PolicyArn,DefaultVersionId:'v1'}};}
   if(method==='getPolicyVersion')return {PolicyVersion:{Document:policies.get(args.PolicyArn)}};
+  if(method==='listPolicyVersions')return {Versions:[{VersionId:'v1',IsDefaultVersion:true}]};
   if(method==='listEntitiesForPolicy')return {PolicyRoles:[],PolicyUsers:[],PolicyGroups:[]};
   throw new Error('Unexpected IAM call '+method);
  });
