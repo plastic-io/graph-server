@@ -1,4 +1,5 @@
 import {templateContract} from './templateContract';
+import {preservesApprovedDeployment} from './deploymentBinding';
 import {automaticApprovalOptions,checkApprovalMode} from './automaticApproval';
 import {ulid} from 'ulid';
 import {DelegationStore} from '../policy/delegation';
@@ -117,7 +118,9 @@ export class IacLifecycleService {
   const latest=await this.read(operationKey(op.operationId));
   await this.cas(operationKey(op.operationId),{...latest.value,inspection},latest.etag);
   await this.emit(op,'inspection',inspection);
-  return {...inspection,operationId:op.operationId,nextActions:nextActions(op,inspection)};
+  const binding=op.state==='recovered'?await this.read(`iac/deployed/${g}/${n}.json`):null;
+  const deployed=binding?.value.operationId&&(await this.op(g,n,binding.value.operationId))?.value;
+  return {...inspection,operationId:op.operationId,nextActions:nextActions(op,inspection,preservesApprovedDeployment({...op,inspection},deployed))};
  }
  async plan(g:string,n:string,p:any,options:any) {
   p=await this.authority(g,n,p,true);
@@ -299,7 +302,12 @@ export class IacLifecycleService {
   p=await this.authority(g,n,p);
   if(!decide(p,['graph:observe','graph:inspect-payloads']).allow)refused('ADMISSION_DENIED','Runtime logs require graph observation and payload inspection authority.',403);
   if(!this.deps.logs)refused('CAPABILITY_UNAVAILABLE','Application log diagnostics are not configured.');
-  const binding=await this.read(`iac/deployed/${g}/${n}.json`),row=await this.op(g,n,options.operationId||binding?.value.operationId),op=row?.value;
+  const binding=await this.read(`iac/deployed/${g}/${n}.json`),row=await this.op(g,n,options.operationId||binding?.value.operationId);
+  let op=row?.value;
+  if(op?.state==='recovered'&&binding?.value.operationId){
+   const deployed=(await this.op(g,n,binding.value.operationId))?.value;
+   if(preservesApprovedDeployment(op,deployed))op=deployed;
+  }
   if(!op||op.state!=='succeeded'||!op.approval)refused('DEPLOYMENT_REQUIRED','Runtime diagnostics require an approved successful application deployment.');
   const response=await this.deps.logs(op,options);
   const entries=(response.events||[]).map(e=>({...e,source:'application',kind:'runtime-log',phase:'runtime'}));
@@ -316,7 +324,7 @@ export class IacLifecycleService {
   const bound=await this.read(`iac/deployed/${g}/${n}.json`),row=await this.op(g,n,bound?.value.operationId),op=row?.value;
   if(!bound?.value.operationId||!op||op.state!=='succeeded'||!op.approval)refused('DEPLOYMENT_REQUIRED','Readiness requires a completed approved deployment.');
   const current=(await this.op(g,n))?.value;
-  if(current&&['apply-requested','applying','recovery-requested','recovering','recovered'].includes(current.state)||current?.manualRecoveryRequired)refused('OPERATION_ACTIVE','Application deployment is changing, requires recovery, or needs a fresh approved deployment after recovery.');
+  if(current&&(['apply-requested','applying','destroyed','recovery-requested','recovering'].includes(current.state)||current.state==='recovered'&&!preservesApprovedDeployment(current,op)||current.manualRecoveryRequired))refused('OPERATION_ACTIVE','Application deployment is changing, requires recovery, or needs a fresh approved deployment after recovery.');
   const declaration=(op.input.readiness||[]).find(c=>c.id===options.checkId);
   if(!declaration)refused('READINESS_UNDECLARED','This check was not declared in the approved deployment. Add iac.readiness through a graph proposal and fresh deployment review.');
   const input=await this.deps.input!(g,n,p);

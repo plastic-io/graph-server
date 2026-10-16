@@ -3,9 +3,13 @@ import {scopeFor,platformDefinition,validRecoveryDigest,digest,operationKey,inde
 import {policyFromEnv} from './validator';
 import {strict,preservationActionProblems,refusePreservation} from './preservation';
 import {boundaryVersions,boundaryVersionProblem} from './boundaryVersions';
+import {recoveryRead} from './recoveryRead';
 
 /** Privileged platform repair accepts only an operation ID/fence, never IAM JSON or resource identifiers. */
 export async function repairApprovedGuardrails(store:any,request:any,iamCall=(m,a)=>(new IAM() as any)[m](a).promise(),policy=policyFromEnv(),cloudCall=(m,a)=>(new CloudFormation() as any)[m](a).promise()) {
+ const iam=iamCall,cloud=cloudCall,deadline=Date.now()+45000;
+ iamCall=(m,a)=>/^(get|list)/.test(m)?recoveryRead('iam',m,a,()=>iam(m,a),deadline):iam(m,a);
+ cloudCall=(m,a)=>/^(get|list|describe)/.test(m)?recoveryRead('cloudformation',m,a,()=>cloud(m,a),deadline):cloud(m,a);
  if(Object.keys(request||{}).some(k=>!['operationId','leaseId'].includes(k)))refused('SCHEMA_INVALID','Guardrail repair accepts only an operation ID and active worker lease.',400);
  const read=(key:string):Promise<any>=>new Promise((resolve,reject)=>store.get(key,(e,v)=>e?reject(e):resolve(v)));
  if(!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(request.operationId||''))refused('SCHEMA_INVALID','Invalid recovery ID.',400);
@@ -23,7 +27,7 @@ export async function repairApprovedGuardrails(store:any,request:any,iamCall=(m,
   const desired=definition.Resources[logical].Properties,arn=logical==='WorkerRole'?s.workerRoleArn:s.roleArn;
   const actual=await iamCall('getRole',{RoleName:desired.RoleName});
   if(actual.Role.Arn!==arn||actual.Role.PermissionsBoundary)refused('OWNERSHIP_UNVERIFIED','Guardrail role path or boundary changed before repair.',403);
-  const [inline,attached]=await Promise.all([iamCall('listRolePolicies',{RoleName:desired.RoleName}),iamCall('listAttachedRolePolicies',{RoleName:desired.RoleName})]);
+  const inline=await iamCall('listRolePolicies',{RoleName:desired.RoleName}),attached=await iamCall('listAttachedRolePolicies',{RoleName:desired.RoleName});
   if(inline.IsTruncated||attached.IsTruncated||attached.AttachedPolicies?.length||inline.PolicyNames?.some(n=>n!==desired.Policies[0].PolicyName))refused('PLATFORM_MAINTENANCE_REQUIRED','Unreviewed additional role policies require a platform administrator.');
  }
  for(const usage of ['PermissionsBoundary','PermissionsPolicy']) {

@@ -125,7 +125,7 @@ export function recoveryPlan(op:any,inspection:any,options:any={}) {
 export function validRecoveryDigest(plan:any) {const {digest:expected,...content}=plan||{};return !!expected&&expected===digest(content);}
 export function platformDefinition(s:any) {return guardrailTemplate(s,process.env.IAC_WORKER_ROLE_ARN);}
 
-export function nextActions(op:any,inspection=op?.inspection) {
+export function nextActions(op:any,inspection=op?.inspection,preservedDeployment=false) {
  const state=op?.state,leased=op?.recoveryLease?.until>Date.now(),blocked=[...(inspection?.blockers||[]),...(op?.preservationBlockers||[]),...(op?.recoveryPlan?.prerequisites||[]),...(leased?[{code:'WORKER_ACTIVE',kind:'busy',message:'A previous worker may still be finishing. Wait for its bounded lease before recovery.',leaseUntil:op.recoveryLease.until}]:[])];
  const expired=op?.action==='recover'&&state==='recovery-ready'&&op.expiresAt<Date.now();
  const active=leased||state&&!terminalStates.has(state),recovery=op?.action==='recover';
@@ -139,7 +139,7 @@ export function nextActions(op:any,inspection=op?.inspection) {
    {tool:'iac.maintenance.request',allowed:blocked.some((b:any)=>b.kind==='platform-permission'||b.kind==='platform-maintenance'),requiredApproval:'separate-platform-admin-review'},
    {tool:'iac.review',allowed:current&&!active&&(!!inspection?.canReview||state==='cancelled'),requiredApproval:'new-human-exact-deployment-digest',...(state==='cancelled'?{reason:'Cancellation released the review. A fresh review must still pass current AWS state, ownership and preservation checks; deployment readiness is not established.'}:{})},
    {action:'approve-deployment-in-graph',allowed:current&&!recovery&&state==='awaiting-review',requiredApproval:'human-exact-deployment-digest'},
-   {tool:'iac.runtime.logs',allowed:!!op?.approval&&state==='succeeded',requiredApproval:null},
-   {tool:'iac.readiness',allowed:!!op?.approval&&state==='succeeded',requiredApproval:'declared-in-approved-deployment'},
+   {tool:'iac.runtime.logs',allowed:preservedDeployment||!!op?.approval&&state==='succeeded',requiredApproval:null},
+   {tool:'iac.readiness',allowed:preservedDeployment||!!op?.approval&&state==='succeeded',requiredApproval:'declared-in-approved-deployment'},
   ]};
 }

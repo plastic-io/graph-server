@@ -6,6 +6,7 @@ import {policyFromEnv} from '../iac/validator';
 import {assertCredentialFree,redactCredentials} from '../security/credentials';
 import {DeploymentProgress} from '../iac/progress';
 import {diagnosticError} from '../iac/diagnosticSafety';
+import {preservesApprovedDeployment} from '../iac/deploymentBinding';
 export {assertCredentialFree} from '../security/credentials';
 
 export function publicCaller(principal:any){return principal?{sub:principal.sub,kind:principal.kind,tenant:principal.tenant}:null;}
@@ -23,7 +24,7 @@ export class ApplicationService {
   const current=await this.get(`iac/review-index/${req.graphId}/${req.stackNodeId}.json`).catch(()=>null);
   if(current?.operationId && current.operationId!==binding.operationId){
    const active=await this.get('iac/reviews/'+current.operationId+'.json');
-   if(['apply-requested','applying','destroyed','recovery-requested','recovering','recovered'].includes(active.state)||active.manualRecoveryRequired||(active.state==='succeeded'&&!active.finalizedAt))throw Object.assign(new Error('Application deployment is changing or requires recovery; wait for deployment status'),{code:'DEPLOYMENT_UNAVAILABLE',status:409});
+   if(['apply-requested','applying','destroyed','recovery-requested','recovering'].includes(active.state)||active.state==='recovered'&&!preservesApprovedDeployment(active,record)||active.manualRecoveryRequired||(active.state==='succeeded'&&!active.finalizedAt))throw Object.assign(new Error('Application deployment is changing or requires recovery; wait for deployment status'),{code:'DEPLOYMENT_UNAVAILABLE',status:409});
   }
   const scope=stackScope(req.graphId,req.stackNodeId,(this.deps.policy||policyFromEnv)());
   if(record.graphId!==req.graphId||record.nodeId!==req.stackNodeId||record.state!=='succeeded'||!record.approval||record.input?.isolation?.namespace!==scope.namespace)throw new Error('Deployment binding is not an approved isolated stack');

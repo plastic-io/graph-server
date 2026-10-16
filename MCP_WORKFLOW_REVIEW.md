@@ -1,9 +1,11 @@
 # Current review: scoped Lambda environment decryption
 
-October 16, 2026. Server **2.8.2**, lifecycle contract **1.6.0**, progress contract
-**1.2.0**. Implementation and artifact verification are complete. Platform release,
-separately approved boundary migrations, and real application readiness are still
-pending. This section supersedes earlier release instructions below.
+October 16, 2026. Server **2.8.2** is released; follow-up **2.8.3** is prepared,
+with lifecycle contract **1.6.0** and progress contract **1.2.0**. Damp Robin's
+separately approved boundary migration completed. Plump Fox's approved attempt
+stopped on AWS throttling before changing its v1 boundary. Runtime verification
+is pending the follow-up release and a fresh Plump Fox recovery review. This
+section supersedes earlier release instructions below.
 
 ## Evidence and cause
 
@@ -64,6 +66,26 @@ execution clears the current stale warning while retaining historical events.
 Worker steps now log allowlisted operation/request/phase/status metadata on success
 as well as failure. The collector publishes the same redacted records through
 MCP and the graph bus, with explicit pending/unavailable log states.
+
+## Follow-up from live migration
+
+The live Damp Robin migration exposed a runtime gate that rejected every
+`recovered` operation even when guardrail-only recovery preserved the application's
+existing approved binding. Server 2.8.3 resumes invocation/readiness only after a
+completed strict exact-digest guardrail repair, unchanged application template and
+physical inventory, verified ownership, and a matching original deployment approval.
+Application-changing recovery still requires a fresh deployment. `iac.status`
+keeps state `recovered` and exposes `runtimeDeployment` plus the bound deployment's
+readiness results. The paired editor keeps its readiness controls and logs available.
+Runtime events remain correlated to that original deployment operation.
+
+The Plump Fox attempt returned AWS `Throttling`, request
+`7e8dd077-99f8-4dfc-97a2-d2b8ce2167d8`; its historical error did not identify the
+specific action. Current inspection confirmed the boundary remained v1 and both
+stacks CREATE_COMPLETE. Recovery prerequisite reads now have bounded jittered
+retries and action/resource attribution. IAM inventories are serialized. Mutations
+are not replayed, permission denials are not retried, and absence retains its
+service-specific meaning. The failed approval is not reused.
 
 ## Verification before release
 

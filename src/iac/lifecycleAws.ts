@@ -10,6 +10,7 @@ import {verifyReviewStack} from './reviewStack';
 import {boundaryVersions,boundaryVersionProblem} from './boundaryVersions';
 import {lambdaEnvironmentContract,lambdaEnvironmentAccess} from './lambdaEnvironment';
 import {missingWorkflow} from './workflowVisibility';
+import {recoveryRead} from './recoveryRead';
 
 type Call=(method:string,args:any)=>Promise<any>;
 export interface LifecycleClients {cloud:Call;iam:Call;states:Call;assume:(scope:any)=>Promise<any>;application:(scope:any)=>Promise<Call>;repair?:(op:any)=>Promise<any>;}
@@ -274,7 +275,9 @@ export class LifecycleAws {
   if(plan.approvedGuardrailDigest!==digest(platformDefinition(s)))refused('STALE_RECOVERY','The approved platform definition changed. Prepare a new recovery review.');
   const guardrail=action.target==='guardrail',name=guardrail?s.guardrailStack:op.input.stack.name;
   const roleArn=guardrail?process.env.IAC_GUARDRAIL_ROLE_ARN:s.roleArn;
-  const cloud=guardrail?this.clients.cloud:await this.clients.application(s);
+  const cloudCall=guardrail?this.clients.cloud:await this.clients.application(s),deadline=Date.now()+45000;
+  const cloud=(m:string,a:any)=>/^(describe|list|get)/.test(m)?recoveryRead('cloudformation',m,a,()=>cloudCall(m,a),deadline):cloudCall(m,a);
+  const iam=(m:string,a:any)=>recoveryRead('iam',m,a,()=>this.clients.iam(m,a),deadline);
   const token='recovery-'+s.namespace+op.operationId+'-'+index;
   let stack:any;
   try{stack=(await cloud('describeStacks',{StackName:name})).Stacks?.[0];}catch(e){if(!awsResourceAbsent(e,'cloudformation:DescribeStacks'))throw e;}
@@ -288,24 +291,24 @@ export class LifecycleAws {
    if(!expected?.ownershipVerified)refused('OWNERSHIP_UNVERIFIED','Retained guardrails require a reviewed CloudFormation resource record.',403);
    const boundary=logicalId==='RuntimeBoundary',method=boundary?'getPolicy':'getRole',actionName=boundary?'iam:GetPolicy':'iam:GetRole';
    let current:any;
-   try{const response=await this.clients.iam(method,boundary?{PolicyArn:s.boundaryArn}:{RoleName:platformDefinition(s).Resources[logicalId].Properties.RoleName});current=boundary?response.Policy:response.Role;}
+   try{const response=await iam(method,boundary?{PolicyArn:s.boundaryArn}:{RoleName:platformDefinition(s).Resources[logicalId].Properties.RoleName});current=boundary?response.Policy:response.Role;}
    catch(e){if(!awsResourceAbsent(e,actionName))throw e;}
    if(expected.exists===false){if(current)refused('STALE_RECOVERY','A previously absent guardrail resource now exists. Prepare a fresh ownership review.');return;}
    const arn=boundary?s.boundaryArn:logicalId==='WorkerRole'?s.workerRoleArn:s.roleArn;
    if(!current||current.Arn!==arn||expected.physicalIdentity&&(current.PolicyId||current.RoleId)!==expected.physicalIdentity)refused('STALE_RECOVERY','A reviewed guardrail resource disappeared or was replaced. It will not be imported or deleted.');
    if(boundary){
-    const version=await this.clients.iam('getPolicyVersion',{PolicyArn:s.boundaryArn,VersionId:current.DefaultVersionId});
+    const version=await iam('getPolicyVersion',{PolicyArn:s.boundaryArn,VersionId:current.DefaultVersionId});
     if(digest(document(version.PolicyVersion.Document))!==op.inspection.boundary.policyDigest)refused('STALE_RECOVERY','The retained boundary changed after review. Prepare a fresh recovery plan.');
     if(op.inspection.boundary.versionInventory){
-     const versions=boundaryVersions(await this.clients.iam('listPolicyVersions',{PolicyArn:s.boundaryArn}));
+     const versions=boundaryVersions(await iam('listPolicyVersions',{PolicyArn:s.boundaryArn}));
      if(digest(versions)!==digest(op.inspection.boundary.versionInventory))refused('STALE_RECOVERY','The boundary policy version inventory changed after review.');
      const problem=boundaryVersionProblem(versions,s.boundaryArn);if(problem)refused(problem.code,problem.message);
     }
-    await Promise.all(['PermissionsBoundary','PermissionsPolicy'].map(async usage=>{
-     const entities=await this.clients.iam('listEntitiesForPolicy',{PolicyArn:s.boundaryArn,PolicyUsageFilter:usage,MaxItems:100});
+    for(const usage of ['PermissionsBoundary','PermissionsPolicy']){
+     const entities=await iam('listEntitiesForPolicy',{PolicyArn:s.boundaryArn,PolicyUsageFilter:usage,MaxItems:100});
      if(entities.IsTruncated||entities.PolicyGroups?.length||entities.PolicyUsers?.length||entities.PolicyRoles?.some(r=>usage==='PermissionsPolicy'||!r.RoleName.startsWith(s.namespace)))refused('OWNERSHIP_UNVERIFIED','Boundary consumers changed. Recovery will preserve it and stop.',403);
-     await Promise.all((entities.PolicyRoles||[]).map(async r=>{const role=await this.clients.iam('getRole',{RoleName:r.RoleName});if(!role.Role.Arn.startsWith(`arn:aws:iam::${s.account}:role/graph-app/${s.namespace}`))refused('OWNERSHIP_UNVERIFIED','The retained boundary has a foreign consumer.',403);}));
-    }));
+     for(const r of entities.PolicyRoles||[]){const role=await iam('getRole',{RoleName:r.RoleName});if(!role.Role.Arn.startsWith(`arn:aws:iam::${s.account}:role/graph-app/${s.namespace}`))refused('OWNERSHIP_UNVERIFIED','The retained boundary has a foreign consumer.',403);}
+    }
    }
   };
   const verifyReviewedInventory=async()=>{

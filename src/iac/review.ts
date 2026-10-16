@@ -1,4 +1,5 @@
 import {automaticApprovalOptions,checkApprovalMode} from './automaticApproval';
+import {preservesApprovedDeployment} from './deploymentBinding';
 import {deploymentCapabilities, isolationEnabled, LEGACY_APPLY_TYPES} from './capabilities';
 import {scopedPolicy,stackScope, ISOLATED_TYPES} from './isolation';
 import {DeploymentProgress,phaseFor} from './progress';
@@ -199,7 +200,13 @@ export class IacReviewService {
         for(const key of ['latest','lastEvent','lifecycle'])if(progress[key]&&!progressAllowed(principal,progress[key]))delete progress[key];
         const workflowFailed=progress.orchestrationFailure&&!terminal.has(record.state);
         const failure=['failed','rolled-back','rollback-failed'].includes(record.state)||workflowFailed||progress.cleanup?.status==='DELETE_FAILED';
-        return {...this.publicRecord(record),...(workflowFailed?{state:'failed',workflowState:record.state}:{}),progress,nextActions:nextActions(record),canReviewMaintenance:isPlatformAdmin(principal),maintenanceConfiguration:maintenanceConfiguration(),
+        let resumed:any;
+        if(record.state==='recovered'&&index?.value.operationId===record.operationId){
+            const binding=await this.read(`iac/deployed/${graphId}/${nodeId}.json`);
+            const deployed=binding?.value.operationId&&(await this.operation(graphId,nodeId,binding.value.operationId)).value;
+            if(preservesApprovedDeployment(record,deployed))resumed={runtimeDeployment:{operationId:deployed.operationId,retainedAfterRecovery:true,resources:deployed.resources,revisionId:deployed.revisionId,inputDigest:deployed.inputDigest},readinessChecks:deployed.input.readiness||[],runtimeReadiness:deployed.runtimeReadiness};
+        }
+        return {...this.publicRecord(record),...resumed,...(workflowFailed?{state:'failed',workflowState:record.state}:{}),progress,nextActions:nextActions(record,record.inspection,!!resumed),canReviewMaintenance:isPlatformAdmin(principal),maintenanceConfiguration:maintenanceConfiguration(),
             ...(failure?{error:progress.failure?.error||(progress.failure?.reason?diagnosticError({code:progress.failure.status||'DEPLOYMENT_ERROR',message:progress.failure.reason},record):record.originalError),reason:progress.failure?.reason||record.reason,
                 recovery:progress.recovery||recoveryFor(record,{status:record.state,reason:record.reason}),
                 manualRecoveryRequired:record.manualRecoveryRequired||!!workflowFailed||progress.recovery?.category==='platform-intervention'}:{})};
