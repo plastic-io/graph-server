@@ -11,6 +11,7 @@ import {boundaryVersions,boundaryVersionProblem} from './boundaryVersions';
 import {lambdaEnvironmentContract,lambdaEnvironmentAccess} from './lambdaEnvironment';
 import {missingWorkflow} from './workflowVisibility';
 import {recoveryRead} from './recoveryRead';
+import {dynamoDbEncryptionContract} from './runtimeEncryption';
 
 type Call=(method:string,args:any)=>Promise<any>;
 export interface LifecycleClients {cloud:Call;iam:Call;states:Call;assume:(scope:any)=>Promise<any>;application:(scope:any)=>Promise<Call>;repair?:(op:any)=>Promise<any>;}
@@ -254,6 +255,8 @@ export class LifecycleAws {
     installedDecryptAnalysis:boundaryDocument?policyCoverage(boundaryDocument,'kms:Decrypt',lambdaEnvironmentAccess(s).keyResource):'unavailable',
     effectivePermissionsVerified:false,actualLambdaConfigurationVerified:false,
     nextAction:boundary.matches?'Run the declared authenticated readiness check; policy analysis does not prove Lambda initialization.':'Prepare iac.recovery.plan with preservation=strict and approve its exact digest in the graph. Releasing the platform does not migrate this boundary.'},
+   dynamoDbEncryption:{...dynamoDbEncryptionContract(s,applicationTemplate),evidence:'deployed-template-and-current-boundary-document',installedBoundaryMatches:boundary.matches,
+    effectivePermissionsVerified:false,actualTableConfigurationVerified:false,nextAction:boundary.matches?'Run the authenticated write/consistent-read readiness check; template and policy analysis do not prove storage access.':'Prepare and approve strict in-place boundary recovery before verifying storage readiness.'},
    applicationRoleLifecycle:{kind:'document-analysis-and-physical-role-reads',executionRoleArn:s.roleArn,roles:applicationRoles,
     deploymentTested:false,limitations:'Role reads run as the platform inspector, not as CloudFormation. Document checks include NotResource/NotAction but do not evaluate conditions, SCPs or session policies. Name-only reads are allowed solely within this namespace; writes and PassRole still require /graph-app/. Cleanup of a never-created role is not authorized on the root-path ARN.'},
    policyAnalysis:{kind:'document-analysis',verifiedDeployment:false,checks:policyAnalysis,platformRole:{arn:platformArn,trustDigest:digest(platformTrust),boundary:platformRole?.Role.PermissionsBoundary?.PermissionsBoundaryArn||null},limitations:'This is not IAM simulation or a deployment test. SCPs, session policies, service checks and eventual consistency can still deny operations.'},

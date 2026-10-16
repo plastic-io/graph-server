@@ -1,5 +1,6 @@
 const {runtimeBoundary,stackScope,validateIsolation,DATA_ACTIONS,resourceArns}=require('../iac/isolation');
 const {lambdaEnvironmentAccess,lambdaEnvironmentContract}=require('../iac/lambdaEnvironment');
+const {dynamoDbEncryptionContract,dynamoDbEncryptionAccess}=require('../iac/runtimeEncryption');
 const {guardrailTemplate}=require('../iac/guardrails');
 const {DEFAULT_POLICY}=require('../iac/types');
 const {deploymentCapabilities}=require('../iac/capabilities');
@@ -19,8 +20,8 @@ function decision(doc,action,resource,context={},sessionGrant=false){
   if(s.Resource?!any(s.Resource,resource):any(s.NotResource,resource))return false;
   return Object.entries(s.Condition||{}).every(([operator,values])=>Object.entries(values).every(([key,want])=>{
    const actual=[].concat(context[key]||[]),expected=[].concat(want),eq=x=>expected.some(w=>operator.includes('Like')?match(w,x):w===x);
-   if(['StringEquals','ArnLike','ForAnyValue:StringEquals'].includes(operator))return actual.some(eq);
-   if(['StringNotEquals','ArnNotLike','ForAllValues:StringNotEquals'].includes(operator))return actual.every(x=>!eq(x));
+   if(['StringEquals','StringLike','ArnLike','ForAnyValue:StringEquals'].includes(operator))return actual.some(eq);
+   if(['StringNotEquals','StringNotLike','ArnNotLike','ForAllValues:StringNotEquals'].includes(operator))return actual.every(x=>!eq(x));
    throw new Error('Untested IAM condition '+operator);
   }));
  });
@@ -37,7 +38,7 @@ test('both original explicit denials independently block default environment dec
   expect(decision(broken,'kms:Decrypt',key,context,true)).toBe('explicitDeny');
  }
  expect(decision(p,'kms:Decrypt',key,context)).toBe('allowed');
- expect(JSON.stringify(p)).not.toMatch(/lambda:SourceFunctionArn|kms:ViaService/);
+ expect(JSON.stringify(p)).not.toMatch(/lambda:SourceFunctionArn/);expect(JSON.stringify(p.Statement.find(x=>x.Sid==='AllowOwnLambdaEnvironmentDecrypt'))).not.toMatch(/kms:ViaService/);
  expect(JSON.stringify(p).length).toBeLessThan(6144);
  expect(guardrailTemplate(s,'worker').Resources.RuntimeBoundary.Properties.PolicyDocument).toEqual(p);
 });
@@ -55,6 +56,36 @@ test.each(['unrelated-key','no-alias','other-graph','no-context','other-account'
 });
 test.each(['kms:Encrypt','kms:GenerateDataKey','kms:CreateGrant','kms:PutKeyPolicy','iam:PassRole','sts:AssumeRole'])('the change grants no %s authority',action=>{
  const s=scope(),r=request(s);expect(decision(runtimeBoundary(s),action,r.key,r.context,true)).toBe('explicitDeny');
+});
+function tableRequest(){const s=scope(),d=dynamoDbEncryptionAccess(s);return {key:lambdaEnvironmentAccess(s).keyResource.replace('*','table-key'),context:{'kms:ResourceAliases':[d.alias],'kms:CallerAccount':d.account,'kms:ViaService':d.viaService,[d.tableContext]:s.namespace+'events',[d.subscriberContext]:d.account}};}
+test('AWS-managed DynamoDB permits table-key decrypt through the service for this namespace; Lambda and table contexts remain separate',()=>{
+ const s=scope(),p=runtimeBoundary(s),r=tableRequest(),l=request(s);
+ expect(decision(p,'kms:Decrypt',r.key,r.context)).toBe('allowed');
+ expect(decision(p,'kms:Decrypt',l.key,l.context)).toBe('allowed');
+ for(const alias of ['alias/aws/lambda','alias/customer'])expect(decision(p,'kms:Decrypt',r.key,{...r.context,'kms:ResourceAliases':[alias]},true)).toBe('explicitDeny');
+ expect(decision(p,'kms:Decrypt',l.key,{...l.context,'kms:ResourceAliases':['alias/aws/dynamodb']},true)).toBe('explicitDeny');
+ for(const action of ['kms:Encrypt','kms:GenerateDataKey','kms:CreateGrant','kms:DescribeKey'])expect(decision(p,action,r.key,r.context,true)).toBe('explicitDeny');
+ expect(JSON.stringify(p).length).toBeLessThan(6144);
+});
+test.each(['foreign-table','missing-table','foreign-subscriber','missing-subscriber','foreign-service','direct-kms','foreign-account','missing-account','foreign-region','no-alias'])('DynamoDB decrypt explicitly denies %s even with a session resource-policy grant',which=>{
+ const s=scope(),d=dynamoDbEncryptionAccess(s),r=tableRequest();
+ if(which==='foreign-table')r.context[d.tableContext]='gapp-other-events';
+ if(which==='missing-table')delete r.context[d.tableContext];
+ if(which==='foreign-subscriber')r.context[d.subscriberContext]='111111111111';
+ if(which==='missing-subscriber')delete r.context[d.subscriberContext];
+ if(which==='foreign-service')r.context['kms:ViaService']='s3.us-west-1.amazonaws.com';
+ if(which==='direct-kms')delete r.context['kms:ViaService'];
+ if(which==='foreign-account')r.context['kms:CallerAccount']='111111111111';
+ if(which==='missing-account')delete r.context['kms:CallerAccount'];
+ if(which==='foreign-region')r.key=r.key.replace('us-west-1','us-east-1');
+ if(which==='no-alias')delete r.context['kms:ResourceAliases'];
+ expect(decision(runtimeBoundary(s),'kms:Decrypt',r.key,r.context,true)).toBe('explicitDeny');
+});
+test('preflight distinguishes AWS-owned, AWS-managed and unsupported customer DynamoDB keys without rewriting encryption',()=>{
+ const s=scope(),doc={Resources:{Owned:{Type:'AWS::DynamoDB::Table',Properties:{TableName:s.namespace+'owned'}},Managed:{Type:'AWS::DynamoDB::Table',Properties:{TableName:s.namespace+'managed',SSESpecification:{SSEEnabled:true}}},Custom:{Type:'AWS::DynamoDB::Table',Properties:{TableName:s.namespace+'custom',SSESpecification:{SSEEnabled:true,KMSMasterKeyId:'customer'}}}}};
+ const original=JSON.stringify(doc),contract=dynamoDbEncryptionContract(s,doc);
+ expect(contract.tables.map(t=>t.mode)).toEqual(['aws-owned-default','aws-managed-default','unsupported-customer-key']);
+ expect(contract.awsExecutionVerified).toBe(false);expect(JSON.stringify(doc)).toBe(original);
 });
 test('existing data isolation remains enforced and author environment settings are not rewritten',()=>{
  const s=scope(),p=runtimeBoundary(s),own=`arn:aws:dynamodb:${s.region}:${s.account}:table/${s.namespace}events`;

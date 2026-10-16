@@ -1148,7 +1148,7 @@ test('MCP cancellation and preservation: discover, discard unwanted recovery, re
   client=await connect(f.mcp,agent);
   const call=async(name,args={})=>parse(await client.callTool({name,arguments:{schemaVersion:1,graphId:'g1',...args}}));
   const discovery=(await call('server.discover',{topic:'lifecycle'})).result;
-  expect(discovery.server.version).toBe('2.8.3');expect(discovery.contracts.lifecycle.version).toBe('1.6.0');
+  expect(discovery.server.version).toBe('2.8.4');expect(discovery.contracts.lifecycle.version).toBe('1.6.0');
   expect(discovery.contracts.lifecycle.templateContract.version).toBe('author-template-v1');
   expect(discovery.contracts.lifecycle.deploymentReview.consequencesSchema.properties.resources).toBeTruthy();
   const contracts=discovery.contracts.lifecycle;

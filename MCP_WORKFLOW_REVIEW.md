@@ -1,11 +1,14 @@
 # Current review: scoped Lambda environment decryption
 
-October 16, 2026. Server **2.8.2** is released; follow-up **2.8.3** is prepared,
-with lifecycle contract **1.6.0** and progress contract **1.2.0**. Damp Robin's
-separately approved boundary migration completed. Plump Fox's approved attempt
-stopped on AWS throttling before changing its v1 boundary. Runtime verification
-is pending the follow-up release and a fresh Plump Fox recovery review. This
-section supersedes earlier release instructions below.
+October 16, 2026. Server **2.8.3** and paired editor **3c299c8** are released.
+Follow-up **2.8.4** adds the DynamoDB table-key path found during real runtime
+verification. Lifecycle contract is **1.6.0**, progress contract **1.2.0**.
+Damp Robin's approved v2 boundary migration completed and Lambda initialization
+was verified. Persistent writes exposed a second, separately scoped DynamoDB
+KMS requirement. Plump Fox's throttled migration changed nothing; its unapproved
+replacement was cancelled pending the combined correction. Both graphs need
+new separately approved boundary reviews after 2.8.4. This section supersedes
+older release instructions below.
 
 ## Evidence and cause
 
@@ -87,17 +90,38 @@ retries and action/resource attribution. IAM inventories are serialized. Mutatio
 are not replayed, permission denials are not retried, and absence retains its
 service-specific meaning. The failed approval is not reused.
 
+## Runtime evidence: DynamoDB follow-up
+
+Damp Robin readiness run `01M530TAPZGSFD3XY9QVCJZ9NN`, execution
+`01M530TBHKG4W7E5BQF0V636GK`, reached EventWriter request
+`953978b3-136b-4422-839c-216fb9ceeda6`. MCP logs show START/END/REPORT and a
+360.90 ms cold initialization. The handler then failed at PutItem on a different
+KMS key: `3a91d9c5-22c6-486c-a856-903dd7a15643`. Both tables' DescribeTable
+metadata confirms that AWS-managed `alias/aws/dynamodb` key. Its actual key policy
+requires DynamoDB ViaService and caller account; its existing table grants bind
+`aws:dynamodb:tableName` and `aws:dynamodb:subscriberId` to each table/account.
+No table data, encryption setting, grant or application code was changed.
+
+The 2.8.4 boundary allows Decrypt through DynamoDB in the assigned region only,
+with that reserved alias, caller/subscriber account and this stack's table-name
+context. Each service's explicit negative conditions apply to its own alias;
+common denies reject all other keys and accounts. Missing context and direct KMS
+calls remain denied. No encryption, key administration, GenerateDataKey, grants,
+customer keys or other-graph access is added. Preflight/inspection expose the
+separate `dynamoDbEncryption` contract. See
+[AWS DynamoDB encryption context and authorization](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/encryption.usagenotes.html).
+
 ## Verification before release
 
-- Full server suite: **887 passed**, 1 opt-in Bedrock test skipped, 57 suites.
-  TypeScript passed. Jest's existing open handles required process cleanup after
-  the completed run; no test failed.
+- Full server suite: **903 passed**, 1 opt-in Bedrock test skipped, 58 suites.
+  Server TypeScript and the editor's zero-error ratchet passed. Seven editor lifecycle
+  tests passed. Jest used --forceExit for existing open handles after completion.
 - Regression tests cover each independent deny, allowed default-key context,
   foreign/missing aliases/context/account, unrelated resources and KMS actions,
   strict in-place updates, full/unreadable version inventories, stale approvals,
   foreign consumers, workflow visibility timing, redaction and bus/MCP parity.
-- AWS SimulateCustomPolicy: own default-key context allowed; customer alias,
-  foreign function, absent context, foreign account and absent alias explicitly
+- AWS SimulateCustomPolicy (14 cases): own Lambda and DynamoDB contexts allowed; customer alias,
+  foreign function/table, absent context, direct DynamoDB KMS calls, foreign subscriber/account and absent alias explicitly
   denied. This is simulation with supplied context, **not Lambda execution**.
 - Packaged native layer loads in Linux x86_64 Node 22 (ABI 127); all 70 shared
   runtime functions have the layer. Paired editor production build passed.

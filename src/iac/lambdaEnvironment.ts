@@ -15,9 +15,7 @@ export function lambdaEnvironmentStatements(s:StackScope):any[] {
    'ForAnyValue:StringEquals':{'kms:ResourceAliases':a.alias},StringEquals:{'kms:CallerAccount':a.account},ArnLike:{[a.contextKey]:a.functionArn}}},
   // Explicit negatives also constrain direct grants to a role session from a
   // key/resource policy. Omitting a condition must never bypass the boundary.
-  {Sid:'DenyDecryptWithOtherKeys',Effect:'Deny',Action:'kms:Decrypt',Resource:a.keyResource,Condition:{'ForAllValues:StringNotEquals':{'kms:ResourceAliases':a.alias}}},
-  {Sid:'DenyDecryptForOtherLambdaNamespaces',Effect:'Deny',Action:'kms:Decrypt',Resource:a.keyResource,Condition:{ArnNotLike:{[a.contextKey]:a.functionArn}}},
-  {Sid:'DenyDecryptForOtherAccounts',Effect:'Deny',Action:'kms:Decrypt',Resource:a.keyResource,Condition:{StringNotEquals:{'kms:CallerAccount':a.account}}},
+  {Sid:'DenyDecryptForOtherLambdaNamespaces',Effect:'Deny',Action:'kms:Decrypt',Resource:a.keyResource,Condition:{'ForAnyValue:StringEquals':{'kms:ResourceAliases':a.alias},ArnNotLike:{[a.contextKey]:a.functionArn}}},
  ];
 }
 export function lambdaEnvironmentContract(s:StackScope,doc:any) {
@@ -30,6 +28,6 @@ export function lambdaEnvironmentContract(s:StackScope,doc:any) {
  return {version:LAMBDA_ENVIRONMENT_VERSION,functions,access:{action:'kms:Decrypt',...access},
   evidence:'template-and-platform-definition',awsExecutionVerified:false,
   existingStacks:'Run iac.inspect. A platform release does not update installed boundaries; a differing boundary needs a separately human-approved, in-place guardrail recovery plan.',
-  limitations:'The boundary permits only default Lambda environment decryption with the assigned function encryption context. It grants no KMS administration, encryption, grants, or access to customer keys or another namespace. Key policies, service behavior and other AWS policies still apply. CREATE_COMPLETE is not runtime readiness; run the declared authenticated readiness check.',
+  limitations:'This capability permits only default Lambda environment decryption with the assigned function encryption context. DynamoDB table-key decryption has a separate service/table context contract. No KMS administration, encryption, grants, or access to customer keys or another namespace is added. Key policies, service behavior and other AWS policies still apply. CREATE_COMPLETE is not runtime readiness; run the declared authenticated readiness check.',
  };
 }

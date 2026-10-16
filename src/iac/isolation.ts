@@ -1,7 +1,8 @@
 import {createHash} from 'crypto';
 import {parseTemplate} from './validator';
 import {IacPolicy} from './types';
-import {lambdaEnvironmentAccess,lambdaEnvironmentStatements} from './lambdaEnvironment';
+import {lambdaEnvironmentAccess} from './lambdaEnvironment';
+import {runtimeEncryptionStatements} from './runtimeEncryption';
 
 export const ISOLATION_VERSION='stack-namespace-v1';
 export const ISOLATED_TYPES=[
@@ -39,7 +40,7 @@ export const roleNameProbeArn=(s:StackScope)=>`arn:aws:iam::${s.account}:role/${
 const statements=(s:StackScope,actions:Record<string,string[]>)=>Object.entries(actions).map(([service,Action])=>({Effect:'Allow',Action,Resource:resourceArns(s)[service]}));
 export function runtimeBoundary(s:StackScope){
  const own=Object.entries(resourceArns(s)).filter(([k])=>k!=='iam'&&k!=='lambda').flatMap(([,v])=>v);
- return {Version:'2012-10-17',Statement:[...statements(s,DATA_ACTIONS),...lambdaEnvironmentStatements(s),
+ return {Version:'2012-10-17',Statement:[...statements(s,DATA_ACTIONS),...runtimeEncryptionStatements(s),
   {Sid:'DenyUnsupportedRuntimeActions',Effect:'Deny',NotAction:[...Object.values(DATA_ACTIONS).flat(),'kms:Decrypt'],Resource:'*'},
   {Sid:'DenyOutsideRuntimeResources',Effect:'Deny',Action:'*',NotResource:[...own,lambdaEnvironmentAccess(s).keyResource]},
  ]};
