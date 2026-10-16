@@ -103,5 +103,19 @@ private Lambda/IAM configuration, editor graph routing and CI model validation.
 The opt-in `RUN_BEDROCK_LIVE=true` assistant test uses a synthetic in-memory graph
 and actual Bedrock inference. On October 15, 2026, Opus 5.5 discovered operations
 and created a real rename proposal in `awaiting-review`; the graph stayed unchanged.
-That verifies model/tool interoperability, not a deployed worker's IAM role or a
-live browser session. No application stack or application data is used by this test.
+This verifies model/tool interoperability without using an application stack.
+
+The paired release (server `22376da`, editor `c6471eb`) was deployed to account
+`230639770018`, region `us-west-1`. An authenticated MCP conversation on the
+disposable platform graph invoked `@opus`; the deployed worker called
+`server.discover` and `graph.summary` and returned the correct graph name and
+two-node count through private chat. Thinking, tool activity and the completed
+reply were retrievable through `chat.read`. An independent graph read confirmed
+that its revision was unchanged. This verifies actual deployed worker IAM,
+Bedrock inference, the private tool bridge and durable chat delivery.
+
+The full server suite passed 836 tests (one opt-in live test skipped in that
+run and passed separately). Editor chat integration and two local Playwright
+tests passed; those browser checks use local fixtures, not a live signed-in
+browser session. Deployed discovery and unauthenticated rejection checks passed.
+Existing application stacks and stored application data were not modified.

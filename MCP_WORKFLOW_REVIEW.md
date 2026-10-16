@@ -1,9 +1,10 @@
 # Current review: Bedrock Opus and AI Permissions
 
-October 15, 2026. Source server **2.7.0**, assistant contract **1.0.0**,
-lifecycle contract **1.4.0**. Implementation and tests are complete; release
-verification is in progress. The deployed baseline is still `fcb0326` until the
-packaged release completes.
+October 15, 2026 (release checks completed October 16 UTC). Server **2.7.0**,
+assistant contract **1.0.0**, lifecycle contract **1.4.0**. Server `22376da` and
+editor `c6471eb` are pushed and deployed to account `230639770018`, region
+`us-west-1`. The platform stack completed its update; the paired editor is
+published at https://d2fqgid0yzbc85.cloudfront.net/graph-editor/.
 
 The [Opus contract](BEDROCK_AGENT.md) documents private `@opus` conversations,
 real MCP tool schemas, graph-scoped delegation, approval separation, strict
@@ -18,13 +19,27 @@ The shared server role gains only SendMessage to that queue. Existing applicatio
 roles, stacks, buckets and stored application data are outside this release.
 API Gateway deployment snapshots rotate as part of the existing release process.
 
-Evidence so far: 832 server tests passed, including interruption and private-IAM
-checks. After upgrading the production MCP client to 2.3.1, all 56 affected MCP
-and assistant tests passed again. Editor chat
-integration (8), browser chat/AI Permissions (2), and CI configuration (6) passed.
-Actual Opus 5.5 inference in account `230639770018` created an uncommitted rename
-proposal on a synthetic in-memory graph (37,508 input / 473 output tokens). This
-is model/tool integration evidence, not deployed worker IAM verification.
+The final full server suite passed **836 tests** across 53 suites, with one
+opt-in paid test skipped in that run and passed separately. After upgrading
+the production MCP client to 2.3.1, all 56 affected MCP and assistant tests also
+passed. Editor chat integration (8), local browser chat/AI Permissions (2),
+TypeScript checks, production build and CI configuration (6) passed.
+Actual Opus 5.5 inference created an uncommitted rename proposal on a synthetic
+in-memory graph (37,508 input / 473 output tokens), leaving the graph unchanged.
+
+Live deployment verification used MCP on disposable graph
+`e76298c1-3d45-47ed-be95-19e1104ebab2`. An authenticated `@opus` message produced
+durable private thinking/tool/done messages. The deployed worker used
+`server.discover` and `graph.summary`, then correctly reported
+“Disposable platform recovery acceptance” and two nodes. Independent MCP
+inspection confirmed revision `rev_01M4GND8AQC9N2CDBJ12Z7ATMF` was unchanged.
+This verifies deployed worker IAM, Bedrock inference, the private bridge and
+durable chat delivery. It does not claim a live signed-in browser test or an
+application deployment. The standard deployed discovery, provider-selection
+and unauthenticated HTTP/WSS/MCP rejection smoke checks passed.
+Both deployed assistant Lambda code hashes match the reviewed package and both
+functions are active. The editor's public release manifest and index match the
+paired artifacts; CloudFront invalidation completed.
 
 The production dependency audit now reports **zero vulnerabilities**. A writable
 cache resolved the audit failures; the MCP client was upgraded for its published
@@ -33,7 +48,10 @@ CloudFormation validation passes for the 499-resource parent and 9-resource
 assistant child. Both authentication-provider bundle checks pass. The child
 template is digest-bound and uploaded by the normal deployment hook; packaging
 regressions reject dangling references and modified artifacts.
-No application or data resource has been changed.
+No application or data resource has been changed. For subsequent CI releases,
+set environment variable `BEDROCK_AGENT_ENABLED=true` and pin `EDITOR_REF` to
+`c6471eba2d505ed823d01da58d3bd3b7dc22c367` or a reviewed successor. Opus is enabled
+in the deployed release; GitHub environment settings were not changed here.
 
 ---
 
@@ -73,9 +91,9 @@ and deployment request bodies, Safe/Full separation, Manual switching and reload
 reset. Final menu appearance was inspected. These are local/mocked checks, not AWS
 deployment evidence. No application templates, resources or data were changed.
 
-Release requires the normal paired server/editor release with a pinned editor
-revision; there are no new IAM grants or platform bootstrap requirements. Modes
-remain Manual until a person explicitly enables one in the editor.
+This feature is included in the deployed paired release above. AI Permissions
+itself adds no IAM grants. Modes remain Manual until a person explicitly enables
+one in the editor.
 
 ---
 
