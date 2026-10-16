@@ -328,11 +328,14 @@ export class IacLifecycleService {
   await this.emit(op,'runtime.readiness',run,'IN_PROGRESS');
   try {
    const answer=await invoke(g,p,{nodeUrl:declaration.nodeUrl,field:declaration.field,value:declaration.value,budget:{wallMs:15000,hops:100,fanOut:100,depth:16}}),summary=answer.summary;
-   Object.assign(run,{state:summary?.state==='completed'&&summary.errors===0&&summary.effects?.denied===0?'verified':'failed',executionId:summary?.executionId,revisionId:summary?.revisionId,errors:summary?.errors,reason:answer.error||summary?.reason,finishedAt:this.now()});
+   Object.assign(run,{state:summary?.state==='completed'&&summary.errors===0&&summary.effects?.denied===0?'verified':'failed',executionId:summary?.executionId,revisionId:summary?.revisionId,errors:summary?.errors,reason:answer.error||summary?.reason,runtime:summary?.runtime,finishedAt:this.now()});
   }catch(e){Object.assign(run,{state:'failed',error:diagnosticError(e,op),finishedAt:this.now()});}
   const stored=await this.read(key);await this.cas(key,run,stored.etag);
   for(let i=0;i<8;i++){
-   const latest=await this.read(operationKey(op.operationId)),checks={...latest.value.runtimeReadiness?.checks,[options.checkId]:run};
+   const latest=await this.read(operationKey(op.operationId)),prior=latest.value.runtimeReadiness?.checks?.[options.checkId];
+   // A slow historical failure must not replace a more recent readiness check.
+   if(prior&&(prior.startedAt>run.startedAt||prior.startedAt===run.startedAt&&prior.runId>run.runId))break;
+   const checks={...latest.value.runtimeReadiness?.checks,[options.checkId]:run};
    const status=op.input.readiness.every(c=>checks[c.id]?.state==='verified')?'verified':Object.values<any>(checks).some(c=>c.state==='failed')?'failed':'pending';
    if(await this.cas(operationKey(op.operationId),{...latest.value,runtimeReadiness:{state:status,checks,updatedAt:this.now(),evidence:'Declared graph checks only; not live multiplayer verification.'}},latest.etag))break;
   }

@@ -1,4 +1,5 @@
 import {ObservationJournal} from './journal';
+import {executionRuntime,RuntimeEvidence} from './provenance';
 import {assertCredentialFree,redactCredentials} from '../security/credentials';
 import Scheduler from "@plastic-io/plastic-io";
 import { ulid } from "ulid";
@@ -82,6 +83,7 @@ export interface RunRequest {
 }
 
 export interface ExecutionSummary {
+    runtime?: RuntimeEvidence;
     executionId: string;
     revisionId: string;
     graphId: string;
@@ -130,6 +132,7 @@ export class ExecutionRunner {
 
     async run(req: RunRequest): Promise<ExecutionSummary> {
         assertCredentialFree(req.value);
+        const runtime=executionRuntime();
         const executionId = req.executionId || ulid();
         const revisionId = req.revisionId || "live";
         const owner = req.principal ? {sub:req.principal.sub,kind:req.principal.kind,tenant:req.principal.tenant} : { sub: "anonymous", kind: "human", tenant: "none" };
@@ -179,7 +182,7 @@ export class ExecutionRunner {
             },
         });
         const graph = flattened.graph;
-        const recorder = new ObservationRecorder({ graphId: graph.id, revisionId, executionId, correlationId: req.correlationId, owner, defaultCapture: req.defaultCapture, maxObservations: req.maxObservations, live: this.deps.live });
+        const recorder = new ObservationRecorder({ graphId: graph.id, revisionId, executionId, correlationId: req.correlationId, owner, defaultCapture: req.defaultCapture, maxObservations: req.maxObservations, live: this.deps.live },runtime);
         recorder.learn(graph);
         flattened.warnings.forEach((warning: any) => {
             /**
@@ -514,7 +517,8 @@ export class ExecutionRunner {
         const key = ObservationRecorder.keyFor(graph.id, executionId, startedAt).replace(/\.ndjson$/, `${req.observationsSuffix || ""}.ndjson`);
         const summary = recorder.summary();
         const observations = { count: summary.count, key, sampled: summary.sampled, capped: summary.capped };
-        const record: ExecutionRecord = {
+        const record: ExecutionRecord & {runtime:RuntimeEvidence} = {
+            runtime,
             executionId, graphId: graph.id, revisionId, owner, domain: "server",
             entry: { nodeUrl: req.nodeUrl, field: req.field },
             startedAt: new Date(startedAt).toISOString(), endedAt: new Date(endedAt).toISOString(),
@@ -533,7 +537,7 @@ export class ExecutionRunner {
         const rows=recorder.ndjson().split('\n').filter(Boolean).map(line=>JSON.parse(line));
         const source=revisionId==='live'?null:await this.getJson(`proposals/by-revision/${graph.id}/${revisionId}.json`);
         await new ObservationJournal(this.store).append(graph.id,rows,{revisionId,proposalId:source?.proposalId,executionId,correlationId:req.correlationId||executionId,provenance:'server'});
-        return { executionId, revisionId, graphId: graph.id, state: result.state, reason: record.reason, duration: record.duration, hops: record.hops, errors: record.errors, observations, effects: summary.effects, budget: result.budget };
+        return { executionId, revisionId, graphId: graph.id, state: result.state, reason: record.reason, duration: record.duration, hops: record.hops, errors: record.errors, observations, effects: summary.effects, budget: result.budget,runtime };
     }
 }
 

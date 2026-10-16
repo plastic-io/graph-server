@@ -1,11 +1,17 @@
 service: ${env:SERVICE_NAME, 'plastic-io-graph-server'}
 plugins:
   - serverless-webpack
+  - ./build/contained-runtime.cjs
   - ./build/assistant-stack.cjs
 provider:
   name: aws
   # nodejs22.x: the MCP SDK v2 needs Node 20+ and isolated-vm (M3) needs 22+ (plan Q-5)
   runtime: nodejs22.x
+  architecture: x86_64
+  # All routes sharing the graph runtime inherit its native dependency. A
+  # function-specific layer list must retain it; packaging checks that invariant.
+  layers:
+    - !Ref IsolatedVmLambdaLayer
   versionFunctions: false
   stackName: ${self:service}
   stage: ${opt:stage, 'dev'}

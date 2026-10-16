@@ -1,4 +1,71 @@
-# Current review: graph-authored CloudFormation templates
+# Current review: consistent native containment across execution routes
+
+October 16, 2026. Server **2.8.1**. Implementation and release verification are
+in progress; the deployed baseline is the template release recorded below.
+
+Agreeable Dove's failed readiness run `01M51XS0PDJARWC0BB8FG5F8AD`, execution
+`01M51XS1M8QHYGQKQ3V2WAJR1B`, reached the editor's
+`POST /crdt/{id}/iac/{nodeId}/readiness` route. API Gateway maps it directly to
+`pio-auth-test-230639770018-test-iacReview`, handler `src/handler.iacReview`.
+The deployed function had **no layers**. MCP's `/mcp` route reaches
+`pio-auth-test-230639770018-test-mcpRoute`, which had the native layer
+`pio-auth-test-test-isolated-vm:1`. Both functions were on `$LATEST`, had no
+aliases and shared code SHA-256 `2INeiMSPm5Lk16sFj/Ylq8aAaBmt1P2ZGVl5rTnY2fU=`.
+This was a deterministic route configuration difference, not evidence of an
+intermittent native binary or differing code artifacts.
+
+The failed execution at `08:38:08.267Z` falls inside the iacReview invocation
+`cf6f93a2-3448-4be3-91e0-2067784b857f` (08:38:06.796–08:38:09.410 UTC), in
+log stream `2026/10/16/[$LATEST]1ffdc1fe61584a7d87a31e632a29904d`. This request
+association is time-correlated: historical graph observations did not include
+Lambda provenance. The later successful MCP execution falls within mcpRoute
+request `58b040fe-15df-4b8c-be72-cde5e22a362b`. The intentional application
+identifier-conflict test at 08:38:44 UTC is unrelated.
+
+## Platform correction
+
+- The Node 22 / x86_64 platform now inherits `IsolatedVmLambdaLayer` centrally.
+  Existing function-specific layer lists are checked during normal packaging;
+  every route sharing `src/handler` must have the native layer. The check runs
+  before the assistant bridge moves into its retained nested stack.
+- CI verifies the actual packaged root/nested templates and native layer ZIP,
+  then loads the binary in the Linux x86_64 Node 22 Lambda image. It checks ABI
+  127, creates an isolate and proves guest code cannot access require, process
+  or fetch. File layout checks alone are not treated as native execution proof.
+- Execution summaries, durable `exec.begin` observations and their existing bus
+  events include an allowlisted runtime record. Readiness also persists it in
+  `iac.status.runtimeReadiness.checks[checkId].runtime`: function/version, log
+  stream, initialized instance identity/time, graph-execution count, Node ABI,
+  platform/architecture and native module availability/path/version. No tokens,
+  identity claims or environment dump are included. A first graph execution is
+  explicitly distinct from a cold Lambda request.
+- A late result from an older readiness run remains in history without
+  replacing the latest-started run's current status. Containment stays enforced;
+  authentication, approval and application IAM are unchanged.
+
+The layer layout and compatibility requirements follow
+[AWS Node.js layer guidance](https://docs.aws.amazon.com/lambda/latest/dg/nodejs-layers.html)
+and the [Node 22 Lambda runtime](https://docs.aws.amazon.com/lambda/latest/dg/lambda-nodejs.html).
+The application code and CloudFormation template are outside this fix.
+
+## Verification and release status
+
+The 25 focused tests and the full **859-test, 56-suite** server run passed;
+one unrelated opt-in paid Bedrock test was skipped. TypeScript and the paired
+editor production build passed. Packaged root/assistant CloudFormation lint
+passed with warnings only. All 10 IAM definitions and platform data resources
+match the deployed baseline; only an obsolete API deployment snapshot rotates.
+
+The actual packaged layer ZIP passed in the official Lambda image: Node
+`v22.23.3`, ABI `127`, Linux `x64`, isolated-vm `6.2.0` loaded from
+`/opt/nodejs/node_modules/isolated-vm/isolated-vm.js`. Its isolate executed and
+could not access require, process or fetch. Both packaged templates together
+passed layer attachment verification for **70 shared-runtime functions**.
+Release and authenticated editor/MCP application checks are pending.
+
+---
+
+# Previous release: graph-authored CloudFormation templates
 
 October 16, 2026. Source server **2.8.0**, lifecycle contract **1.5.0**,
 assistant contract **1.1.0**, template contract **author-template-v1**.

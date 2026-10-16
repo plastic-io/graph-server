@@ -11,7 +11,12 @@ export {
 } from "@plastic-io/graph-crdt";
 import {ObservationRecorder as SharedRecorder} from '@plastic-io/graph-crdt';
 import {redactCredentials} from '../security/credentials';
+import type {RuntimeEvidence} from './provenance';
 export class ObservationRecorder extends SharedRecorder {
-    record(partial:Parameters<SharedRecorder['record']>[0]) {return super.record(redactCredentials(partial));}
+    constructor(options:ConstructorParameters<typeof SharedRecorder>[0],private readonly runtime?:RuntimeEvidence){super(options);}
+    record(partial:Parameters<SharedRecorder['record']>[0]) {
+        if(partial.kind==='exec.begin'&&this.runtime)partial={...partial,payload:{...partial.payload,runtime:this.runtime}};
+        return super.record(redactCredentials(partial));
+    }
 }
 export type { Observation, ObservationKind, ObservationDomain, ExecutionRecord, RecorderOptions } from "@plastic-io/graph-crdt";

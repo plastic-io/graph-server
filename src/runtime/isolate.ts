@@ -16,15 +16,23 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 let ivm: any = null;
 let loadError: Error | null = null;
+let modulePath: string | null = null;
+let moduleVersion: string | null = null;
 try {
     // Resolved at runtime from the Lambda layer; webpack must not bundle a .node binary.
     ivm = eval("require")("isolated-vm");
+    modulePath = eval("require").resolve("isolated-vm");
+    moduleVersion = eval("require")("isolated-vm/package.json").version;
 } catch (err: any) {
+    ivm = null;
     loadError = err;
 }
 
 export const isolationAvailable = () => !!ivm;
 export const isolationLoadError = () => loadError;
+/** Deployment provenance only; never environment variables, identities or credentials. */
+export const isolationDiagnostics = () => ({available:!!ivm,modulePath,version:moduleVersion,
+    ...(loadError?{loadError:{code:(loadError as any).code||loadError.name,message:loadError.message.slice(0,1000)}}:{})});
 
 export interface IsolateLimits {
     /** Wall clock for one node invocation, in milliseconds. */

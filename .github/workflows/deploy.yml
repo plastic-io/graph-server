@@ -135,6 +135,7 @@ jobs:
           test -s .serverless/isolatedVm.zip
           unzip -p ".serverless/$SERVICE_NAME.zip" auth-provider.json | jq -e --arg provider "$AUTH_PROVIDER" '.provider == $provider'
           cfn-lint -r "$AWS_REGION" -t .serverless/cloudformation-template-update-stack.json .serverless/assistant-template.json --non-zero-exit-code error
+          node scripts/ci/check-contained-runtime.cjs .serverless
           # Serverless removes .serverless after deploy --package, even when it
           # is the input directory. Retain the exact package outside that path.
           cp -R .serverless "$RUNNER_TEMP/server-package"

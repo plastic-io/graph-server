@@ -114,11 +114,25 @@ test('runtime log inspection authority is enforced for status pages as well as o
 test('declared readiness uses graph invocation, preserves idempotency, and never equates successful deployment with runtime readiness',async()=>{
  const f=await setup();f.graph.nodes[0].properties.iac.readiness=[{id:'health',nodeUrl:'health',value:{action:'health'}}];
  const input=prepareReview(f.graph,'stack',policy),op={...f.op,input,inputDigest:input.inputDigest};await save(f.store,operationKey(op.operationId),op);
- const invoke=jest.fn(async()=>({summary:{state:'completed',errors:0,effects:{denied:0},executionId:'runtime-check',revisionId:'rev_actual'}}));
+ const runtime={schemaVersion:1,functionName:'editor-readiness',nodeAbi:'127',containment:{available:true}};
+ const invoke=jest.fn(async()=>({summary:{state:'completed',errors:0,effects:{denied:0},executionId:'runtime-check',revisionId:'rev_actual',runtime}}));
  const service=new IacLifecycleService(f.store,{invoke,input:async()=>prepareReview(f.graph,'stack',policy),policy:()=>policy});
  const one=await service.readiness('g','stack',human,{checkId:'health',idempotencyKey:'one'}),duplicate=await service.readiness('g','stack',human,{checkId:'health',idempotencyKey:'one'});
- expect(one).toEqual(duplicate);expect(one.state).toBe('verified');expect(invoke).toHaveBeenCalledTimes(1);
+ expect(one).toEqual(duplicate);expect(one.state).toBe('verified');expect(one.runtime).toEqual(runtime);expect(invoke).toHaveBeenCalledTimes(1);
  expect((await read(f.store,operationKey(op.operationId))).runtimeReadiness.state).toBe('verified');
  invoke.mockResolvedValue({summary:{state:'failed',errors:1,effects:{denied:0},executionId:'failed-check'}});const failure=await service.readiness('g','stack',human,{checkId:'health',idempotencyKey:'two'});expect(failure.state).toBe('failed');expect((await read(f.store,operationKey(op.operationId))).state).toBe('succeeded');
  await expect(service.readiness('g','stack',human,{checkId:'unknown',idempotencyKey:'three'})).rejects.toMatchObject({code:'READINESS_UNDECLARED'});
+});
+test('a late historical failure stays in history without replacing a newer verified readiness run',async()=>{
+ const f=await setup();f.graph.nodes[0].properties.iac.readiness=[{id:'health',nodeUrl:'health'}];
+ const input=prepareReview(f.graph,'stack',policy),op={...f.op,input,inputDigest:input.inputDigest};await save(f.store,operationKey(op.operationId),op);
+ let release,started,clock=1000;const entering=new Promise(resolve=>started=resolve);
+ const invoke=jest.fn().mockImplementationOnce(()=>{started();return new Promise(resolve=>release=resolve);}).mockResolvedValue({summary:{state:'completed',errors:0,effects:{denied:0},executionId:'new-execution'}});
+ const service=new IacLifecycleService(f.store,{invoke,input:async()=>input,policy:()=>policy,now:()=>clock,notify:async(g,e)=>f.sent.push(e)});
+ const old=service.readiness('g','stack',human,{checkId:'health',idempotencyKey:'old'});await entering;clock=2000;
+ const recent=await service.readiness('g','stack',human,{checkId:'health',idempotencyKey:'recent'});clock=3000;
+ release({summary:{state:'completed',errors:1,effects:{denied:0},executionId:'old-execution'}});const failed=await old;
+ const stored=await read(f.store,operationKey(op.operationId));expect(stored.runtimeReadiness.checks.health.runId).toBe(recent.runId);expect(stored.runtimeReadiness.state).toBe('verified');
+ expect((await service.readiness('g','stack',human,{checkId:'health',idempotencyKey:'old'})).state).toBe('failed');
+ expect(f.sent.some(e=>e.lifecycle?.runId===failed.runId&&e.lifecycle?.state==='failed')).toBe(true);
 });
