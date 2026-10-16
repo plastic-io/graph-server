@@ -1,14 +1,29 @@
 # Current review: scoped Lambda environment decryption
 
-October 16, 2026. Server **2.8.3** and paired editor **3c299c8** are released.
-Follow-up **2.8.4** adds the DynamoDB table-key path found during real runtime
-verification. Lifecycle contract is **1.6.0**, progress contract **1.2.0**.
-Damp Robin's approved v2 boundary migration completed and Lambda initialization
-was verified. Persistent writes exposed a second, separately scoped DynamoDB
-KMS requirement. Plump Fox's throttled migration changed nothing; its unapproved
-replacement was cancelled pending the combined correction. Both graphs need
-new separately approved boundary reviews after 2.8.4. This section supersedes
-older release instructions below.
+October 16, 2026. Server **2.8.4** (`64ff8a5`) and paired editor **3c299c8**
+are pushed and released to account **230639770018**, **us-west-1**. CloudFormation
+is UPDATE_COMPLETE. Seven relevant deployed handlers match the reviewed artifact;
+the CDN editor and release manifest match both commits. Lifecycle contract is
+**1.6.0**, progress contract **1.2.0**. Native containment remains enabled.
+
+Runtime verification is **not complete**. Damp Robin's earlier v2 boundary
+migration proves Lambda initialization; its storage check exposed the separate
+DynamoDB table-key requirement now corrected in 2.8.4. The final, non-destructive
+boundary migrations below await new exact-digest human approval in the graph.
+They preserve stack/table identities, data and application code/templates.
+
+| Graph | Current recovery operation | Digest | State |
+| --- | --- | --- | --- |
+| Damp Robin | `01M531DY387TBVA3KXVZ9GFCZ8` | `2b4fec690f4bc4b67b53cad8b922e755077921c3756d28d471ed77c3c80e2472` | recovery-ready |
+| Plump Fox | `01M531KSC426NSNTS8TW1MH2YN` | `6cda3aac02fb79a7d718f385ed1336746ab00c142126ac1e6031bd429607eab1` | recovery-ready |
+
+Approvals expire after 15 minutes. If expired, prepare a fresh strict recovery
+from the current operation; never reuse stale approval. Plump Fox's earlier
+throttled attempt changed nothing. Its `b8e826...` unapproved replacement was
+cancelled; two subsequent read-only assessments recorded transient AWS IAM
+throttling on ListRolePolicies/GetPolicy. A quiet-period assessment passed without
+changing permissions or bypassing MCP. Historical assessments are superseded.
+This section supersedes older release instructions below.
 
 ## Evidence and cause
 
@@ -111,8 +126,9 @@ customer keys or other-graph access is added. Preflight/inspection expose the
 separate `dynamoDbEncryption` contract. See
 [AWS DynamoDB encryption context and authorization](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/encryption.usagenotes.html).
 
-## Verification before release
+## Verification evidence
 
+- Deployment smoke checks passed: discovery, provider selection and unauthenticated rejection.
 - Full server suite: **903 passed**, 1 opt-in Bedrock test skipped, 58 suites.
   Server TypeScript and the editor's zero-error ratchet passed. Seven editor lifecycle
   tests passed. Jest used --forceExit for existing open handles after completion.
