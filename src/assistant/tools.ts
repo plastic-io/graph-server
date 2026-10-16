@@ -24,7 +24,7 @@ export async function withGraphTools<T>(deps: McpDeps, principal: Principal, gra
             const args = {...input, schemaVersion: 1, graphId};
             if ((tool.inputSchema.properties as any)?.agentSessionId) args.agentSessionId = sessionId;
             if (['iac.review', 'iac.recovery.plan', 'iac.inspect'].includes(name)) {
-                if (input.action === 'destroy' || input.allowDataLoss === true || (input.preservation && input.preservation !== 'strict')) throw new Error('Destructive infrastructure actions are prohibited');
+                if (input.action === 'destroy' || input.allowDataLoss === true || (input.preservation && input.preservation !== 'strict')) throw new Error('Direct stack deletion or destructive recovery is prohibited; template consequences may be prepared for human review');
                 args.preservation = 'strict';
             }
             const result = await client.callTool({name, arguments: args});

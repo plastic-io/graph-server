@@ -17,7 +17,7 @@ export const iacConfiguration=z.object({
  parameters:z.record(z.string(),z.string()).optional(),capabilities:z.array(z.enum(['CAPABILITY_IAM','CAPABILITY_NAMED_IAM'])).optional(),
  outputs:json.optional(),templateParameters:json.optional(),
  readiness:z.array(z.object({id,nodeUrl:z.string().min(1).max(200),field:z.string().optional(),value:z.any().optional(),description:z.string().max(1000).optional()}).strict()).max(8).optional(),
- resource:z.object({logicalId:z.string().regex(/^[A-Za-z0-9]{1,255}$/).optional(),type:z.string(),properties:json,dependsOn:z.array(z.string()).optional(),deletionPolicy:z.enum(['Delete','Retain','RetainExceptOnCreate','Snapshot']).optional(),updateReplacePolicy:z.enum(['Delete','Retain','Snapshot']).optional(),condition:z.string().optional(),metadata:json.optional()}).strict().optional(),
+ resource:z.object({logicalId:z.string().regex(/^[A-Za-z0-9]{1,255}$/).optional(),type:z.string(),properties:json.optional(),dependsOn:z.array(z.string()).optional(),deletionPolicy:z.enum(['Delete','Retain','RetainExceptOnCreate','Snapshot']).optional(),updateReplacePolicy:z.enum(['Delete','Retain','Snapshot']).optional(),condition:z.string().optional(),metadata:json.optional()}).strict().optional(),
 }).strict();
 const shapes:any={
  'add-node':{node:z.object({id,url:z.string().min(1).max(256),name:z.string().optional(),inputs:z.array(port).optional(),outputs:z.array(port).optional(),placement:z.enum(['browser','server','portable']).optional(),template:z.object({set:z.string().optional(),vue:z.string().optional()}).strict().optional(),layout:position.optional()}).strict()},

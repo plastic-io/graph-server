@@ -88,14 +88,14 @@ test('adding readiness to an unchanged application template still needs fresh ex
  const f=await fixture(),recovered=await f.recover();
  let op=await f.reviews.begin('g','stack',human,false,'apply',recovered.operationId);
  await f.reviews.step(op.operationId);await f.reviews.step(op.operationId);op=await f.reviews.current('g','stack',human,undefined,false);
- await f.reviews.approve('g','stack',human,{operationId:op.operationId,reviewDigest:op.reviewDigest});await f.reviews.step(op.operationId);await f.reviews.step(op.operationId);
+ await f.reviews.approve('g','stack',human,{operationId:op.operationId,reviewDigest:op.reviewDigest,confirmDestructive:true});await f.reviews.step(op.operationId);await f.reviews.step(op.operationId);
  f.graph.nodes[0].properties.iac.readiness=[{id:'health',nodeUrl:'health',value:{action:'health'}}];
  f.deployCloud.describe.mockResolvedValue({status:'FAILED',reason:"The submitted information didn't contain changes."});
  const fresh=await f.reviews.begin('g','stack',human);await f.reviews.step(fresh.operationId);await f.reviews.step(fresh.operationId);
  const review=await f.reviews.current('g','stack',human,undefined,false);expect(review.state).toBe('awaiting-review');expect(review.plan.metadataOnly).toBe(true);
  expect((await read(f.store,'iac/deployed/g/stack.json')).operationId).toBe(op.operationId);
  await expect(f.reviews.approve('g','stack',human,{operationId:review.operationId,reviewDigest:op.reviewDigest})).rejects.toMatchObject({code:'STALE_REVIEW'});
- await f.reviews.approve('g','stack',human,{operationId:review.operationId,reviewDigest:review.reviewDigest});await f.reviews.step(review.operationId);await f.reviews.step(review.operationId);
+ await f.reviews.approve('g','stack',human,{operationId:review.operationId,reviewDigest:review.reviewDigest,confirmDestructive:true});await f.reviews.step(review.operationId);await f.reviews.step(review.operationId);
  expect((await read(f.store,'iac/deployed/g/stack.json')).operationId).toBe(review.operationId);expect(f.deployCloud.execute).toHaveBeenCalledTimes(1);
 });
 test('unavailable logs and permission failures preserve a structured diagnostic and never escalate permissions',async()=>{

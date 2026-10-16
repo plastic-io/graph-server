@@ -123,7 +123,6 @@ export function validateIsolation(text:string,format:'yaml'|'json',s:StackScope)
   if(p.KMSMasterKeyId||p.KmsKeyId||p.KMSKeyId||p.SSESpecification?.KMSMasterKeyId||p.RedrivePolicy||p.RedriveAllowPolicy||p.Subscription||p.DataProtectionPolicy||p.ResourcePolicyDocument)issue(at+'.Properties','External encryption keys, queue destinations, subscriptions and data policies require additional scoped capabilities.');
   if(t==='AWS::DynamoDB::Table'&&(p.ImportSourceSpecification||p.Replicas||p.KinesisStreamSpecification||p.ResourcePolicy))issue(at+'.Properties','Imports, replicas, external streams and inline resource policies are not supported.');
   if(r.Condition)issue(at+'.Condition','Conditional resources are not supported.');
-  if(r.DeletionPolicy==='Snapshot'||r.UpdateReplacePolicy==='Snapshot')issue(at,'None of the supported resource types supports CloudFormation Snapshot retention; use Retain or an application-owned backup capability.');
   const name=names[t];if(name&&(typeof p[name]!=='string'||!(p[name].startsWith(s.namespace)||(t==='AWS::Logs::LogGroup'&&p[name].startsWith('/aws/lambda/'+s.namespace)))||/[*$?{}]/.test(p[name])))issue(at+'.Properties.'+name,'Use a literal name beginning with '+s.namespace+'.');
   if(p.Tags){
    const entries=Array.isArray(p.Tags)?p.Tags:null;
@@ -158,12 +157,12 @@ export function validateIsolation(text:string,format:'yaml'|'json',s:StackScope)
    policy(p.PolicyDocument,at+'.Properties.PolicyDocument',true);
   }
   if(t==='AWS::Lambda::Function'){
+   const logGroup=p.LoggingConfig?.LogGroup;
+   if(logGroup!==undefined&&!localRef(logGroup,'AWS::Logs::LogGroup')&&(typeof logGroup!=='string'||!(logGroup.startsWith(s.namespace)||logGroup.startsWith('/aws/lambda/'+s.namespace))||/[*$?{}]/.test(logGroup)))issue(at+'.Properties.LoggingConfig.LogGroup','Use a log group in this stack namespace or Ref to a log group declared in this template.');
    if(!localArn(p.Role,'AWS::IAM::Role'))issue(at+'.Properties.Role','Function role must be an application role declared here.');
    if(!p.Code?.ZipFile||Object.keys(p.Code).length!==1||!['nodejs22.x','python3.12','python3.13'].includes(p.Runtime))issue(at+'.Properties.Code','Use inline ZipFile code and a supported runtime; external code and images are not approved by this review.');
-   if(p.Layers||p.VpcConfig||p.FileSystemConfigs||p.KmsKeyArn||p.DeadLetterConfig||p.CodeSigningConfigArn||p.LoggingConfig||p.ReservedConcurrentExecutions!==undefined)issue(at+'.Properties','Layers, VPC, filesystems, external keys, destinations, signing, custom logging and reserved concurrency require additional scoped capabilities.');
-   if((p.Timeout||3)>30||(p.MemorySize||128)>512)issue(at+'.Properties','Functions are limited to 30 seconds and 512 MB.');
+   if(p.Layers||p.VpcConfig||p.FileSystemConfigs||p.KmsKeyArn||p.DeadLetterConfig||p.CodeSigningConfigArn)issue(at+'.Properties','Layers, VPC, filesystems, external keys, destinations and signing require additional scoped capabilities.');
   }
-  if(t.startsWith('AWS::Lambda::')&&p.ProvisionedConcurrencyConfig)issue(at+'.Properties.ProvisionedConcurrencyConfig','Provisioned concurrency is outside this deployment subset.');
   if(['AWS::Lambda::Alias','AWS::Lambda::Version','AWS::Lambda::Permission'].includes(t)&&!localRef(p.FunctionName,'AWS::Lambda::Function'))issue(at+'.Properties.FunctionName','Use Ref to a function declared in this template.');
   if(t==='AWS::Lambda::Permission'){
    if(p.Principal!=='apigateway.amazonaws.com'||p.Action!=='lambda:InvokeFunction'||p.SourceAccount!==s.account)issue(at+'.Properties','Lambda grants must bind API Gateway, this account and this stack API.');

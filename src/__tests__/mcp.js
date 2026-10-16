@@ -1052,7 +1052,7 @@ test('Chess acceptance: discover, preflight, propose, graph approval, isolated r
   const review=await call('iac.review',{agentSessionId:'builder',nodeId:'stack'});expect(review.error).toBeUndefined();
   await f.reviews.step(review.result.operationId);await f.reviews.step(review.result.operationId);
   const plan=await f.reviews.current('g1','stack',owner);expect(plan.state).toBe('awaiting-review');expect(state.exists).toBe(false);
-  await f.reviews.approve('g1','stack',owner,{operationId:plan.operationId,reviewDigest:plan.reviewDigest});
+  await f.reviews.approve('g1','stack',owner,{operationId:plan.operationId,reviewDigest:plan.reviewDigest,confirmDestructive:true});
   await f.reviews.step(plan.operationId);await f.reviews.step(plan.operationId);
   expect((await call('iac.status',{nodeId:'stack'})).result.state).toBe('succeeded');
   // Runtime through MCP, not a direct Lambda invocation. Local backend responses are simulated.
@@ -1119,7 +1119,7 @@ test('MCP lifecycle acceptance: recover an induced guardrail failure, get fresh 
   const pending=(await call('iac.status',{nodeId:'stack'})).result;
   expect(pending.state).toBe('awaiting-review');expect(fixture.deployCloud.execute).not.toHaveBeenCalled();
   expect((await fromUi('apply',{operationId:pending.operationId,reviewDigest:plan.recoveryPlan.digest})).statusCode).not.toBe(200);
-  expect((await fromUi('apply',{operationId:pending.operationId,reviewDigest:pending.reviewDigest})).statusCode).toBe(200);
+  expect((await fromUi('apply',{operationId:pending.operationId,reviewDigest:pending.reviewDigest,confirmDestructive:true})).statusCode).toBe(200);
   await f.reviews.step(pending.operationId);await f.reviews.step(pending.operationId);
   expect((await call('iac.status',{nodeId:'stack'})).result.state).toBe('succeeded');
   expect((await call('graph.invoke',{nodeUrl:'backend',field:'request',value:{action:'refresh'}})).result.errors).toBe(0);
@@ -1148,7 +1148,9 @@ test('MCP cancellation and preservation: discover, discard unwanted recovery, re
   client=await connect(f.mcp,agent);
   const call=async(name,args={})=>parse(await client.callTool({name,arguments:{schemaVersion:1,graphId:'g1',...args}}));
   const discovery=(await call('server.discover',{topic:'lifecycle'})).result;
-  expect(discovery.server.version).toBe('2.7.0');expect(discovery.contracts.lifecycle.version).toBe('1.4.0');
+  expect(discovery.server.version).toBe('2.8.0');expect(discovery.contracts.lifecycle.version).toBe('1.5.0');
+  expect(discovery.contracts.lifecycle.templateContract.version).toBe('author-template-v1');
+  expect(discovery.contracts.lifecycle.deploymentReview.consequencesSchema.properties.resources).toBeTruthy();
   const contracts=discovery.contracts.lifecycle;
   expect(Object.keys(contracts.automaticApproval.modes)).toEqual(['manual','safe-actions','fully-automatic']);
   expect(contracts.tools['iac.cancel'].inputSchema.required).toContain('operationId');

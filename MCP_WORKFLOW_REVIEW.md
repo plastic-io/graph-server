@@ -1,4 +1,96 @@
-# Current review: Bedrock Opus and AI Permissions
+# Current review: graph-authored CloudFormation templates
+
+October 16, 2026. Source server **2.8.0**, lifecycle contract **1.5.0**,
+assistant contract **1.1.0**, template contract **author-template-v1**.
+Implementation is local and **not released**. The deployed baseline remains
+server `22376da` / editor `c6471eb` from the release recorded below.
+
+The Agreeable Dove report (`50dcee50-1b0b-42b6-80a0-6b64881a5cb5`,
+`lens-event-storage`) exposed contradictory platform checks. Early strict
+validation ran without the deployed template, treating unchanged finite log
+retention as newly introduced data removal. Omitting retention then hit
+`COST_UNBOUNDED`. Both application-template vetoes have been removed.
+No live application was edited, deployed or diagnosed as part of this change.
+
+## Template and approval contract
+
+- Inline YAML/JSON bytes, including whitespace and omitted properties, go to
+  `CreateChangeSet` unchanged. An explicit inline template takes precedence over
+  connected resource fragments; assembly is selected only when it is absent.
+  Graph resource fragments preserve their authored
+  properties, `DeletionPolicy` and `UpdateReplacePolicy`; assembly does not add
+  even an empty `Properties` object when it was omitted.
+- Finite/omitted log retention, S3 lifecycle expiration, TTL, queue retention,
+  backup/index changes, billing/capacity, Lambda sizing and concurrency settings
+  are author choices. They no longer trigger cost or application-preservation
+  policy rejection. No execution-role permissions were expanded. Known Lambda
+  concurrency permission dependencies are reported separately in preflight;
+  passing static validation is not proof of effective AWS authorization.
+- `preservation: "strict"` is retained for compatibility, with explicit narrowed
+  semantics: it constrains separate stack deletion, destructive recovery fallback
+  and platform guardrail changes. It does not promise that authored application
+  settings preserve data or prevent resource removal/replacement. Application
+  execution no longer adds rollback flags overriding AWS defaults.
+- Review compares the proposed template with the actual current AWS template.
+  `plan.consequences` reports explicit versus omitted values, retention/lifecycle
+  changes, removals, replacements and their consequences, including ongoing
+  unchanged expiry settings. Consequential changes require human confirmation;
+  automatic modes defer them to manual review. The same report is available in
+  the CF node, deployment modal, MCP status and durable observation bus.
+- The input digest binds template bytes, parameters, capabilities, target and
+  contract version. The review digest additionally binds the graph revision and
+  reviewed consequences. Approval checks the current graph content/revision.
+  The worker revalidates immutable approved input, checks the change-set summary,
+  and compares AWS's original change-set template with the approved definition
+  before execution. Existing approvals from the old contract cannot execute under
+  the new semantics; cancel pending reviews and prepare fresh ones.
+- Recovery imports no longer inject `Retain` policies. They preserve each
+  authored resource definition. Where CloudFormation requires an explicit
+  `DeletionPolicy` for import, absence produces `IMPORT_DELETION_POLICY_REQUIRED`
+  rather than changing the template. Recovery still has a separate approval.
+
+Parsing, structural resource/policy validation, configured deployment capabilities,
+authentication, graph authority, account/namespace isolation, immutable IAM
+boundaries and restricted role passing remain enforced. The default resource
+count now follows CloudFormation's 500-resource structural limit, not a budget
+policy. AWS permission denials and change-set validation errors retain their
+service-specific details. The platform never empties a bucket to force deletion.
+
+AWS documents the defaults and effects for
+[DeletionPolicy](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-attribute-deletionpolicy.html),
+[UpdateReplacePolicy](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-attribute-updatereplacepolicy.html),
+and [log retention](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-logs-loggroup.html).
+An explicit policy remains subject to AWS validation; `UpdateReplacePolicy:
+Snapshot` on a resource without snapshot support can fall back to deletion.
+
+## Verification and release status
+
+Regression coverage uses disposable in-memory graphs and mocked AWS SDK calls.
+It verifies the exact submitted body and approved change-set identity, unchanged
+30-day WriterLogs settings, omitted retention/policies, S3 lifecycle settings,
+resource removals/replacements reaching human review, import policy fidelity,
+old-contract/stale approvals, tampered templates/change sets, authentication,
+cross-graph and namespace rejection, observation parity and AWS error attribution.
+The editor tests cover the current/reviewed settings and omitted-default labels.
+
+Validation: **852 server tests passed across 54 suites**; the unrelated opt-in
+paid Bedrock test was skipped. All **40 infrastructure editor integration tests**
+passed, both server/editor type checks passed (zero editor errors), and the final
+production editor build passed. A source-template comparison confirmed that all
+platform CloudFormation resource definitions and IAM configuration are unchanged.
+Whitespace/diff checks pass in both repositories.
+
+The deployment fidelity regression is in
+[`templateSubmission.js`](src/__tests__/templateSubmission.js); SDK calls are
+mocked and no AWS deployment or application logging test has been run for this
+change. Agreeable Dove's Lambda execution and S3 logging remain unverified.
+Release requires the normal reviewed, paired server/editor deployment; this
+change adds no IAM grants. Pending pre-release reviews need cancellation and
+fresh preparation under the new contract, followed by separate human approval.
+
+---
+
+# Previous release: Bedrock Opus and AI Permissions
 
 October 15, 2026 (release checks completed October 16 UTC). Server **2.7.0**,
 assistant contract **1.0.0**, lifecycle contract **1.4.0**. Server `22376da` and

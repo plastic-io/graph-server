@@ -78,7 +78,6 @@ describe('isolated stack boundaries',()=>{
   ['inline API stage bypass',t=>t.Resources.Deployment={Type:'AWS::ApiGateway::Deployment',Properties:{RestApiId:{Ref:'Api'},StageName:'prod',StageDescription:{AccessLogSetting:{DestinationArn:'arn:aws:logs:us-west-1:230639770018:log-group:shared'}}}}],
   ['shared API logging role',t=>t.Resources.Stage={Type:'AWS::ApiGateway::Stage',Properties:{RestApiId:{Ref:'Api'},DeploymentId:{Ref:'Deployment'},MethodSettings:[{LoggingLevel:'INFO'}]}}],
   ['external code artifact',t=>t.Resources.Backend.Properties.Code={S3Bucket:'foreign',S3Key:'code.zip'}],
-  ['unsupported snapshot retention',t=>t.Resources.Records.DeletionPolicy='Snapshot'],
   ['dynamic reference',t=>t.Resources.Backend.Properties.Environment={Variables:{SECRET:'{{resolve:secretsmanager:outside}}'}}],
  ])('%s is refused before review',(_name,mutate)=>{const t=template();mutate(t);expect(validate(t).length).toBeGreaterThan(0);});
  test('AWS policies allow own lifecycle, forbid guardrail edits and prevent boundary removal',()=>{

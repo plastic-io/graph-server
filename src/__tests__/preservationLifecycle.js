@@ -1,6 +1,6 @@
 const {fixture,environment,human,read,save}=require('../__testHelpers__/lifecycleCloud');
 const {operationKey,indexKey,lockKey}=require('../iac/lifecycleModel');
-const {preservationTemplateProblems,preservationChangeProblems,assertGuardrailPreservation}=require('../iac/preservation');
+const {assertGuardrailPreservation}=require('../iac/preservation');
 const {ObservationJournal}=require('../runtime/journal');
 const {DelegationStore}=require('../policy/delegation');
 let env;
@@ -113,7 +113,7 @@ test('cancellation requires proposal authority for this graph, exact node and op
 test.each(['deployment','recovery'])('%s approval and cancellation race: the winning CAS determines the only valid outcome',async type=>{
  for(const winner of ['cancel','approve']){
   const {f,op}=type==='deployment'?await deployment():(await(async()=>{const f=await fixture('preservation-fixture','stack');return {f,op:await f.plan()};})());
-  const approve=()=>type==='deployment'?f.reviews.approve(f.source.graphId,f.source.nodeId,human,{operationId:op.operationId,reviewDigest:op.reviewDigest}):f.approve(op);
+  const approve=()=>type==='deployment'?f.reviews.approve(f.source.graphId,f.source.nodeId,human,{operationId:op.operationId,reviewDigest:op.reviewDigest,confirmDestructive:true}):f.approve(op);
   const gate=pauseCas(f,winner==='cancel'?(type==='deployment'?'apply-requested':'recovery-requested'):'cancelled');
   const losing=(winner==='cancel'?approve():cancel(f,op)).then(value=>({value}),error=>({error}));
   await gate.paused;
@@ -141,15 +141,18 @@ test('strict recovery of ROLLBACK_FAILED returns a precise limitation with no de
  await expect(f.reviews.lifecycle.plan(f.source.graphId,f.source.nodeId,human,{operationId:op.operationId,idempotencyKey:'unsafe',allowDataLoss:true})).rejects.toMatchObject({code:'SCHEMA_INVALID'});
 });
 
-test.each(['Remove','Replace','Import','Modify-True','Modify-Conditional','Modify-unknown'])('strict change set rejects %s before approval and execution',async action=>{
+test.each(['Remove','Replace','Import','Modify-True','Modify-Conditional','Modify-unknown'])('authored %s reaches human review even with legacy strict preservation',async action=>{
  const f=await healthyFixture();retainedTemplate(f);
  const [kind,replacement]=action.split('-');f.deployCloud.describe.mockResolvedValue({status:'CREATE_COMPLETE',executionStatus:'AVAILABLE',changes:[{logicalId:'Records',resourceType:'AWS::DynamoDB::Table',action:kind,replacement:replacement==='unknown'?undefined:replacement}]});
  const started=await f.reviews.begin(f.source.graphId,f.source.nodeId,human,false,'apply',undefined,'strict');
  await f.reviews.step(started.operationId);await f.reviews.step(started.operationId);
  const current=await f.reviews.current(f.source.graphId,f.source.nodeId,human,undefined,false);
- expect(current).toMatchObject({state:'failed',originalError:{code:'PRESERVATION_BLOCKED'},preservationBlockers:[{code:'PRESERVATION_RESOURCE_CHANGE'}]});
- expect(current.reviewDigest).toBeUndefined();expect(f.deployCloud.execute).not.toHaveBeenCalled();
- expect(f.sent.some(e=>e.lifecycle?.preservationBlockers?.[0]?.code==='PRESERVATION_RESOURCE_CHANGE')).toBe(true);
+ expect(current.state).toBe('awaiting-review');expect(current.reviewDigest).toMatch(/^[a-f0-9]{64}$/);
+ expect(f.deployCloud.execute).not.toHaveBeenCalled();
+ await f.reviews.approve(f.source.graphId,f.source.nodeId,human,{operationId:current.operationId,reviewDigest:current.reviewDigest,confirmDestructive:true});
+ await f.reviews.step(current.operationId);expect(f.deployCloud.execute).toHaveBeenCalledTimes(1);
+ expect(f.sent.some(e=>e.lifecycle?.plan?.consequences)).toBe(true);
+
 });
 
 test('strict additive deployment requires a fresh exact approval and binds preservation into the digest',async()=>{
@@ -157,23 +160,13 @@ test('strict additive deployment requires a fresh exact approval and binds prese
  expect(op.preservation).toBe('strict');expect(f.deployCloud.execute).not.toHaveBeenCalled();
  const key=operationKey(op.operationId),row=await read(f.store,key);
  await save(f.store,key,{...row,preservation:undefined});
- await expect(f.reviews.approve(f.source.graphId,f.source.nodeId,human,{operationId:op.operationId,reviewDigest:op.reviewDigest})).rejects.toMatchObject({code:'STALE_REVIEW'});
+ await expect(f.reviews.approve(f.source.graphId,f.source.nodeId,human,{operationId:op.operationId,reviewDigest:op.reviewDigest,confirmDestructive:true})).rejects.toMatchObject({code:'STALE_REVIEW'});
  await save(f.store,key,row);
- await f.reviews.approve(f.source.graphId,f.source.nodeId,human,{operationId:op.operationId,reviewDigest:op.reviewDigest});
+ await f.reviews.approve(f.source.graphId,f.source.nodeId,human,{operationId:op.operationId,reviewDigest:op.reviewDigest,confirmDestructive:true});
  await f.reviews.step(op.operationId);await f.reviews.step(op.operationId);
  expect((await f.reviews.current(f.source.graphId,f.source.nodeId,human,undefined,false)).state).toBe('succeeded');
  expect(f.deployCloud.execute).toHaveBeenCalledTimes(1);
  await expect(f.reviews.begin(f.source.graphId,f.source.nodeId,human,false,'destroy')).rejects.toMatchObject({code:'PRESERVATION_BLOCKED'});
-});
-
-test.each([
- ['AWS::S3::Bucket',{LifecycleConfiguration:{Rules:[{Status:'Enabled',ExpirationInDays:1}]}}],
- ['AWS::DynamoDB::Table',{TimeToLiveSpecification:{Enabled:true,AttributeName:'expires'}}],
- ['AWS::Logs::LogGroup',{RetentionInDays:1}],
- ['AWS::SQS::Queue',{MessageRetentionPeriod:60}],
-])('strict retention refuses data removal in %s',async(Type,Properties)=>{
- const text=JSON.stringify({Resources:{Data:{Type,Properties,DeletionPolicy:'Retain',UpdateReplacePolicy:'Retain'}}});
- expect(preservationTemplateProblems({text,format:'json'})).toEqual(expect.arrayContaining([expect.objectContaining({code:'PRESERVATION_DATA_REMOVAL'})]));
 });
 
 test('privileged recovery refuses destructive actions even with a forged strict operation payload',async()=>{
@@ -190,5 +183,4 @@ test('strict guardrail reconciliation permits fixed in-place role policies but b
  for(const edit of [d=>delete d.Resources.WorkerRole,d=>d.Resources.WorkerRole.Properties.RoleName='other',d=>d.Resources.RuntimeBoundary.Properties.PolicyDocument.Statement=[]]){
   const after=JSON.parse(JSON.stringify(f.approved));edit(after);expect(()=>assertGuardrailPreservation(f.approved,after)).toThrow();
  }
- expect(preservationChangeProblems([{action:'Modify',replacement:'False',logicalId:'Safe'}])).toEqual([]);
 });

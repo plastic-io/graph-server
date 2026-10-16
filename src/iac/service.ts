@@ -210,16 +210,12 @@ export class IacService {
         const at = this.now().toISOString();
         const idempotencyKey = options.idempotencyKey || ulid();
 
-        /**
-         * What this stack is, in order: what the graph describes, and only
-         * then a template the node carries as text.  A graph that draws its
-         * infrastructure is the point (D-48); carrying a file is what a graph
-         * does when somebody brought one.
-         */
+        // An explicit template is authoritative. Connected resource fragments
+        // provide a template only when the author has not supplied one.
         const template = carried.template || {};
         const carriedText: string | undefined = typeof template.text === "string" ? template.text : undefined;
         const assembled = assemble(found.projection, nodeId, policy);
-        const fromGraph = assembled.fragments.length > 0 || !carriedText;
+        const fromGraph = typeof carriedText !== 'string';
         const text = fromGraph ? assembled.text : carriedText!;
         const format: "yaml" | "json" = fromGraph ? "json" : (template.format === "json" ? "json" : "yaml");
         if (fromGraph && !assembled.ok) {

@@ -12,7 +12,7 @@ export function automaticApproval(op:any, mode:AiPermissionMode='fully-automatic
   if(mode==='safe-actions'&&op.recoveryPlan.actions.some((a:any)=>a.kind!=='release-operation'))return deny('Safe Actions leaves recovery that changes AWS resources for manual review.');
  }else{
   if(op.action!=='apply'||op.state!=='awaiting-review'||!op.reviewDigest||!Array.isArray(op.plan?.changes))return deny('Deployment is not awaiting approval.');
-  if(op.plan.destructive!==false||op.plan.changes.some((c:any)=>!['Add','Modify'].includes(c.action)||c.replacement&&c.replacement!=='False'||c.resourceType==='AWS::CloudFormation::Stack'))return deny('Resource removal, replacement or an uncertain change requires manual review.');
+  if(op.plan.destructive!==false||op.plan.changes.some((c:any)=>!['Add','Modify'].includes(c.action)||c.replacement&&c.replacement!=='False'||c.resourceType==='AWS::CloudFormation::Stack'))return deny('Resource removal, replacement, retention/lifecycle consequences or an uncertain change requires manual review.');
   if(mode==='safe-actions'){
    const retainedTypes=['AWS::S3::Bucket','AWS::DynamoDB::Table','AWS::SQS::Queue','AWS::Logs::LogGroup'];
    if(!op.plan.changes.length||op.plan.changes.some((c:any)=>c.action!=='Add'||!retainedTypes.includes(c.resourceType)||c.access||c.deletionPolicy!=='Retain'||c.updateReplacePolicy!=='Retain'))return deny('Safe Actions only approves additions of retained buckets, tables, queues and log groups without access-policy changes. Updates, IAM and other resource types need manual review.');

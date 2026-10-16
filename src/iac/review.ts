@@ -14,14 +14,15 @@ import {decide} from '../policy/decide';
 import {assemble} from './assemble';
 import {IacService} from './service';
 import {parseTemplate, policyFromEnv, validateDesired, validateTemplate} from './validator';
-import {preservationMode,strict,refusePreservation,preservationTemplateProblems,preservationChangeProblems} from './preservation';
+import {TEMPLATE_CONTRACT_VERSION,templateContract,templateConsequences} from './templateContract';
+import {preservationMode,strict,refusePreservation} from './preservation';
 
 // These types match the dedicated execution role, which cannot create IAM roles,
 // execute code, or alter the graph service. Expanding this set also requires IAM.
 export const APPLY_TYPES = LEGACY_APPLY_TYPES;
 const terminal = terminalStates;
 const hash = (value: any): string => createHash('sha256').update(canonical(value)).digest('hex');
-const reviewDigest=(op:any,plan:any)=>hash({inputDigest:op.inputDigest,policyDigest:op.policyDigest,...(op.action==='destroy'?{action:'destroy'}:{}),plan,...(op.preservation?{preservation:op.preservation}:{})});
+const reviewDigest=(op:any,plan:any)=>hash({inputDigest:op.inputDigest,policyDigest:op.policyDigest,revisionId:op.revisionId,...(op.action==='destroy'?{action:'destroy'}:{}),plan,...(op.preservation?{preservation:op.preservation}:{})});
 const accessChange = (type:string,before:any,after:any) => /^AWS::IAM::/.test(type)||/::(?:BucketPolicy|QueuePolicy|TopicPolicy|Permission|Authorizer)$/.test(type)
     ? {before:before?.Properties||null,after:after?.Properties||null} : undefined;
 function canonical(value: any): string {
@@ -42,7 +43,7 @@ export function prepareReview(projection: any, nodeId: string, policy = policyFr
     const carried = node?.properties?.iac;
     if (!carried?.stack) problem('This node does not describe a CloudFormation stack.', 'NOT_FOUND', 404);
     const assembled = assemble(projection, nodeId, policy);
-    const fromGraph = assembled.fragments.length > 0 || typeof carried.template?.text !== 'string';
+    const fromGraph = typeof carried.template?.text !== 'string';
     const text = fromGraph ? assembled.text : carried.template.text;
     const format = fromGraph ? 'json' : carried.template.format === 'json' ? 'json' : 'yaml';
     const validation = validateTemplate(text || '', format, policy);
@@ -51,9 +52,9 @@ export function prepareReview(projection: any, nodeId: string, policy = policyFr
     if (Buffer.byteLength(text || '') > 51200) problems.push({code:'SCHEMA_INVALID',message:'The template exceeds the 51,200-byte CloudFormation template limit.'});
     const preflight=deploymentCapabilities(projection.id,nodeId,{...carried,template:{text,format}},basePolicy);
     if(isolationEnabled())problems.push(...preflight.problems.filter(p=>!['DEPLOYMENT_UNAVAILABLE'].includes(p.code)));
-    const input = {graphId:projection.id, nodeId, stack:carried.stack, text, format,
+    const input = {templateContractVersion:TEMPLATE_CONTRACT_VERSION,graphId:projection.id, nodeId, stack:carried.stack, text, format,
         parameters:carried.parameters || {}, capabilities:carried.capabilities || [], ...(carried.readiness?{readiness:carried.readiness}:{}), ...(isolationEnabled()?{isolation:scope}:{})};
-    return {...input, preflight, source:fromGraph ? 'graph' : 'inline', inputDigest:hash(input),
+    return {...input, templateSha256:validation.templateSha256, templateContract, preflight, source:fromGraph ? 'graph' : 'inline', inputDigest:hash(input),
         policyDigest:hash(policy), validation:{...validation, ok:problems.length===0, problems}};
 }
 
@@ -164,10 +165,23 @@ export class IacReviewService {
             deletionPolicy:definitions[r.logicalId]?.DeletionPolicy || 'Delete',
             outcome:['Retain','RetainExceptOnCreate'].includes(definitions[r.logicalId]?.DeletionPolicy)?'Retain':'Delete'})).sort((a,b)=>a.logicalId.localeCompare(b.logicalId));
     }
+    private async consequences(op:any,changes:any[]) {
+        let previous:any,baseline='not-created';
+        if(op.stackExists){
+            if(this.deps.cloud?.template){previous=await this.deps.cloud.template(op);baseline='aws-current-template';}
+            else {
+                const binding=await this.read(`iac/deployed/${op.graphId}/${op.nodeId}.json`);
+                const prior=binding?.value.operationId&&await this.read(IacReviewService.key(binding.value.operationId));
+                previous=prior?parseTemplate(prior.value.input.text,prior.value.input.format).doc:undefined;
+                baseline=previous?'last-approved-template':'unavailable';
+            }
+        }
+        return {previous,review:templateConsequences(parseTemplate(op.input.text,op.input.format).doc,previous,changes,baseline)};
+    }
     private publicRecord(record: any) {
         if (!record) return null;
         const {input, policyDigest,recoveryLease, ...visible} = record;
-        return {...visible,automaticApproval:automaticApprovalOptions(record),...(record.recoveryPlan?{recoveryPlan:publicRecoveryPlan(record.recoveryPlan)}:{}),...(record.reason?{reason:diagnosticText(record.reason,record)}:{}),...(record.originalError?{originalError:diagnosticError(record.originalError,record)}:{}),template:{text:input.text, format:input.format, source:input.source}, stack:input.stack,preflight:input.preflight,readinessChecks:input.readiness||[]};
+        return {...visible,automaticApproval:automaticApprovalOptions(record),...(record.recoveryPlan?{recoveryPlan:publicRecoveryPlan(record.recoveryPlan)}:{}),...(record.reason?{reason:diagnosticText(record.reason,record)}:{}),...(record.originalError?{originalError:diagnosticError(record.originalError,record)}:{}),template:{text:input.text, format:input.format, source:input.source,sha256:input.templateSha256},templateContract:input.templateContract, stack:input.stack,preflight:input.preflight,readinessChecks:input.readiness||[]};
     }
     private progress(){return new DeploymentProgress(this.store,this.deps.notify);}
     async current(graphId: string, nodeId: string, principal: any, operationId?:string, refresh=true) {
@@ -261,9 +275,6 @@ export class IacReviewService {
             if(!inspected.canReview)throw Object.assign(new Error('Current AWS readiness blocks deployment planning. No deployment was started. Read the returned prerequisites or iac.inspect.'),{code:inspected.blockers.some(b=>b.kind==='preservation')?'PRESERVATION_BLOCKED':'RECOVERY_REQUIRED',status:409,problems:inspected.blockers});
             reviewStackProof=inspected.application?.reviewStackProof;
         }
-        // State limitations take precedence over stricter content requirements.
-        // Both checks precede operation startup and preparatory AWS mutations.
-        if(preservation==='strict')refusePreservation(preservationTemplateProblems(input));
         const id=ulid(), now=this.now();
         const record:any={operationId:id,graphId,nodeId,input,policyDigest:input.policyDigest,inputDigest:input.inputDigest,
             revisionId:await this.deps.revision?.(graphId)||'live',previousOperationId:existingIndex?.value.operationId||null,
@@ -290,11 +301,10 @@ export class IacReviewService {
         if (!body.reviewDigest || body.reviewDigest!==op.reviewDigest) problem('Approve the exact review displayed in the editor. Refresh the review.','STALE_REVIEW',409);
         if (op.approval && ['apply-requested','applying','succeeded','destroyed','rolled-back','rollback-failed'].includes(op.state)) return this.publicRecord(op);
         if (op.state!=='awaiting-review' || this.now()>op.expiresAt) problem('This review is no longer available. Create a new review.','STALE_REVIEW',409);
-        if(op.reviewInvalidatedAt||op.reviewDigest!==reviewDigest(op,op.plan))problem('The reviewed content or preservation constraint changed. Prepare a fresh review.','STALE_REVIEW',409);
-        if(strict(op))refusePreservation(preservationChangeProblems(op.plan.changes));
+        if(op.input.templateContractVersion!==TEMPLATE_CONTRACT_VERSION||op.reviewInvalidatedAt||op.reviewDigest!==reviewDigest(op,op.plan))problem('The reviewed content or preservation constraint changed. Prepare a fresh review.','STALE_REVIEW',409);
         const current=await this.reviewInput(graphId,nodeId,principal,op.action);
-        if (current.inputDigest!==op.inputDigest || current.policyDigest!==op.policyDigest || current.deploymentOperationId!==op.input.deploymentOperationId || !current.validation.ok) problem('The template, deployed stack, or deployment policy changed after this review. Create a new review.','STALE_REVIEW',409);
-        if (op.plan.destructive && body.confirmDestructive!==true) problem('Confirm resource removal or replacement before applying this review.','APPROVAL_REQUIRED',409);
+        if ((this.deps.revision && await this.deps.revision(graphId)!==op.revisionId) || current.inputDigest!==op.inputDigest || current.policyDigest!==op.policyDigest || current.deploymentOperationId!==op.input.deploymentOperationId || !current.validation.ok) problem('The template, deployed stack, or deployment policy changed after this review. Create a new review.','STALE_REVIEW',409);
+        if (op.plan.destructive && body.confirmDestructive!==true) problem('Confirm the listed resource and data consequences before applying this review.','APPROVAL_REQUIRED',409);
         const next={...op,state:'apply-requested',updatedAt:this.now(),approval:{sub:principal.sub,at:this.now(),reviewDigest:op.reviewDigest,mode:body.approvalMode||'manual',aiPermissionMode:body.aiPermissionMode||(body.approvalMode==='automatic'?'fully-automatic':'manual')},
             history:[...op.history,{state:'apply-requested',at:this.now(),by:principal.sub}]};
         if (!await this.cas(IacReviewService.key(op.operationId),next,row.etag)) problem('The review changed. Refresh before approving.','CONFLICT',409);
@@ -359,7 +369,7 @@ export class IacReviewService {
         const row=await this.read(IacReviewService.key(op.operationId));
         if(!row) return;
         const value=row.value;
-        const lifecycle={...(value.state==='apply-requested'?{approval:value.approval}:{}),...(value.preservation?{preservation:value.preservation}:{}),...(value.preservationBlockers?{preservationBlockers:value.preservationBlockers}:{})};
+        const lifecycle={...(value.state==='awaiting-review'?{templateContract:value.input.templateContract,templateSha256:value.input.templateSha256,plan:value.plan}:{}),...(value.state==='apply-requested'?{approval:value.approval}:{}),...(value.preservation?{preservation:value.preservation}:{}),...(value.preservationBlockers?{preservationBlockers:value.preservationBlockers}:{})};
         await this.progress().append(value,[{id:'state:'+value.state,source:'worker',state:value.state,...(Object.keys(lifecycle).length?{lifecycle}:{}),phase:phaseFor(value.state),reason:value.reason,stackName:value.input.stack.name,at:value.updatedAt}]);
     }
     private checkPrivateBuckets(input: any) {
@@ -450,7 +460,6 @@ export class IacReviewService {
             preservationMode(op.preservation);
             if(strict(op)){
                 if(op.action==='destroy')refusePreservation([{code:'PRESERVATION_STACK_DELETION',kind:'preservation',message:'Strict preservation prohibits stack deletion.'}]);
-                refusePreservation(preservationTemplateProblems(checked));
             }
             if(cloud.prepare){await this.progress().append(op,[{id:'guardrails-start',source:'worker',kind:'phase',phase:'guardrails',status:'IN_PROGRESS',reason:'Preparing platform-managed stack guardrails.'}]);if(!await cloud.prepare(op))return result();}
             await this.progress().append(op,[{id:'planning-changes',source:'worker',kind:'phase',phase:'planning',status:'IN_PROGRESS',reason:'Guardrails are ready. Preparing the exact CloudFormation change set.'}]);
@@ -480,36 +489,34 @@ export class IacReviewService {
                 const bound=await this.read(`iac/deployed/${op.graphId}/${op.nodeId}.json`),previous=bound?.value.operationId&&await this.read(IacReviewService.key(bound.value.operationId));
                 if(op.input.isolation&&previous?.value.inputDigest!==op.inputDigest){
                     const resources=cloud.resources?await cloud.resources(op):[];
-                    const plan={changes:[],destructive:false,changeSetRetained:false,stackExists:true,metadataOnly:true,resources,
+                    const consequences=(await this.consequences(op,[])).review;
+                    const plan={changes:[],consequences,destructive:consequences.requiresConfirmation,changeSetRetained:false,stackExists:true,metadataOnly:true,resources,
                         reason:'CloudFormation reports no resource changes. Approval binds the current template and declared readiness checks to this existing owned stack.'};
                     await save({state:'awaiting-review',plan,reviewDigest:reviewDigest(op,plan),expiresAt:this.now()+3600000});return result();
                 }
                 await save({state:'no-changes',reason:'The deployed stack already matches this template.'});await this.release(op);return result(true);
             }
-            if (described.status!=='CREATE_COMPLETE') {await this.fail(id,described.reason || 'CloudFormation could not prepare the review.');return result();}
+            if (described.status!=='CREATE_COMPLETE') {await this.fail(id,Object.assign(new Error(described.reason || 'CloudFormation could not prepare the review.'),{code:'CLOUDFORMATION_CHANGESET_FAILED',service:'cloudformation'}));return result();}
+            const consequences=await this.consequences(op,described.changes);
             const definitions=parseTemplate(op.input.text,op.input.format).doc?.Resources||{};
-            const binding=await this.read(`iac/deployed/${op.graphId}/${op.nodeId}.json`);
-            const previous=binding?.value.operationId && await this.read(IacReviewService.key(binding.value.operationId));
-            const old=previous?parseTemplate(previous.value.input.text,previous.value.input.format).doc?.Resources||{}:{};
+            const old=consequences.previous?.Resources||{};
             const changes=described.changes.map((c:any)=>{
                 const definition=c.action==='Remove'?old[c.logicalId]:definitions[c.logicalId];
-                return {...c,access:accessChange(c.resourceType,old[c.logicalId],definitions[c.logicalId]),deletionPolicy:definition?(definition.DeletionPolicy||'Delete'):'Not recorded',updateReplacePolicy:definition?(definition.UpdateReplacePolicy||'Delete'):'Not recorded'};
+                return {...c,access:accessChange(c.resourceType,old[c.logicalId],definitions[c.logicalId]),deletionPolicy:definition?(definition.DeletionPolicy||'CloudFormation default'):'Not recorded',updateReplacePolicy:definition?(definition.UpdateReplacePolicy||'CloudFormation default'):'Not recorded'};
             });
-            const plan={changeSetId:op.changeSetId,changes,destructive:changes.some((c:any)=>c.action==='Remove'||c.action==='Replace'||(c.action==='Modify' && c.replacement && c.replacement!=='False')),changeSetRetained:true,stackExists:op.stackExists};
-            if(strict(op)){
-                const problems=preservationChangeProblems(changes);
-                if(op.stackExists&&!cloud.template)problems.push({code:'PRESERVATION_TEMPLATE_UNAVAILABLE',kind:'preservation',message:'The deployment worker cannot verify the current AWS template for data-retention changes.'});
-                else problems.push(...preservationTemplateProblems(op.input,op.stackExists?await cloud.template!(op):undefined));
-                if(problems.length){await save({plan,preservationBlockers:problems});await this.fail(id,Object.assign(new Error(problems.map(p=>p.message).join('\n')),{code:'PRESERVATION_BLOCKED',problems}));return result(true);}
-            }
+            const plan={changeSetId:op.changeSetId,awsChangesDigest:hash(described.changes),changes,consequences:consequences.review,
+                destructive:consequences.review.requiresConfirmation,changeSetRetained:true,stackExists:op.stackExists};
             await save({state:'awaiting-review',plan,reviewDigest:reviewDigest(op,plan),expiresAt:this.now()+3600000});
             return result();
         }
         if (op.state==='apply-requested') {
-            if (!op.approval || op.reviewInvalidatedAt || op.approval.reviewDigest!==op.reviewDigest || op.reviewDigest!==reviewDigest(op,op.plan) || hash(isolationEnabled()?scopedPolicy(stackScope(op.graphId,op.nodeId,this.policy()),this.policy()):this.policy())!==op.policyDigest) {await this.fail(id,'The approval, preservation constraint or deployment policy is no longer valid.');return result(true);}
+            if (op.input.templateContractVersion!==TEMPLATE_CONTRACT_VERSION || !op.approval || op.reviewInvalidatedAt || op.approval.reviewDigest!==op.reviewDigest || op.reviewDigest!==reviewDigest(op,op.plan) || hash(isolationEnabled()?scopedPolicy(stackScope(op.graphId,op.nodeId,this.policy()),this.policy()):this.policy())!==op.policyDigest) {await this.fail(id,'The approval, preservation constraint or deployment policy is no longer valid.');return result(true);}
+            const checked=prepareReview({id:op.graphId,nodes:[{id:op.nodeId,properties:{iac:{stack:op.input.stack,template:{text:op.input.text,format:op.input.format},parameters:op.input.parameters,capabilities:op.input.capabilities,readiness:op.input.readiness}}}]},op.nodeId,this.policy());
+            if(!checked.validation.ok||checked.inputDigest!==op.inputDigest||(this.deps.revision&&await this.deps.revision(op.graphId)!==op.revisionId)){
+                await this.fail(id,Object.assign(new Error('The approved template content or graph revision changed. Prepare a fresh review.'),{code:'STALE_REVIEW'}));return result(true);
+            }
             if(strict(op)){
                 if(op.action==='destroy')refusePreservation([{code:'PRESERVATION_STACK_DELETION',kind:'preservation',message:'Strict preservation prohibits stack deletion.'}]);
-                refusePreservation(preservationChangeProblems(op.plan.changes));
             }
             if(op.plan?.metadataOnly){
                 const resources=cloud.resources?await cloud.resources(op):[];
@@ -527,10 +534,8 @@ export class IacReviewService {
                 await save({state:'applying',startedAt:this.now()});return result();
             }
             const described=await cloud.describe(op);
-            if(strict(op)){
-                refusePreservation(preservationChangeProblems(described.changes));
-                if(op.stackExists&&!cloud.template)refusePreservation([{code:'PRESERVATION_TEMPLATE_UNAVAILABLE',kind:'preservation',message:'Current template verification is unavailable.'}]);
-                refusePreservation(preservationTemplateProblems(op.input,op.stackExists?await cloud.template!(op):undefined));
+            if(described.executionStatus==='AVAILABLE' && hash(described.changes)!==op.plan.awsChangesDigest){
+                await this.fail(id,Object.assign(new Error('The AWS change set differs from the approved review. Prepare a fresh review.'),{code:'STALE_REVIEW'}));return result(true);
             }
             if (described.executionStatus==='AVAILABLE') await cloud.execute(op);
             else if (!['EXECUTE_IN_PROGRESS','EXECUTE_COMPLETE'].includes(described.executionStatus)) {await this.fail(id,'This CloudFormation change set is no longer executable. Create a new review.');return result(true);}

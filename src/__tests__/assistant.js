@@ -78,7 +78,7 @@ test('actual MCP catalog and guards enforce graph binding, approval separation a
   await expect(api.call('proposal.commit',{})).rejects.toThrow('not available');
   await expect(api.call('graph.summary',{graphId:'g2'})).rejects.toThrow('Cross-graph');
   await expect(api.call('chat.read',{peerId:userIdOf(human('bob'))})).rejects.toThrow('private');
-  await expect(api.call('iac.review',{nodeId:'stack',action:'destroy'})).rejects.toThrow('Destructive');
+  await expect(api.call('iac.review',{nodeId:'stack',action:'destroy'})).rejects.toThrow('Direct stack deletion');
   const r=await api.call('iac.review',{nodeId:'stack'});expect(r.error).toBeUndefined();expect(f.begin.mock.calls[0][6]).toBe('strict');
  });
 });

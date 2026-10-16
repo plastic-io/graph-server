@@ -154,11 +154,10 @@ provider:
     # this deployment and nothing else.
     VIEW_ORIGINS: ${opt:viewOrigins, env:VIEW_ORIGINS, ''}
     SCREENSHOT_FUNCTION: ${self:service}-${self:provider.stage}-screenshot
-    # An allow-list of resource types, because this runs in a personal account
-    # and the expensive corners of AWS are many: empty means the careful
-    # default (things that cost what they are used and nothing when idle).
+    # Configured deployment capabilities, independent of billing/retention choices.
+    # The default resource limit matches the CloudFormation template limit.
     IAC_ALLOWED_TYPES: ${opt:iacAllowedTypes, ''}
-    IAC_MAX_RESOURCES: ${opt:iacMaxResources, '100'}
+    IAC_MAX_RESOURCES: ${opt:iacMaxResources, '500'}
     OWNER_SUBS: ${opt:ownerSubs, env:OWNER_SUBS, ''}
     WS_EXECUTION_ENABLED: ${opt:wsExecution, 'false'}
     API_REGION: ${self:provider.region}

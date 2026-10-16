@@ -18,7 +18,10 @@ test('human auto-approval cannot bypass recovery deletion refusal, even with an 
  expect(f.start).not.toHaveBeenCalled();expect(f.calls.some(c=>c.method==='deleteStack')).toBe(false);
 });
 test('automatic deployment still requires a human and exact current digest and records its mode',async()=>{
- const f=await fixture(),recovered=await f.recover(),op=await f.reviews.begin('g','stack',human,false,'apply',recovered.operationId);
+ const f=await fixture(),recovered=await f.recover();
+ const template=JSON.parse(f.graph.nodes[0].properties.iac.template.text);delete template.Resources.Logs.Properties.RetentionInDays;
+ f.graph.nodes[0].properties.iac.template.text=JSON.stringify(template);
+ const op=await f.reviews.begin('g','stack',human,false,'apply',recovered.operationId);
  await f.reviews.step(op.operationId);await f.reviews.step(op.operationId);
  const review=await f.reviews.current('g','stack',human,undefined,false),body={operationId:op.operationId,reviewDigest:review.reviewDigest,approvalMode:'automatic',aiPermissionMode:'fully-automatic'};
  expect(review.automaticApproval.allowed).toBe(true);

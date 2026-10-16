@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { parse as parseYaml } from "yaml";
-import { CHEAP_RESOURCE_TYPES, DEFAULT_POLICY, IacDesiredState, IacPolicy, IacProblem, TemplateValidation } from "./types";
+import { SUPPORTED_TEMPLATE_RESOURCE_TYPES, DEFAULT_POLICY, IacDesiredState, IacPolicy, IacProblem, TemplateValidation } from "./types";
 
 /**
  * What a template is allowed to be (plan §4.9.6, PB-091).
@@ -178,23 +178,15 @@ export function validateTemplate(text: string, format: "yaml" | "json" = "yaml",
         resourceTypes.push(type);
         const properties = (resource.Properties && typeof resource.Properties === "object") ? resource.Properties : {};
 
-        // What it costs to leave running is a property of the type, so it is
-        // asked first: an allow-list, because the expensive corners of AWS are
-        // many and new ones arrive.
-        if (policy.allowedResourceTypes && policy.allowedResourceTypes.length && !policy.allowedResourceTypes.includes(type)) {
-            push("RESOURCE_TYPE_NOT_ALLOWED", `${type} is not one of the resource types this environment deploys; the list is what costs nothing while it sits idle, and widening it is a decision about the bill`, `${at}.Type`, logicalId);
+        // Capability support is independent of cost and retention choices.
+        if (policy.allowedResourceTypes?.length && !policy.allowedResourceTypes.includes(type)) {
+            push("RESOURCE_TYPE_NOT_ALLOWED", `${type} is outside this environment's configured deployment capabilities`, `${at}.Type`, logicalId);
         }
-        if (type === "AWS::DynamoDB::Table" || type === "AWS::DynamoDB::GlobalTable") {
-            const provisioned = properties.BillingMode !== undefined ? properties.BillingMode !== "PAY_PER_REQUEST" : !!properties.ProvisionedThroughput;
-            if (provisioned) {
-                push("COST_PROVISIONED", "provisioned capacity is billed whether or not anything reads or writes; PAY_PER_REQUEST is not", `${at}.Properties.BillingMode`, logicalId);
-            }
+        if (resource.Properties !== undefined && (!resource.Properties || typeof resource.Properties !== "object" || Array.isArray(resource.Properties))) {
+            push("RESOURCE_SHAPE", "Properties must be an object when supplied", `${at}.Properties`, logicalId);
         }
-        if (type === "AWS::Logs::LogGroup" && properties.RetentionInDays === undefined) {
-            push("COST_UNBOUNDED", "a log group with no RetentionInDays keeps everything for ever, and storage is the part of logging that does not stop costing", `${at}.Properties.RetentionInDays`, logicalId);
-        }
-        if (properties.ProvisionedConcurrencyConfig !== undefined) {
-            push("COST_PROVISIONED", "provisioned concurrency is billed while it is reserved, whether or not anything calls it", `${at}.Properties.ProvisionedConcurrencyConfig`, logicalId);
+        for (const [attribute, values] of Object.entries({DeletionPolicy: ['Delete','Retain','RetainExceptOnCreate','Snapshot'], UpdateReplacePolicy: ['Delete','Retain','Snapshot']})) {
+            if (resource[attribute] !== undefined && !values.includes(resource[attribute])) push("RESOURCE_SHAPE", `${attribute} must be ${values.join(', ')}`, `${at}.${attribute}`, logicalId);
         }
 
         if (/^Custom::/.test(type) || type === "AWS::CloudFormation::CustomResource") {
@@ -401,7 +393,7 @@ export function policyFromEnv(env: Record<string, string | undefined> = process.
     const types = list(env.IAC_ALLOWED_TYPES);
     return {
         stackPrefix: env.IAC_STACK_PREFIX || DEFAULT_POLICY.stackPrefix,
-        allowedResourceTypes: types.length ? types : CHEAP_RESOURCE_TYPES,
+        allowedResourceTypes: types.length ? types : SUPPORTED_TEMPLATE_RESOURCE_TYPES,
         maxResources: Number(env.IAC_MAX_RESOURCES || DEFAULT_POLICY.maxResources),
         accounts: list(env.IAC_ACCOUNTS),
         regions: list(env.IAC_REGIONS).length ? list(env.IAC_REGIONS) : DEFAULT_POLICY.regions,

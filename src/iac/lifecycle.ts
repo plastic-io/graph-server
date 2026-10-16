@@ -1,3 +1,4 @@
+import {templateContract} from './templateContract';
 import {automaticApprovalOptions,checkApprovalMode} from './automaticApproval';
 import {ulid} from 'ulid';
 import {DelegationStore} from '../policy/delegation';
@@ -111,6 +112,7 @@ export class IacLifecycleService {
   }
   Object.assign(inspection,await this.historicalFailure(op));
   inspection.historyIsNotCurrentPermissionEvidence=true;
+  inspection.templateContract=templateContract;
   inspection.maintenanceConfiguration=maintenanceConfiguration();
   const latest=await this.read(operationKey(op.operationId));
   await this.cas(operationKey(op.operationId),{...latest.value,inspection},latest.etag);

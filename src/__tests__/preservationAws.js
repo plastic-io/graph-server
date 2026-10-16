@@ -33,34 +33,6 @@ test('an AWS access denial is never classified as stack absence or permission to
  expect(send.mock.calls.map(([c])=>c.constructor.name)).toEqual(['DescribeStacksCommand']);
 });
 
-test.each(['Remove','Modify'])('the SDK adapter independently refuses destructive %s before execution',async action=>{
- const s=scope(),op={preservation:'strict',graphId:s.graphId,nodeId:s.nodeId,operationId:'01M4C000000000000000000000',changeSetId:'review-fixture',input:{isolation:s,stack:{name:s.namespace+'stack'},format:'json',text:JSON.stringify({Resources:{Data:{Type:'AWS::SQS::Queue',DeletionPolicy:'Retain',UpdateReplacePolicy:'Retain'}}})}};
- send.mockImplementation(async command=>{
-  if(command.constructor.name==='DescribeStacksCommand')return {Stacks:[{StackStatus:'CREATE_COMPLETE'}]};
-  if(command.constructor.name==='DescribeChangeSetCommand')return {Status:'CREATE_COMPLETE',ExecutionStatus:'AVAILABLE',Changes:[{ResourceChange:{LogicalResourceId:'Data',ResourceType:'AWS::SQS::Queue',Action:action,Replacement:'Conditional'}}]};
-  throw new Error('No mutation is permitted');
- });
- const cloud=reviewCloud(s.region,'unused');await expect(cloud.execute(op)).rejects.toMatchObject({code:'PRESERVATION_BLOCKED'});
- await expect(cloud.destroy(op)).rejects.toMatchObject({code:'PRESERVATION_BLOCKED'});await cloud.remove(op);
- expect(send.mock.calls.every(([c])=>c.constructor.name.startsWith('Describe'))).toBe(true);
-});
-
-test('strict ExecuteChangeSet disables rollback, uses the assigned worker credentials and never invokes cleanup',async()=>{
- const s=scope(),op={preservation:'strict',graphId:s.graphId,nodeId:s.nodeId,operationId:'01M4C000000000000000000000',changeSetId:'review-fixture',input:{isolation:s,stack:{name:s.namespace+'stack'},format:'json',text:JSON.stringify({Resources:{Data:{Type:'AWS::SQS::Queue',DeletionPolicy:'Retain',UpdateReplacePolicy:'Retain'}}})}};
- const credentials=jest.spyOn(Guardrails.prototype,'credentials').mockResolvedValue({accessKeyId:'fixture',secretAccessKey:'fixture'});
- send.mockImplementation(async function(command){
-  await this.config.credentials();
-  if(command.constructor.name==='DescribeStacksCommand')return {Stacks:[{StackStatus:'REVIEW_IN_PROGRESS'}]};
-  if(command.constructor.name==='DescribeChangeSetCommand')return {Status:'CREATE_COMPLETE',ExecutionStatus:'AVAILABLE',Changes:[{ResourceChange:{LogicalResourceId:'Data',ResourceType:'AWS::SQS::Queue',Action:'Add'}}]};
-  if(command.constructor.name==='ExecuteChangeSetCommand')return {};
-  throw new Error('Unexpected AWS call');
- });
- const cloud=reviewCloud(s.region,'unused');await cloud.execute(op);await cloud.remove(op);
- expect(credentials).toHaveBeenCalledWith(s);
- expect(send.mock.calls.find(([c])=>c.constructor.name==='ExecuteChangeSetCommand')[0].input).toMatchObject({StackName:s.namespace+'stack',ChangeSetName:op.changeSetId,ClientRequestToken:op.operationId,DisableRollback:true,RetainExceptOnCreate:false});
- expect(send.mock.calls.some(([c])=>c.constructor.name.startsWith('Delete'))).toBe(false);
-});
-
 test('supported strict guardrail policy reconciliation executes in place, preserves the boundary, and requires separate deployment approval',async()=>{
  const f=await fixture('preservation-aws-fixture','stack');f.installRoles();
  const st=f.stacks.get(f.s.guardrailStack);st.StackStatus='CREATE_COMPLETE';

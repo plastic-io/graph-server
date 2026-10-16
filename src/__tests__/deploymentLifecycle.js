@@ -10,6 +10,23 @@ let env;
 beforeEach(()=>{env={...process.env};environment();});
 afterEach(()=>{process.env=env;});
 
+test.each(['Retain','Delete','omitted'])('application import never inserts or overrides authored resource policies: %s',async deletion=>{
+ const f=await fixture('import-contract-fixture','stack');
+ const inspection=await f.reviews.lifecycle.inspect(f.source.graphId,'stack',human);
+ const definition={Type:'AWS::SQS::Queue',Properties:{QueueName:f.s.namespace+'queue'},...(deletion==='omitted'?{}:{DeletionPolicy:deletion})};
+ const source={...f.source,input:{...f.input,text:JSON.stringify({Resources:{Queue:definition}}),format:'json'}};
+ inspection.guardrail.status='CREATE_COMPLETE';inspection.guardrailsMatch=true;
+ inspection.application={name:f.s.namespace+'stack',status:'DELETE_COMPLETE',ownership:'verified',resources:[{logicalId:'Queue',physicalId:'https://sqs.us-west-1.amazonaws.com/230639770018/'+f.s.namespace+'queue',resourceType:'AWS::SQS::Queue',status:'DELETE_SKIPPED',exists:true,ownershipVerified:true,definitionDigest:digest(definition)}]};
+ inspection.blockers=[];
+ const plan=recoveryPlan(source,inspection);
+ if(deletion==='omitted')expect(plan.prerequisites.some(p=>p.code==='IMPORT_DELETION_POLICY_REQUIRED')).toBe(true);
+ else {
+  const actual=plan.actions.find(a=>a.target==='application'&&a.kind==='import-retained').resources[0].definition;
+  expect(actual).toEqual(definition);expect(actual).not.toHaveProperty('UpdateReplacePolicy');
+ }
+ expect(f.calls.some(c=>['deleteStack','createStack','createChangeSet','executeChangeSet'].includes(c.method))).toBe(false);
+});
+
 test('Chess regression: current permission checks distinguish old IAM failures, recover retained guardrails, then require a new approved deployment',async()=>{
  const f=await fixture('f1963a3b-7e9a-43b3-87ee-068d56431374','node-chess-storage-stack'),g=f.source.graphId,n=f.source.nodeId;
  const inspect=await f.reviews.lifecycle.inspect(g,n,human);
@@ -26,7 +43,7 @@ test('Chess regression: current permission checks distinguish old IAM failures, 
  const retry=await f.reviews.begin(g,n,human,false,'apply',recovered.operationId);expect(retry.retryOf).toBe(recovered.operationId);
  await f.reviews.step(retry.operationId);await f.reviews.step(retry.operationId);
  const review=await f.reviews.current(g,n,human,undefined,false);expect(review.state).toBe('awaiting-review');expect(f.deployCloud.execute).not.toHaveBeenCalled();
- await f.reviews.approve(g,n,human,{operationId:review.operationId,reviewDigest:review.reviewDigest});await f.reviews.step(review.operationId);await f.reviews.step(review.operationId);
+ await f.reviews.approve(g,n,human,{operationId:review.operationId,reviewDigest:review.reviewDigest,confirmDestructive:true});await f.reviews.step(review.operationId);await f.reviews.step(review.operationId);
  expect((await f.reviews.current(g,n,human,undefined,false)).state).toBe('succeeded');
  const app=new ApplicationService(f.store,{policy:()=>policy,invokeWithMetadata:async()=>{throw Object.assign(new Error('Application health invariant failed'),{requestId:'abcde000-0000-0000-0000-000000000000',bridgeRequestId:'bridge'});},publish:async(g,e)=>f.sent.push(e)});
  await expect(app.invoke({graphId:g,nodeId:'backend',stackNodeId:n,logicalFunctionId:'Backend',value:{action:'health'},principal:human,correlationId:'request-1',executionId:'execution-1'})).rejects.toThrow('health invariant');

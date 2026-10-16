@@ -72,7 +72,7 @@ export interface McpDeps {
     rate?: { reads: RateLimiter; writes: RateLimiter; chat?: RateLimiter };
 }
 
-export const SERVER_INFO = { name: "plastic-io-graph-server", version: "2.7.0" };
+export const SERVER_INFO = { name: "plastic-io-graph-server", version: "2.8.0" };
 const ID = z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/);
 const ULID = z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/);
 const REV = z.string().regex(/^rev_[0-9A-HJKMNP-TV-Z]{26}$/);
@@ -232,7 +232,7 @@ export function buildServer(deps: McpDeps, rawPrincipal: Principal | undefined, 
         return ok(p,args.configuration?deploymentCapabilities(args.graphId,args.nodeId,args.configuration):graphDeploymentCapabilities(graph||{id:args.graphId,nodes:[]},args.nodeId));
     }));
     server.registerTool('iac.review',{
-        title:'Submit infrastructure for graph-side deployment review',description:'Prepares a durable review of this graph stack. preservation=strict prohibits stack/resource deletion, replacement and deployment-induced data removal, including preparatory guardrails. State or verification limitations return structured blockers without destructive fallback. Cancel an unwanted pending review with iac.cancel. The user approves a fresh exact digest in the graph; this tool cannot approve deployment. Destroy is prohibited under strict preservation.',
+        title:'Submit infrastructure for graph-side deployment review',description:'Prepares a durable review of this graph stack. The authored template is submitted unchanged, including omitted properties. Retention, lifecycle, deletion, replacement and cost choices reach human review as consequences; they are not template-policy vetoes. preservation=strict only constrains separate stack deletion/recovery and platform guardrail work. State or verification limitations return structured blockers without destructive fallback. Cancel an unwanted pending review with iac.cancel. The user approves a fresh exact digest in the graph; this tool cannot approve deployment. Destroy is prohibited under strict preservation.',
         inputSchema:deploymentReviewSchema,annotations:{readOnlyHint:false},
     },guarded('iac.review','write',a=>a.graphId,['iac:propose'],async(args,p)=>{
         if(!deps.reviews)return fail('CAPABILITY_UNAVAILABLE','This server has no durable reviewed-deployment service. Request a platform improvement; do not deploy outside MCP.');

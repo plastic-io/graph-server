@@ -2,6 +2,7 @@ import {policyFromEnv,validateTemplate,validateStack,parseTemplate} from './vali
 import {assemble} from './assemble';
 import {IacPolicy,DEFAULT_POLICY} from './types';
 import {ISOLATED_TYPES,ISOLATION_VERSION,scopedPolicy,stackScope,validateIsolation} from './isolation';
+import {templateContract,templateConsequences} from './templateContract';
 import {readinessProblems} from './readiness';
 export const LEGACY_APPLY_TYPES=['AWS::S3::Bucket','AWS::S3::BucketPolicy','AWS::DynamoDB::Table','AWS::SQS::Queue','AWS::SQS::QueuePolicy','AWS::SNS::Topic','AWS::SNS::TopicPolicy','AWS::Logs::LogGroup'];
 export function isolationEnabled(){return process.env.IAC_STACK_ISOLATION==='true';}
@@ -10,7 +11,7 @@ export function graphDeploymentCapabilities(graph:any,nodeId:string,policy:IacPo
  const carried=graph?.nodes?.find((n:any)=>n.id===nodeId)?.properties?.iac;
  if(!carried?.stack)return deploymentCapabilities(graph.id,nodeId,carried,policy,enabled);
  const scope=stackScope(graph.id,nodeId,policy),built=assemble(graph,nodeId,isolationEnabled()?scopedPolicy(scope,policy):policy);
- const fromGraph=built.fragments.length>0||typeof carried.template?.text!=='string';
+ const fromGraph=typeof carried.template?.text!=='string';
  const result=deploymentCapabilities(graph.id,nodeId,fromGraph?{...carried,template:{text:built.text,format:'json'}}:carried,policy,enabled);
  if(fromGraph&&!built.ok){result.problems.push(...built.problems);result.deployable=false;}
  return {...result,source:fromGraph?'graph':'inline'};
@@ -22,7 +23,7 @@ export function deploymentCapabilities(graphId:string,nodeId:string,configuratio
  const configured=enabled&&!!scope.account&&!!scope.region;
  const lifecycleConfigured=configured&&isolated&&!!process.env.IAC_LIFECYCLE_FUNCTION&&!!process.env.IAC_GUARDRAIL_REPAIR_FUNCTION;
  const effectivePolicy=isolated?scopedPolicy(scope,policy):policy;
- const problems:any[]=[];
+ const problems:any[]=[],permissionDependencies:any[]=[];
  let validation:any=null;
  if(configuration){
   problems.push(...readinessProblems(configuration.readiness));
@@ -30,6 +31,12 @@ export function deploymentCapabilities(graphId:string,nodeId:string,configuratio
    validation=validateTemplate(configuration.template.text,configuration.template.format||'yaml',effectivePolicy);
    problems.push(...validation.problems,...validateStack(configuration.stack,effectivePolicy));
    if(isolated&&configuration.stack?.name!==scope.namespace+'stack')problems.push({code:'STACK_ISOLATION',path:'stack.name',message:'Use the server-assigned stack name '+scope.namespace+'stack. Renaming the graph or node does not rename its AWS stack.'});
+   for(const [logicalId,r]of Object.entries<any>(parseTemplate(configuration.template.text,configuration.template.format||'yaml').doc?.Resources||{})){
+    const p=r?.Properties||{};
+    if(p.ProvisionedConcurrencyConfig||p.ReservedConcurrentExecutions!==undefined)permissionDependencies.push({logicalId,kind:'effective-permissions',status:'not-granted-by-platform-definition',awsExecutionVerified:false,
+     actions:p.ProvisionedConcurrencyConfig?['lambda:PutProvisionedConcurrencyConfig','lambda:GetProvisionedConcurrencyConfig','lambda:DeleteProvisionedConcurrencyConfig']:['lambda:PutFunctionConcurrency','lambda:GetFunctionConcurrency','lambda:DeleteFunctionConcurrency'],
+     message:'The template choice is preserved. These lifecycle actions are not in the approved execution-role definition; AWS may deny deployment. This platform change does not add them.'});
+   }
    const types=validation.resourceTypes;
    for(const type of types)if(!supported.includes(type))problems.push({code:'NOT_DEPLOYABLE',path:'Resources',message:type+' can be represented by the template schema but is not deployable by this environment.'});
    if(isolated)problems.push(...validateIsolation(configuration.template.text,configuration.template.format||'yaml',scope));
@@ -37,7 +44,7 @@ export function deploymentCapabilities(graphId:string,nodeId:string,configuratio
  }
  if(!configured)problems.push({code:'DEPLOYMENT_UNAVAILABLE',path:'environment',message:'Reviewed deployment requires a configured workflow, target account and region.'});
  if(isolated&&!process.env.IAC_GUARDRAIL_ROLE_ARN)problems.push({code:'GUARDRAILS_UNAVAILABLE',path:'environment',message:'The platform guardrail provisioning role has not been deployed.'});
- return {schemaVersion:1,capabilityVersion:ISOLATION_VERSION,validationResourceTypes:policy.allowedResourceTypes,deployableResourceTypes:configured?supported.filter(t=>policy.allowedResourceTypes.includes(t)):[],
+ return {schemaVersion:1,templateContract,capabilityVersion:ISOLATION_VERSION,validationResourceTypes:policy.allowedResourceTypes,deployableResourceTypes:configured?supported.filter(t=>policy.allowedResourceTypes.includes(t)):[],
   target:{account:scope.account,region:scope.region},targetAccounts:isolated?[scope.account].filter(Boolean):policy.accounts,targetRegions:isolated?[scope.region].filter(Boolean):policy.regions,
   isolation:isolated?{...scope,required:true}:{required:false,mode:'legacy-shared-prefix',namespace:policy.stackPrefix},
   deploymentRole:isolated?scope.roleArn:process.env.IAC_EXECUTION_ROLE_ARN||null,permissionsBoundary:isolated?scope.boundaryArn:policy.permissionsBoundaryArn||null,
@@ -46,7 +53,7 @@ export function deploymentCapabilities(graphId:string,nodeId:string,configuratio
    recovery:{configured:lifecycleConfigured,tool:'iac.recovery.plan',scope:'Human-reviewed, state-selected recovery of this owned stack only; import is limited to proven retained resources. No arbitrary import, skipped rollback resources, or unreviewed data deletion.',inspection:'iac.inspect',platformPrerequisites:'iac.maintenance.request',requiresApproval:'human-exact-recovery-digest',deploymentApprovalIsSeparate:true}},
   requirements:['Run this preflight before implementation. Template validity is distinct from deployment capability.','Only an authenticated human may approve the exact reviewed digest in the graph.','Names, IAM policy resources and role passing are restricted to the assigned stack namespace.','REST API creation uses a required GraphStack tag; child resources inherit ownership. API Gateway V2 is not in this deployment subset.','Runtime roles cannot alter IAM, invoke deployment APIs, pass roles, or read resources outside their stack.','Application roles receive no unscoped AWS actions. The CloudFormation execution role may list log-group metadata with logs:DescribeLogGroups on * because AWS does not support a resource ARN for that read; writes remain namespace-scoped.'],
   evidence:{level:'configuration-and-template-validation',awsPermissionsVerified:false,missingPermissions:'AWS permission failures are reported by the reviewed worker; preflight does not simulate effective AWS policies.',runtimeVerified:false,liveMultiplayerVerified:false},
-  effectivePermissions:{status:'unverified',blocksStaticValidation:false,inspect:'iac.inspect',verification:'A successful, separately approved deployment is required to verify CloudFormation execution. deployable=true means the configured template subset passes static checks, not that AWS has authorized its lifecycle.',
+  effectivePermissions:{status:'unverified',permissionDependencies,blocksStaticValidation:false,inspect:'iac.inspect',verification:'A successful, separately approved deployment is required to verify CloudFormation execution. deployable=true means the configured template subset passes static checks, not that AWS has authorized its lifecycle.',
    applicationRoles:{path:'/graph-app/',existenceChecks:'IAM name-only GetRole/GetRolePolicy probes before creation use the assigned root-name ARN. Existing role writes and PassRole remain path-scoped.',existingGuardrails:'A platform release does not mutate existing per-stack policies. Inspect and separately approve fixed-definition guardrail reconciliation when the installed policy differs.',absentRoleCleanup:'Root-path DeleteRolePolicy is intentionally denied: IAM cannot prove absence from that ARN alone. No destructive recovery fallback is authorized.'}},
   roleLifecycle:'Platform-managed roles and the boundary are provisioned during the first reviewed plan; graph templates cannot edit them.',validation,deployable:configuration?configured&&problems.length===0:null,problems};
 }
@@ -58,7 +65,7 @@ export function infrastructureImpact(before:any,after:any){
   if(!iac?.stack)return iac;
   const scope=stackScope(graph.id,node.id,base),policy=isolationEnabled()?scopedPolicy(scope,base):base;
   const built=assemble(graph,node.id,policy);
-  return built.fragments.length||typeof iac.template?.text!=='string'?{...iac,template:{text:built.text,format:'json'}}:iac;
+  return typeof iac.template?.text!=='string'?{...iac,template:{text:built.text,format:'json'}}:iac;
  };
  const previous=new Map((before?.nodes||[]).map((n:any)=>[n.id,n]));
  const next=new Map((after?.nodes||[]).map((n:any)=>[n.id,n]));
@@ -75,6 +82,7 @@ export function infrastructureImpact(before:any,after:any){
    return [{logicalId,action:!was?'Add':!now?'Remove':'Modify',type:r.Type,deletionPolicy:r.DeletionPolicy||'Delete',updateReplacePolicy:r.UpdateReplacePolicy||'Delete',iam:r.Type?.startsWith('AWS::IAM::')?{before:was?.Properties,after:now?.Properties}:undefined}];
   });
   result.push({nodeId:id,stack:iac?.stack||old?.stack,resources,resourceFragment:iac?.resource,
+   ...(iac?.stack||old?.stack?{consequences:templateConsequences({Resources:newResources},{Resources:oldResources},[],"graph-proposal")}:{}),
    ...(!iac?{removedFromGraph:true,lifecycle:'Removing a graph node or its IaC configuration does not delete AWS resources. Request a reviewed destroy first.'}:{}),
    prerequisites:iac?.stack?deploymentCapabilities(after.id,String(id),iac):{message:'Connect this fragment to a stack and preflight the assembled template.'}});
  }

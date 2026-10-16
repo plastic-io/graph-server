@@ -1,5 +1,3 @@
-import {parseTemplate} from './validator';
-
 /** A request constraint, never a permission grant or a substitute for approval. */
 export type Preservation = 'strict' | undefined;
 export function preservationMode(value:any,inherited?:Preservation):Preservation {
@@ -37,44 +35,9 @@ export function preservationStateProblems(inspection:any):any[]{
  return problems;
 }
 
-export function preservationTemplateProblems(input:any,previous?:any):any[]{
- const doc=parseTemplate(input.text,input.format).doc,problems:any[]=[];
- for(const [logicalId,r]of Object.entries<any>(doc?.Resources||{})){
-  const path=`Resources.${logicalId}`,p=r.Properties||{},old=previous?.Resources?.[logicalId]?.Properties||{};
-  if(r.DeletionPolicy!=='Retain'||r.UpdateReplacePolicy!=='Retain')problems.push(issue('PRESERVATION_RETENTION_REQUIRED',`${logicalId} must declare DeletionPolicy: Retain and UpdateReplacePolicy: Retain for a strict review.`,{path,logicalId}));
-  if(r.Type==='AWS::S3::Bucket'&&p.LifecycleConfiguration){
-   const rules=p.LifecycleConfiguration.Rules;
-   if(!Array.isArray(rules)||rules.some(rule=>rule.Status!=='Disabled'&&Object.keys(rule).some(k=>/Expir|AbortIncompleteMultipartUpload/.test(k))))problems.push(issue('PRESERVATION_DATA_REMOVAL',`${logicalId} configures S3 lifecycle deletion or an unverifiable lifecycle rule. Strict deployment cannot schedule removal of stored objects.`,{path:path+'.Properties.LifecycleConfiguration',logicalId}));
-  }
-  if(r.Type==='AWS::DynamoDB::Table'&&p.TimeToLiveSpecification&&p.TimeToLiveSpecification.Enabled!==false)problems.push(issue('PRESERVATION_DATA_REMOVAL',`${logicalId} enables or conditionally enables TTL deletion. Disable it before a strict review.`,{path:path+'.Properties.TimeToLiveSpecification',logicalId}));
-  if(r.Type==='AWS::DynamoDB::Table'&&previous){
-   for(const field of ['GlobalSecondaryIndexes','LocalSecondaryIndexes']){
-    const prior=old[field]||[],next=p[field]||[];
-    if(!Array.isArray(prior)||!Array.isArray(next)||prior.some(index=>!next.some(candidate=>candidate.IndexName===index.IndexName)))problems.push(issue('PRESERVATION_RESOURCE_CHANGE',`${logicalId} removes or cannot verify existing indexes. An in-place table update must also preserve its indexes.`,{path:path+'.Properties.'+field,logicalId}));
-   }
-   if(old.PointInTimeRecoverySpecification?.PointInTimeRecoveryEnabled===true){
-    const next=p.PointInTimeRecoverySpecification;
-    if(next?.PointInTimeRecoveryEnabled!==true||(next.RecoveryPeriodInDays??35)<(old.PointInTimeRecoverySpecification.RecoveryPeriodInDays??35))problems.push(issue('PRESERVATION_DATA_REMOVAL',`${logicalId} disables or shortens point-in-time recovery history.`,{path:path+'.Properties.PointInTimeRecoverySpecification',logicalId}));
-   }
-  }
-  if(r.Type==='AWS::Logs::LogGroup'&&p.RetentionInDays!==undefined){
-   const prior=old.RetentionInDays??Infinity;
-   if(typeof p.RetentionInDays!=='number'||typeof prior!=='number'||p.RetentionInDays<prior)problems.push(issue('PRESERVATION_DATA_REMOVAL',`${logicalId} introduces, reduces, or cannot verify log retention. Existing log data must remain preserved.`,{path:path+'.Properties.RetentionInDays',logicalId}));
-  }
-  if(r.Type==='AWS::SQS::Queue'){
-   const next=p.MessageRetentionPeriod??345600,prior=old.MessageRetentionPeriod??345600;
-   if(typeof next!=='number'||typeof prior!=='number'||next<prior)problems.push(issue('PRESERVATION_DATA_REMOVAL',`${logicalId} reduces or cannot verify queue message retention.`,{path:path+'.Properties.MessageRetentionPeriod',logicalId}));
-  }
- }
- return problems;
-}
-
-export function preservationChangeProblems(changes:any[]):any[]{
- if(!Array.isArray(changes))return [issue('PRESERVATION_CHANGESET_UNVERIFIED','The complete resource change set must be available before strict execution.')];
- return changes.filter(c=>!['Add','Modify'].includes(c.action)||(c.action==='Modify'&&c.replacement!=='False')).map(c=>issue('PRESERVATION_RESOURCE_CHANGE',
-  `${c.logicalId||'Unknown resource'} has ${c.action||'an unknown action'} with replacement ${c.replacement||'not proven false'}. Strict review prohibits removals, replacements and uncertain replacements.`,
-  {logicalId:c.logicalId,resourceType:c.resourceType,action:c.action,replacement:c.replacement||'unknown'}));
-}
+// Application resource properties, retention policies and change-set removals /
+// replacements are author choices. Strict constrains separate recovery commands
+// and platform guardrails, never the template submitted for deployment review.
 export function preservationActionProblems(actions:any[]):any[]{
  return (actions||[]).filter(a=>!['reconcile-guardrails','release-operation'].includes(a.kind)||a.dataLoss?.length||a.resources?.some(r=>r.outcome==='Delete')).map(a=>issue('PRESERVATION_RECOVERY_ACTION',
   `Recovery action ${a.kind} is not verified to preserve every stack and resource. Strict recovery will not execute it.`,{action:a.kind,component:a.target,

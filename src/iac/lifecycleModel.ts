@@ -4,7 +4,7 @@ import {guardrailTemplate} from './guardrails';
 import {policyFromEnv,parseTemplate} from './validator';
 import {preservationMode,preservationStateProblems,preservationActionProblems} from './preservation';
 
-export const LIFECYCLE_VERSION='1.3.0';
+export const LIFECYCLE_VERSION='1.5.0';
 export const terminalStates=new Set(['succeeded','failed','rolled-back','rollback-failed','cancelled','expired','stale','no-changes','destroyed','recovered','recovery-blocked','inspected']);
 export function pendingReview(op:any){return !!op&&!op.approval&&!op.recoveryApproval&&!op.startedAt&&!op.recoveryDispatchedAt&&
  !op.reviewInvalidatedAt&&['awaiting-review','recovery-ready','recovery-blocked','expired','stale'].includes(op.state);}
@@ -89,7 +89,10 @@ export function recoveryPlan(op:any,inspection:any,options:any={}) {
     if(!r.ownershipVerified||!importIdentifiers[r.resourceType]||!definitions[r.logicalId]||!guardrail&&r.definitionDigest!==digest(definitions[r.logicalId])) {
      prerequisites.push(blocker('RETAINED_RESOURCE_COLLISION','platform-maintenance','A retained resource needs proven ownership and a supported import before its name can be reused. It will not be deleted.',{component:target,resource:r.physicalId,logicalId:r.logicalId}));continue;
     }
-    imports.push({logicalId:r.logicalId,resourceType:r.resourceType,physicalId:r.physicalId,physicalIdentity:r.physicalIdentity,identifier:importIdentifiers[r.resourceType],definition:{...definitions[r.logicalId],DeletionPolicy:'Retain',UpdateReplacePolicy:'Retain'}});
+    if(!definitions[r.logicalId].DeletionPolicy){
+     prerequisites.push(blocker('IMPORT_DELETION_POLICY_REQUIRED','aws-template-requirement','CloudFormation import requires an explicit DeletionPolicy. The platform will not insert one; author and review the required policy before importing.',{component:target,logicalId:r.logicalId}));continue;
+    }
+    imports.push({logicalId:r.logicalId,resourceType:r.resourceType,physicalId:r.physicalId,physicalIdentity:r.physicalIdentity,identifier:importIdentifiers[r.resourceType],definition:definitions[r.logicalId]});
    }
    if(imports.length) {
     const ids=new Set(imports.map(r=>r.logicalId));

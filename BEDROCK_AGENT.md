@@ -33,8 +33,12 @@ deployment or recovery, run AWS commands, access arbitrary network endpoints,
 or inspect other private conversations. The editor's **Manual**, **Safe Actions**
 or **Fully Automatic** mode controls graph-side acceptance and eligible review
 approvals. The assistant cannot enable those modes. Every assistant infrastructure
-review enforces `preservation: "strict"`; deletion, replacement and data-loss
-requests are rejected. Recovery approval remains separate from deployment.
+review uses `preservation: "strict"` to prohibit separate stack deletion and
+destructive recovery fallback. Under server 2.8.0's `author-template-v1` contract,
+that flag does not veto application retention, lifecycle, resource removal or
+replacement settings. Authored settings and omissions reach deployment review
+unchanged; resource and data consequences require human confirmation. Opus still
+cannot execute or approve them. Recovery approval remains separate from deployment.
 
 ## Delivery, cost limits and interruptions
 
@@ -96,7 +100,7 @@ this release does not add automatic redrive or replay of abandoned graph work.
 
 Automated tests cover actual MCP schemas and gates, owner revocation, serialized
 identity rejection, cross-user/graph denial, private Yjs/bus history, duplicate
-requests, abandoned leases, per-user quotas, strict preservation, interruption
+requests, abandoned leases, per-user quotas, strict recovery boundaries, interruption
 during inference, credential redaction, Unicode bounds, model failure reporting,
 private Lambda/IAM configuration, editor graph routing and CI model validation.
 
