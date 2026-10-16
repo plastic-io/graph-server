@@ -87,13 +87,14 @@ export class DeploymentDiagnostics {
     let e:any;
     try{e=await call(this.clients.states,'describeExecution',{executionArn:target.executionArn});}
     catch(error){
+     sources.workflowVisibility={...sources.workflowVisibility,lastResult:'unavailable',checkedAt:now};
      if(!awsResourceAbsent(error,'states:DescribeExecution'))throw error;
      const visibility=missingWorkflow(op,now,!!sources.workflowVisibility?.seen);
      if(!visibility.expected)throw error;
      events.push({id:'workflow:'+visibility.status,source:'orchestration',kind:'orchestration',phase:phaseFor(op.state),status:visibility.status,executionArn:target.executionArn,reason:visibility.reason,at:now});
      return;
     }
-    sources.workflowVisibility={seen:true};
+    sources.workflowVisibility={seen:true,lastResult:'exists',checkedAt:now,status:e.status};
     const original=e.error?diagnosticError({Error:e.error,Cause:e.cause},op):undefined;
     events.push({id:'workflow:'+e.status,source:'orchestration',kind:'orchestration',phase:phaseFor(op.state),status:e.status,executionArn:target.executionArn,reason:original?.message,...(original?{error:original}:{}),at:e.stopDate||now});
     if(!['FAILED','TIMED_OUT','ABORTED'].includes(e.status)&&!['failed','rollback-failed','rolled-back'].includes(op.state))return;

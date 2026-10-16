@@ -125,6 +125,11 @@ export class DeploymentProgress {
   return {operationId:op.operationId,events,nextCursor:this.cursor(op,scanned),hasMore:scanned<(head?.seq||0),receivedThrough:scanned};
  }
  async view(op:any){const head=await this.head(op.operationId),snapshot=head?.snapshot||{},all=Object.values<any>(snapshot.resources||{});
+  // Old deployments can already contain the same SUCCEEDED event ID. A fresh
+  // successful read still resolves their old start-race warning even when the
+  // event is deduplicated. A later genuine missing/denied read remains visible.
+  const workflow=head?.collectionSources?.workflowVisibility;
+  if(workflow?.lastResult==='exists'&&snapshot.collectionWarning?.error?.code==='ExecutionDoesNotExist'&&workflow.checkedAt>=Date.parse(snapshot.collectionWarning.at))delete snapshot.collectionWarning;
   let bytes=0;const resources=all.filter(e=>{bytes+=Buffer.byteLength(JSON.stringify(e));return bytes<=120000;});
   const phase=op.state==='planning'?snapshot.workerPhase||'planning':op.state==='applying'&&/ROLLBACK.*IN_PROGRESS/.test(snapshot.applicationStack?.status||'')?'rolling-back':phaseFor(op.state);
   return {version:1,sequence:head?.seq||0,...snapshot,phase,resources,resourceCount:all.length,resourcesTruncated:resources.length<all.length,collectedAt:head?.collectedAt||null,collectionPending:Object.values<any>(head?.collectionSources||{}).some(s=>s.queue?.length),

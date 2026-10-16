@@ -52,6 +52,14 @@ test.each(['expired','seen-before','access-denied','dispatch-failed'])('orchestr
  await f.collector.collect(f.op);
  expect((await f.progress.page(f.op,{limit:100})).events).toContainEqual(expect.objectContaining({source:'diagnostics',error:expect.objectContaining({code:which==='access-denied'?'AccessDenied':'ExecutionDoesNotExist'})}));
 });
+test('confirmed duplicate workflow events resolve legacy warnings, but subsequent real absence stays visible',async()=>{
+ const f=fixture({state:'succeeded'});f.clients.states.mockResolvedValue({status:'SUCCEEDED'});
+ await f.collector.collect(f.op);
+ await f.progress.append(f.op,[{source:'diagnostics',kind:'diagnostic-warning',error:{code:'ExecutionDoesNotExist',message:'legacy start race'},at:Date.now()}]);
+ await f.collector.collect(f.op);expect((await f.progress.view(f.op)).collectionWarning?.error?.code).not.toBe('ExecutionDoesNotExist');
+ f.clients.states.mockRejectedValue(Object.assign(new Error('gone after success'),{code:'ExecutionDoesNotExist'}));
+ await f.collector.collect(f.op);expect((await f.progress.view(f.op)).collectionWarning?.error?.code).toBe('ExecutionDoesNotExist');
+});
 test('unapproved recovery is explicitly not started and logs contain fixed metadata only',async()=>{
  const f=fixture({action:'recover',state:'recovery-ready'});
  expect(missingWorkflow(f.op)).toMatchObject({status:'NOT_STARTED',expected:true});
