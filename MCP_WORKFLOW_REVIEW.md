@@ -2,8 +2,10 @@
 
 October 16, 2026. Source server **2.8.0**, lifecycle contract **1.5.0**,
 assistant contract **1.1.0**, template contract **author-template-v1**.
-Implementation is local and **not released**. The deployed baseline remains
-server `22376da` / editor `c6471eb` from the release recorded below.
+Server `11db793ed91f0cbb318a774073e3f038a887097f` and editor
+`ec5735661fdf1f3284c5f578275ddb454724d840` are pushed and deployed to account
+`230639770018`, region `us-west-1`. The platform stack completed its update;
+the paired editor is published at https://d2fqgid0yzbc85.cloudfront.net/graph-editor/.
 
 The Agreeable Dove report (`50dcee50-1b0b-42b6-80a0-6b64881a5cb5`,
 `lens-event-storage`) exposed contradictory platform checks. Early strict
@@ -81,12 +83,38 @@ platform CloudFormation resource definitions and IAM configuration are unchanged
 Whitespace/diff checks pass in both repositories.
 
 The deployment fidelity regression is in
-[`templateSubmission.js`](src/__tests__/templateSubmission.js); SDK calls are
-mocked and no AWS deployment or application logging test has been run for this
-change. Agreeable Dove's Lambda execution and S3 logging remain unverified.
-Release requires the normal reviewed, paired server/editor deployment; this
-change adds no IAM grants. Pending pre-release reviews need cancellation and
-fresh preparation under the new contract, followed by separate human approval.
+[`templateSubmission.js`](src/__tests__/templateSubmission.js); its SDK calls
+are mocked. No application deployment or application logging test has been run
+for this change. Agreeable Dove's Lambda execution and S3 logging remain
+unverified. Pending pre-release reviews need cancellation and fresh preparation
+under the new contract, followed by separate human approval.
+
+The paired release used the normal Serverless package/deploy lifecycle and the
+editor publishing steps defined by CI, with the approved platform profile. Packaged parent
+(499 resources) and assistant (9 resources) templates passed CloudFormation lint
+with warnings only. Comparison against the deployed templates confirmed all
+10 IAM definitions and all platform data resources were unchanged. Only the old
+API Gateway deployment snapshot was retired. No application stack, bucket,
+role, graph content or stored application data was changed.
+
+Live verification completed at `2026-10-16T08:24:09Z`: platform status
+`UPDATE_COMPLETE`; packaged code hashes matched the active MCP, infrastructure
+review/worker and both assistant functions; editor release manifest and entry
+point matched the paired artifacts; CloudFront invalidation completed. Cognito,
+paired API endpoints and the enabled Opus agent were preserved. The normal
+discovery/provider checks and unauthenticated HTTP, WSS and MCP rejection checks
+passed.
+
+Read-only MCP preflight on disposable graph
+`e76298c1-3d45-47ed-be95-19e1104ebab2` advertised `author-template-v1` and accepted
+otherwise valid fixtures with explicit 30-day retention, S3 lifecycle and
+deletion/replacement policies, and fixtures omitting those settings. Negative
+fixtures outside the assigned namespace or missing the required S3 public-access
+blocks were rejected. These are live static-preflight results; effective AWS
+permissions remain explicitly unverified, and no review or deployment was
+created. Future CI releases should pin the full editor revision above through
+`EDITOR_REF` (or the workflow's `editor_ref` input) and preserve this environment's
+existing Cognito, API-prefix and enabled Bedrock configuration.
 
 ---
 
